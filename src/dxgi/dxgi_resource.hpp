@@ -96,6 +96,88 @@ private:
   IResource *resource_; // since it's aggregated, no extra reference is needed
 };
 
+/* designed to be used as an aggregated object: the IDXGISurface1 view of a 2D texture.
+ * Direct2D (Wine's d2d1, and launchers drawn with it, Rockstar's among them) asks a
+ * texture for IDXGISurface1 and then uses GetDevice, GetDesc and QueryInterface back to
+ * the texture. Without this the query failed and the caller dereferenced NULL (exit 5
+ * before any window). DXGI-level Map and GDI interop (GetDC) need a staging or
+ * GDI-compatible surface the Metal path does not have: they fail with a clean error. */
+template <typename IResource> class MTLDXGISurface : public IDXGISurface1 {
+public:
+  MTLDXGISurface(IResource *pResource) : resource_(pResource) {}
+  ~MTLDXGISurface() {}
+
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
+                                           void **ppvObject) final {
+    return resource_->QueryInterface(riid, ppvObject);
+  }
+
+  ULONG STDMETHODCALLTYPE AddRef() final { return resource_->AddRef(); }
+
+  ULONG STDMETHODCALLTYPE Release() final { return resource_->Release(); }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  SetPrivateData(REFGUID guid, UINT data_size, const void *data) final {
+    return resource_->SetPrivateData(guid, data_size, data);
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  SetPrivateDataInterface(REFGUID guid, const IUnknown *object) final {
+    return resource_->SetPrivateDataInterface(guid, object);
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetPrivateData(REFGUID guid, UINT *data_size, void *data) final {
+    return resource_->GetPrivateData(guid, data_size, data);
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetParent(REFIID riid, void **parent) final {
+    return GetDevice(riid, parent);
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetDevice(REFIID riid, void **ppDevice) final {
+    return resource_->GetDeviceInterface(riid, ppDevice);
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetDesc(DXGI_SURFACE_DESC *pDesc) final {
+    if (!pDesc)
+      return E_INVALIDARG;
+    return resource_->GetSurfaceDesc(pDesc);
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  Map(DXGI_MAPPED_RECT *pLockedRect, UINT MapFlags) final {
+    ERR_ONCE("DXGISurface::Map: not supported, map the texture through the device context");
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  HRESULT STDMETHODCALLTYPE Unmap() final { return DXGI_ERROR_INVALID_CALL; }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetDC(BOOL Discard, HDC *phdc) final {
+    if (phdc)
+      *phdc = nullptr;
+    ERR_ONCE("DXGISurface1::GetDC: GDI interop is not supported");
+    return DXGI_ERROR_INVALID_CALL;
+  }
+
+  HRESULT STDMETHODCALLTYPE ReleaseDC(RECT *pDirtyRect) final { return DXGI_ERROR_INVALID_CALL; }
+
+private:
+  IResource *resource_; // since it's aggregated, no extra reference is needed
+};
+
 template <typename IResource, typename IDeviceContext>
 class MTLDXGIKeyedMutex : public IDXGIKeyedMutex {
 public:
