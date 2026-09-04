@@ -28,6 +28,7 @@
 #include "d3d11_interfaces.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_state.hpp"
+#include "d3d11_context_state.h"
 #include "d3d11_device.hpp"
 #include "d3d11_pipeline.hpp"
 #include "d3d11_query.hpp"
@@ -1883,7 +1884,20 @@ public:
   void
   STDMETHODCALLTYPE
   SwapDeviceContextState(ID3DDeviceContextState *pState, ID3DDeviceContextState **ppPreviousState) override {
-    UNIMPLEMENTED("SwapDeviceContextState");
+    // A state object stands for a whole pipeline state. Bindings are not snapshotted into it
+    // yet, so a swap behaves like ClearState in both directions and the caller re-binds what
+    // it draws with; Direct2D over D3D11 (Wine's d2d1, used by launcher UIs) does exactly
+    // that. What those callers need, and what the abort here denied them, is the previous
+    // state handed back as a distinct live object they can swap in again and release.
+    std::lock_guard<mutex_t> lock(mutex);
+    if (ppPreviousState) {
+      if (current_context_state_ == nullptr)
+        current_context_state_ = new MTLD3D11DeviceContextState(device);
+      *ppPreviousState = current_context_state_.ref();
+    }
+    current_context_state_ = pState;
+    ResetEncodingContextState();
+    ResetD3D11ContextState();
   }
 
   void
@@ -5108,6 +5122,9 @@ public:
 
 protected:
   MTLD3D11Device *device;
+  /// The state object last swapped in by SwapDeviceContextState; null means the implicit
+  /// default state, which is materialised only when a caller asks for it back.
+  Com<ID3DDeviceContextState> current_context_state_;
   CommandBufferState cmdbuf_state = CommandBufferState::Idle;
   CommandBufferState previous_render_pipeline_state = CommandBufferState::Idle;
   ContextInternalState &ctx_state;
