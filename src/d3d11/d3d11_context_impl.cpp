@@ -28,7 +28,6 @@
 #include "d3d11_interfaces.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_state.hpp"
-#include "d3d11_context_state.h"
 #include "d3d11_device.hpp"
 #include "d3d11_pipeline.hpp"
 #include "d3d11_query.hpp"
