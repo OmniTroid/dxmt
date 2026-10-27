@@ -260,6 +260,35 @@ IOHelper::PullVertexInput(
 };
 
 llvm::Error
+IOHelper::FixupVertexInput(uint32_t reg, uint32_t fixup) {
+  auto index = air.getInt(reg);
+  switch (fixup) {
+  case SM30_IA_FORMAT_FIXUP_INT_TO_FLOAT:
+  case SM30_IA_FORMAT_FIXUP_UINT_TO_FLOAT: {
+    auto value = LoadFromVec4ArrayMasked(io.input.ptr_int4, index, 0b1111);
+    auto converted = fixup == SM30_IA_FORMAT_FIXUP_INT_TO_FLOAT ? ir.CreateSIToFP(value, types._float4)
+                                                                 : ir.CreateUIToFP(value, types._float4);
+    return StoreAtVec4ArrayMasked(io.input.ptr_float4, index, converted, 0b1111);
+  }
+  case SM30_IA_FORMAT_FIXUP_UDEC3:
+  case SM30_IA_FORMAT_FIXUP_DEC3N: {
+    float scale = fixup == SM30_IA_FORMAT_FIXUP_UDEC3 ? 1023.0f : 1.0f;
+    auto value = LoadFromVec4ArrayMasked(io.input.ptr_float4, index, 0b1111);
+    auto scaled = ir.CreateFMul(
+        value, llvm::ConstantVector::get(
+                   {llvm::ConstantFP::get(types._float, scale), llvm::ConstantFP::get(types._float, scale),
+                    llvm::ConstantFP::get(types._float, scale), llvm::ConstantFP::get(types._float, 0.0)}
+               )
+    );
+    auto with_w = ir.CreateInsertElement(scaled, llvm::ConstantFP::get(types._float, 1.0), (uint64_t)3);
+    return StoreAtVec4ArrayMasked(io.input.ptr_float4, index, with_w, 0b1111);
+  }
+  default:
+    return llvm::Error::success();
+  }
+}
+
+llvm::Error
 IOHelper::InitializeVertexIDInput(uint32_t to_reg, uint32_t mask) {
   return StoreAtVec4ArrayMasked(io.input.ptr_int4, air.getInt(to_reg), io.vertex_id, mask);
 }

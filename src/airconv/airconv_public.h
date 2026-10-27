@@ -257,6 +257,15 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   uint32_t pixel_formats[8];
 };
 
+/* D3D9 vertex declaration types Metal can't fetch directly; or'd into SM50_IA_INPUT_ELEMENT.format << 16 */
+enum SM30_IA_FORMAT_FIXUP {
+  SM30_IA_FORMAT_FIXUP_NONE = 0,
+  SM30_IA_FORMAT_FIXUP_INT_TO_FLOAT = 1,
+  SM30_IA_FORMAT_FIXUP_UINT_TO_FLOAT = 2,
+  SM30_IA_FORMAT_FIXUP_UDEC3 = 3,
+  SM30_IA_FORMAT_FIXUP_DEC3N = 4,
+};
+
 struct SM50_IA_INPUT_ELEMENT {
   uint32_t reg;
   uint32_t slot;

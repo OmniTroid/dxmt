@@ -87,11 +87,15 @@ struct Driver {
               .raster_order_group = {},
           });
         auto info = *element;
+        uint32_t fixup = info.format >> 16;
+        info.format &= 0xFFFF;
         auto slot_mask = ia_layout->slot_mask;
         prologue.Add([=](IOHelper &io) -> llvm::Error {
-          return io.PullVertexInput(vbuf_table, reg, 0xF, info, slot_mask);
+          if (auto err = io.PullVertexInput(vbuf_table, reg, 0xF, info, slot_mask))
+            return err;
+          return io.FixupVertexInput(reg, fixup);
         });
-      } else {
+      } else if (!ia_layout) {
         auto index = func_signature.DefineInput(InputVertexStageIn{
             .attribute = reg, .type = InputAttributeComponentType::Float, .name = input.attributeName()
         });
