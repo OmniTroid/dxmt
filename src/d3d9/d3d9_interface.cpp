@@ -17,6 +17,7 @@
  */
 
 #include "d3d9_interface.hpp"
+#include "d3d9_device.hpp"
 #include "log/log.hpp"
 #include "util_string.hpp"
 #include "wsi_monitor.hpp"
@@ -175,9 +176,13 @@ MTLD3D9::CreateDevice(
     UINT Adapter, D3DDEVTYPE DeviceType, HWND hFocusWindow, DWORD BehaviorFlags,
     D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DDevice9 **ppReturnedDeviceInterface
 ) {
-  InitReturnPtr(ppReturnedDeviceInterface);
-  ERR("IDirect3D9::CreateDevice: not implemented");
-  return D3DERR_NOTAVAILABLE;
+  IDirect3DDevice9Ex *device = nullptr;
+  HRESULT hr = CreateD3D9Device(
+      this, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, nullptr, extended_, &device
+  );
+  if (ppReturnedDeviceInterface)
+    *ppReturnedDeviceInterface = device;
+  return hr;
 }
 
 UINT STDMETHODCALLTYPE
@@ -207,9 +212,10 @@ MTLD3D9::CreateDeviceEx(
     D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLAYMODEEX *pFullscreenDisplayMode,
     IDirect3DDevice9Ex **ppReturnedDeviceInterface
 ) {
-  InitReturnPtr(ppReturnedDeviceInterface);
-  ERR("IDirect3D9Ex::CreateDeviceEx: not implemented");
-  return D3DERR_NOTAVAILABLE;
+  return CreateD3D9Device(
+      this, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, pFullscreenDisplayMode, true,
+      ppReturnedDeviceInterface
+  );
 }
 
 HRESULT STDMETHODCALLTYPE

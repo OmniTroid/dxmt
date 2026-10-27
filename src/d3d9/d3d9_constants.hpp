@@ -18,7 +18,12 @@
 
 #pragma once
 
+#include "d3d9.h"
 #include <cstdint>
+
+#ifndef D3DPRESENT_FORCEIMMEDIATE
+#define D3DPRESENT_FORCEIMMEDIATE 0x00000100L
+#endif
 
 namespace dxmt::caps {
 
