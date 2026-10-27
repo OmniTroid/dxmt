@@ -1748,6 +1748,16 @@ thunk_SM50Initialize(void *args) {
 }
 
 static NTSTATUS
+thunk_SM30Initialize(void *args) {
+  struct sm50_initialize_params *params = args;
+
+  params->ret =
+      SM30Initialize(params->bytecode, params->bytecode_size, params->shader, params->reflection, params->error);
+
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 thunk_SM50Destroy(void *args) {
   struct sm50_destroy_params *params = args;
 
@@ -1878,6 +1888,18 @@ thunk32_SM50Initialize(void *args) {
   struct sm50_initialize_params32 *params = args;
 
   params->ret = SM50Initialize(
+      UInt32ToPtr(params->bytecode), params->bytecode_size, UInt32ToPtr(params->shader),
+      UInt32ToPtr(params->reflection), UInt32ToPtr(params->error)
+  );
+
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+thunk32_SM30Initialize(void *args) {
+  struct sm50_initialize_params32 *params = args;
+
+  params->ret = SM30Initialize(
       UInt32ToPtr(params->bytecode), params->bytecode_size, UInt32ToPtr(params->shader),
       UInt32ToPtr(params->reflection), UInt32ToPtr(params->error)
   );
@@ -3328,6 +3350,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_newIndirectCommandBuffer,
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
+    &thunk_SM30Initialize,
 };
 
 #ifndef DXMT_NATIVE
@@ -3478,5 +3501,6 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_newIndirectCommandBuffer,
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
+    &thunk32_SM30Initialize,
 };
 #endif
