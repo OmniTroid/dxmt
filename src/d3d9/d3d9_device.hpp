@@ -18,8 +18,14 @@
 
 #pragma once
 
+#include "d3d9_buffer.hpp"
 #include "d3d9_constants.hpp"
 #include "d3d9_interface.hpp"
+#include "d3d9_shader_object.hpp"
+#include "d3d9_vertex_declaration.hpp"
+#include "dxmt_sampler.hpp"
+#include "sha1/sha1_util.hpp"
+#include <unordered_map>
 #include "d3d9_surface.hpp"
 #include "d3d9_swapchain.hpp"
 #include "com/com_pointer.hpp"
@@ -207,6 +213,7 @@ public:
   template <typename Fn>
   void
   EmitBlit(Fn &&fn) {
+    EndRenderPass();
     Emit([fn = std::forward<Fn>(fn)](ArgumentEncodingContext &enc) mutable {
       enc.startBlitPass();
       fn(enc);
@@ -229,8 +236,47 @@ public:
       uint32_t Slice, const D3DBOX &Box, uint32_t DstX = ~0u, uint32_t DstY = ~0u
   );
 
+  void EndRenderPass();
+
 private:
+  struct Stream {
+    Com<MTLD3D9VertexBuffer, false> buffer;
+    UINT offset = 0;
+    UINT stride = 0;
+    UINT frequency = 1;
+  };
+
+  struct BoundTexture {
+    IDirect3DBaseTexture9 *texture = nullptr;
+  };
+
+  struct UpStream {
+    Rc<Buffer> buffer;
+    UINT offset = 0;
+    UINT stride = 0;
+  };
+
+  bool BeginRenderPass();
+  uint64_t PreAllocateArgumentBuffer(size_t Size, size_t Alignment);
+  bool PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &InstanceCount);
+  void BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code);
+  WMT::RenderPipelineState GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Function VS, WMT::Function PS);
+  WMT::DepthStencilState GetDepthStencilState();
+  Rc<Sampler> GetSampler(uint32_t Index);
+  void ReleaseTextureBinding(BoundTexture &Binding);
+  HRESULT DrawWithIndices(
+      D3DPRIMITIVETYPE PrimitiveType, INT BaseVertexIndex, UINT StartIndex, UINT PrimitiveCount, Rc<Buffer> IndexBuffer,
+      UINT IndexOffset, D3DFORMAT IndexFormat
+  );
+  HRESULT UploadToRing(
+      std::unique_ptr<MTLD3D9BufferStorage> &Ring, UINT &RingOffset, const void *pData, UINT Size, UINT Alignment,
+      Rc<Buffer> &OutBuffer, UINT &OutOffset
+  );
+  WMTPixelFormat RenderTargetFormat(MTLD3D9Surface *pSurface);
+  TextureViewKey RenderTargetView(MTLD3D9Surface *pSurface);
+
   HRESULT ResetState(D3DPRESENT_PARAMETERS *pParams);
+  void ClearBindings();
   HRESULT CreateAutoDepthStencil(const D3DPRESENT_PARAMETERS &Params);
   void SetDefaultViewport(MTLD3D9Surface *pTarget);
   void ClearSurface(MTLD3D9Surface *pSurface, const RECT &Rect, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil);
@@ -261,6 +307,38 @@ private:
   std::array<DWORD, 256> render_states_ = {};
   bool in_scene_ = false;
   bool lost_ = false;
+
+  std::vector<std::unique_ptr<MTLD3D9ShaderCode>> shader_codes_;
+  Com<MTLD3D9VertexShader, false> vertex_shader_;
+  Com<MTLD3D9PixelShader, false> pixel_shader_;
+  Com<MTLD3D9VertexDeclaration, false> vertex_declaration_;
+  std::unordered_map<DWORD, Com<MTLD3D9VertexDeclaration, false>> fvf_declarations_;
+  DWORD fvf_ = 0;
+  std::array<Stream, caps::MaxStreams> streams_;
+  Com<MTLD3D9IndexBuffer, false> index_buffer_;
+
+  // [0] vertex, [1] pixel; float, int and bool registers map to cbuffer slots 0, 1 and 2.
+  std::array<std::array<float, 256 * 4>, 2> const_float_ = {};
+  std::array<std::array<int32_t, 16 * 4>, 2> const_int_ = {};
+  std::array<std::array<uint32_t, 16>, 2> const_bool_ = {};
+  uint32_t const_dirty_[2] = {7, 7};
+  std::unique_ptr<MTLD3D9BufferStorage> const_buffers_[2][3];
+
+  // pixel samplers 0-15, then vertex samplers D3DVERTEXTEXTURESAMPLER0-3 at 16-19
+  std::array<BoundTexture, caps::MaxSamplersPS + caps::MaxSamplersVS> textures_;
+  std::array<std::array<DWORD, D3DSAMP_DMAPOFFSET + 1>, caps::MaxSamplersPS + caps::MaxSamplersVS> sampler_states_;
+
+  bool pass_active_ = false;
+  uint64_t *pass_argbuf_size_ = nullptr;
+  UpStream up_stream_;
+  std::unordered_map<Sha1Digest, WMT::Reference<WMT::RenderPipelineState>> pipelines_;
+  std::unordered_map<Sha1Digest, WMT::Reference<WMT::DepthStencilState>> depth_stencil_states_;
+  std::unordered_map<Sha1Digest, Rc<Sampler>> samplers_;
+
+  std::unique_ptr<MTLD3D9BufferStorage> up_vertices_;
+  std::unique_ptr<MTLD3D9BufferStorage> up_indices_;
+  UINT up_vertex_offset_ = 0;
+  UINT up_index_offset_ = 0;
   UINT max_frame_latency_ = 3;
   INT gpu_thread_priority_ = 0;
 };

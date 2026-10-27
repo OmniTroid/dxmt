@@ -128,6 +128,9 @@ public:
 
   void MarkMipsDirty();
 
+  // View used for sampling: the whole mip chain with the D3D9 format's swizzle, optionally as sRGB.
+  TextureViewKey SampleView(bool Srgb);
+
 protected:
   MTLD3D9Device *parent_;
   D3D9_TEXTURE_DESC desc_;
@@ -136,6 +139,8 @@ protected:
   std::vector<Com<MTLD3D9Volume, false>> volumes_;
   DWORD lod_ = 0;
   D3DTEXTUREFILTERTYPE autogen_filter_ = D3DTEXF_LINEAR;
+  TextureViewKey sample_views_[2] = {};
+  bool sample_view_valid_[2] = {};
 };
 
 class MTLD3D9Texture final : public MTLD3D9TextureBase<IDirect3DTexture9> {

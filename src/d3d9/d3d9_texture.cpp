@@ -323,6 +323,28 @@ MTLD3D9TextureBase<Base>::MarkMipsDirty() {
   GenerateMipSubLevels();
 }
 
+template <typename Base>
+TextureViewKey
+MTLD3D9TextureBase<Base>::SampleView(bool Srgb) {
+  if (sample_view_valid_[Srgb])
+    return sample_views_[Srgb];
+  WMTPixelFormat format = D3D9GetPixelFormat(parent_->GetMTLDevice(), desc_.Format);
+  if (Srgb) {
+    auto swizzle = format & WMTPixelFormatCustomSwizzle;
+    format = (WMTPixelFormat)(Recall_sRGB((WMTPixelFormat)ORIGINAL_FORMAT(format)) | swizzle);
+  }
+  sample_views_[Srgb] = texture_->createView({
+      .format = format,
+      .type = texture_->textureType(),
+      .firstMiplevel = 0,
+      .miplevelCount = texture_->miplevelCount(),
+      .firstArraySlice = 0,
+      .arraySize = texture_->arrayLength(),
+  });
+  sample_view_valid_[Srgb] = true;
+  return sample_views_[Srgb];
+}
+
 template class MTLD3D9TextureBase<IDirect3DTexture9>;
 template class MTLD3D9TextureBase<IDirect3DCubeTexture9>;
 template class MTLD3D9TextureBase<IDirect3DVolumeTexture9>;

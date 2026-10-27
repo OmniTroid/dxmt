@@ -212,6 +212,7 @@ MTLD3D9SwapChain::Present(
   UINT interval = (dwFlags & D3DPRESENT_FORCEIMMEDIATE) ? 0 : SyncInterval();
   double vsync_duration = interval / refresh_rate_;
 
+  parent_->EndRenderPass();
   auto &queue = parent_->queue();
   auto chunk = queue.CurrentChunk();
   chunk->signal_frame_latency_fence_ = queue.CurrentFrameSeq();

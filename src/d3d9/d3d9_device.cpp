@@ -45,6 +45,7 @@ MTLD3D9Device::MTLD3D9Device(
 }
 
 MTLD3D9Device::~MTLD3D9Device() {
+  ClearBindings();
   render_targets_ = {};
   depth_stencil_ = nullptr;
   auto_depth_stencil_ = nullptr;
@@ -100,6 +101,26 @@ MTLD3D9Device::CreateAutoDepthStencil(const D3DPRESENT_PARAMETERS &Params) {
   return D3D_OK;
 }
 
+void
+MTLD3D9Device::ClearBindings() {
+  for (auto &binding : textures_)
+    ReleaseTextureBinding(binding);
+  vertex_shader_ = nullptr;
+  pixel_shader_ = nullptr;
+  vertex_declaration_ = nullptr;
+  fvf_ = 0;
+  for (auto &stream : streams_)
+    stream = {};
+  index_buffer_ = nullptr;
+  for (auto &c : const_float_)
+    c.fill(0.0f);
+  for (auto &c : const_int_)
+    c.fill(0);
+  for (auto &c : const_bool_)
+    c.fill(0);
+  const_dirty_[0] = const_dirty_[1] = 7;
+}
+
 HRESULT
 MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams) {
   HRESULT hr = CreateAutoDepthStencil(*pParams);
@@ -111,6 +132,17 @@ MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams) {
   depth_stencil_ = auto_depth_stencil_;
   SetDefaultViewport(render_targets_[0].ptr());
   D3D9InitRenderStates(render_states_, pParams->EnableAutoDepthStencil);
+  for (auto &ss : sampler_states_) {
+    ss.fill(0);
+    ss[D3DSAMP_ADDRESSU] = D3DTADDRESS_WRAP;
+    ss[D3DSAMP_ADDRESSV] = D3DTADDRESS_WRAP;
+    ss[D3DSAMP_ADDRESSW] = D3DTADDRESS_WRAP;
+    ss[D3DSAMP_MAGFILTER] = D3DTEXF_POINT;
+    ss[D3DSAMP_MINFILTER] = D3DTEXF_POINT;
+    ss[D3DSAMP_MIPFILTER] = D3DTEXF_NONE;
+    ss[D3DSAMP_MAXANISOTROPY] = 1;
+  }
+  ClearBindings();
   in_scene_ = false;
   lost_ = false;
   return D3D_OK;
@@ -127,6 +159,7 @@ MTLD3D9Device::SetDefaultViewport(MTLD3D9Surface *pTarget) {
 
 void
 MTLD3D9Device::FlushCommands() {
+  EndRenderPass();
   queue().CommitCurrentChunk();
 }
 
@@ -750,6 +783,7 @@ MTLD3D9Device::StretchRect(
 
   if (src_ms && !dst_ms && same_format && same_size && !pSourceRect && !pDestRect && sd.Width == dd.Width &&
       sd.Height == dd.Height) {
+    EndRenderPass();
     Emit([src = src->texture(), src_view = src->viewKey(), dst = dst->texture(),
           dst_view = dst->viewKey()](ArgumentEncodingContext &enc) mutable {
       enc.resolveTexture(std::move(src), src_view, std::move(dst), dst_view);
@@ -789,6 +823,8 @@ MTLD3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRend
   if (surface && !(surface->Desc().Usage & D3DUSAGE_RENDERTARGET))
     return D3DERR_INVALIDCALL;
 
+  if (render_targets_[RenderTargetIndex].ptr() != surface)
+    EndRenderPass();
   render_targets_[RenderTargetIndex] = surface;
   if (RenderTargetIndex == 0)
     SetDefaultViewport(surface);
@@ -813,6 +849,8 @@ MTLD3D9Device::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) {
   auto surface = static_cast<MTLD3D9Surface *>(pNewZStencil);
   if (surface && !surface->IsDepthStencil())
     return D3DERR_INVALIDCALL;
+  if (depth_stencil_.ptr() != surface)
+    EndRenderPass();
   depth_stencil_ = surface;
   return D3D_OK;
 }
@@ -861,6 +899,7 @@ void
 MTLD3D9Device::ClearSurface(
     MTLD3D9Surface *pSurface, const RECT &Rect, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil
 ) {
+  EndRenderPass();
   auto &desc = pSurface->Desc();
   bool full = Rect.left == 0 && Rect.top == 0 && (UINT)Rect.right == desc.Width && (UINT)Rect.bottom == desc.Height;
   uint32_t x = Rect.left, y = Rect.top;
@@ -979,6 +1018,8 @@ MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
   auto lock = Lock();
   if ((uint32_t)State >= render_states_.size())
     return D3DERR_INVALIDCALL;
+  if (State == D3DRS_SRGBWRITEENABLE && render_states_[State] != Value)
+    EndRenderPass();
   render_states_[State] = Value;
   return D3D_OK;
 }
