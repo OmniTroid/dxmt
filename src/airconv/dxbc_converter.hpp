@@ -409,6 +409,23 @@ std::vector<std::unique_ptr<BasicBlock>> read_control_flow(
     microsoft::CSignatureParser &inputParser, microsoft::CSignatureParser5 &outputParser
 );
 
+struct BindingSlotMasks {
+  uint16_t cbuffer = 0;
+  uint16_t sampler = 0;
+  uint64_t uav = 0;
+  uint64_t srv_hi = 0;
+  uint64_t srv_lo = 0;
+};
+
+// Defines argument-table entries for every cbuffer, sampler, SRV and UAV in shader_info and fills args_reflection.
+BindingSlotMasks define_argument_bindings(SM50ShaderInternal *sm50_shader);
+
+// Replaces each BasicBlockCall with a clone of the callee, up to 32 levels deep.
+void inline_calls(
+    std::vector<std::pair<BasicBlock *, BasicBlockCall *>> call_targets,
+    const std::map<uint32_t, BasicBlock *> &func_entries, const std::function<BasicBlock *(const char *)> &fresh_bb
+);
+
 uint32_t next_pow2(uint32_t x);
 
 size_t estimate_payload_size(SM50ShaderInternal *pHullStage, float factor, uint32_t patch_per_group);
