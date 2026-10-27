@@ -392,11 +392,15 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
 
   auto shared_flag =
       D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
-  if (finalDesc.MiscFlags & shared_flag) {
-    if (!(pDevice->GetLocalD3DKMT() & 0xc0000000)) {
-      ERR("DeviceTexture: Invalid device handle");
-      return E_FAIL;
-    }
+  bool can_share = !!(pDevice->GetLocalD3DKMT() & 0xc0000000);
+  if ((finalDesc.MiscFlags & shared_flag) && !can_share) {
+    // No D3DKMT device to register the allocation with, so the handle could never be
+    // shared. A private texture still serves the caller's own rendering, which is what most
+    // games wanting a shared render target do with it, and the alternative was a fatal error
+    // at start. The sharing calls on this texture then fail on their own.
+    ERR_ONCE("DeviceTexture: no D3DKMT device, creating a shared texture as a private one");
+  }
+  if ((finalDesc.MiscFlags & shared_flag) && can_share) {
     // use a dedicated path for now, because there are other works for private storage mode
 
     Flags<TextureAllocationFlag> flags;

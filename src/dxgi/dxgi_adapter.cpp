@@ -29,9 +29,21 @@ public:
       : device_(device), factory_(factory), options_(config) {
     D3DKMT_OPENADAPTERFROMLUID open = {};
     open.AdapterLuid = GetAdapterLuid(device_);
-    if (D3DKMTOpenAdapterFromLuid(&open))
-      WARN("Failed to open D3DKMT adapter");
-    else
+    if (D3DKMTOpenAdapterFromLuid(&open)) {
+      // Wine assigns its GPUs LUIDs of its own, and not every build derives them from the
+      // IOKit registry ID this LUID is made of (Wine 10.0's Mac driver does not, Wine 11's
+      // does). Without an adapter there is no D3DKMT device, and every shared resource fails
+      // at creation, which kills an Unreal game at start. The primary display's adapter is
+      // the same GPU on a single-GPU Mac, so open it by display name instead.
+      D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME by_name = {};
+      wcscpy(by_name.DeviceName, L"\\\\.\\DISPLAY1");
+      if (D3DKMTOpenAdapterFromGdiDisplayName(&by_name))
+        WARN("Failed to open D3DKMT adapter by LUID and by display name");
+      else {
+        WARN("D3DKMT adapter opened by display name, the LUID lookup failed");
+        local_kmt_ = by_name.hAdapter;
+      }
+    } else
       local_kmt_ = open.hAdapter;
   };
 
