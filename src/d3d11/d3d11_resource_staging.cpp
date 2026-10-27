@@ -119,14 +119,19 @@ HRESULT CreateStagingTextureInternal(MTLD3D11Device *pDevice,
     D3D11_ASSERT(subresources.size() == sub.SubresourceId);
     auto buffer = new StagingResource(metal, buf_len, bpr, bpi);
     if (pInitialData) {
+      uint32_t row_bytes, unused_bpi, unused_len;
+      if (FAILED(GetLinearTextureLayout(pDevice, finalDesc, sub.MipLevel, row_bytes, unused_bpi, unused_len, false))) {
+        return E_FAIL;
+      }
       auto mapped = buffer->mappedImmediateMemory();
       auto bpi_read = is_3d_tex ? pInitialData[sub.SubresourceId].SysMemSlicePitch : 0;
-      auto bpr_read = is_1d_tex ? 0 : pInitialData[sub.SubresourceId].SysMemPitch;
+      // D3D11 ignores SysMemPitch for 1D textures
+      auto bpr_read = is_1d_tex ? row_bytes : pInitialData[sub.SubresourceId].SysMemPitch;
       for (auto image = 0u; image < d; image++) {
         for (auto row = 0u; row < (bpi / bpr); row++) {
           auto dst_data = ptr_add(mapped, image * bpi + row * bpr);
           auto src_data = ptr_add(pInitialData[sub.SubresourceId].pSysMem, image * bpi_read + row * bpr_read);
-          memcpy(dst_data, src_data, std::min(bpr, bpr_read));
+          memcpy(dst_data, src_data, std::min(row_bytes, bpr_read));
         }
       }
     }
