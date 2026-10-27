@@ -194,7 +194,6 @@ public:
       MTLD3D11DeviceChild<D3D11ResourceCommon, Base...>(device),
       desc(desc),
       dxgi_resource(this),
-      dxgi_surface(this),
       keyed_mutex(this, device->GetImmediateContextPrivate()),
       d3d10(reinterpret_cast<tag::COM *>(this), device->GetImmediateContextPrivate()),
       dxgi_surface(this) {
@@ -264,17 +263,6 @@ public:
       return S_OK;
     }
 
-    if (riid == __uuidof(IDXGISurface) || riid == __uuidof(IDXGISurface1)) {
-      // A DXGI surface is a 2D image; only 2D textures (swapchain back buffers
-      // included, GetBuffer routes here) hand one out.
-      if constexpr (tag::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-        *ppvObject = ref(&dxgi_surface);
-        return S_OK;
-      } else {
-        return E_NOINTERFACE;
-      }
-    }
-
     if (logQueryInterfaceError(__uuidof(typename tag::COM), riid)) {
       WARN("D3D11Resource(", tag::debug_name ,"): Unknown interface query ", str::format(riid));
     }
@@ -308,20 +296,6 @@ public:
     }
     *pUsage = 0;
     return S_OK;
-  }
-
-  /* IDXGISurface::GetDesc for the aggregated MTLDXGISurface: the 2D texture's size,
-     format and sample description. Not a surface for any other dimension. */
-  HRESULT GetSurfaceDesc(DXGI_SURFACE_DESC *pDesc) {
-    if constexpr (tag::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
-      pDesc->Width = desc.Width;
-      pDesc->Height = desc.Height;
-      pDesc->Format = desc.Format;
-      pDesc->SampleDesc = desc.SampleDesc;
-      return S_OK;
-    } else {
-      return E_NOINTERFACE;
-    }
   }
 
   virtual HRESULT STDMETHODCALLTYPE
@@ -361,7 +335,6 @@ public:
 protected:
   tag::DESC1 desc;
   MTLDXGIResource<TResourceBase<tag, Base...>> dxgi_resource;
-  MTLDXGISurface<TResourceBase<tag, Base...>> dxgi_surface;
   MTLDXGIKeyedMutex<TResourceBase<tag, Base...>, IMTLD3D11DeviceContext> keyed_mutex;
   tag::D3D10_IMPL d3d10;
   D3D11DXGISurface dxgi_surface;
