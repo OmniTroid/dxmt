@@ -2,6 +2,7 @@
 #include <d3d9.h>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 static LRESULT CALLBACK
 WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
@@ -13,7 +14,8 @@ WindowProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
 }
 
 int WINAPI
-WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
+WinMain(HINSTANCE instance, HINSTANCE, LPSTR cmdline, int) {
+  unsigned max_frames = cmdline && *cmdline ? strtoul(cmdline, nullptr, 10) : 0;
   WNDCLASSW wc = {};
   wc.lpfnWndProc = WindowProc;
   wc.hInstance = instance;
@@ -58,7 +60,7 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   printf("backbuffer %ux%u format %u\n", pp.BackBufferWidth, pp.BackBufferHeight, pp.BackBufferFormat);
 
   MSG msg = {};
-  for (unsigned frame = 0; msg.message != WM_QUIT; frame++) {
+  for (unsigned frame = 0; msg.message != WM_QUIT && (!max_frames || frame < max_frames); frame++) {
     while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
       TranslateMessage(&msg);
       DispatchMessageW(&msg);
@@ -80,6 +82,7 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     device->Present(nullptr, nullptr, nullptr, nullptr);
   }
 
+  printf("done\n");
   device->Release();
   d3d->Release();
   return 0;
