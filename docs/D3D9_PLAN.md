@@ -8,7 +8,7 @@ There is no Metal-native D3D9 path on macOS (project-eve `graphics.md`, "Implica
 
 ## Decisions to make first
 
-1. **Upstream or fork.** `AGENTS.md` and `CONTRIBUTING.md` forbid AI-written code upstream. If this is meant for 3Shain/dxmt, the code must be hand-written; AI is fine for research and plans like this one.
+1. **Upstream or fork.** Decided: hard fork. Upstream forbids AI-written code, so this work stays here and is not sent upstream.
 2. **32-bit first.** Most D3D9 games are 32-bit. `build-win32.txt` works but still needs the 64-bit unixlib, so confirm the WoW64 path end to end in phase 1, not later.
 3. **Scope of SM1.x.** ps_1_x has a long tail (`texm3x*`, `texbem`, modifiers). Ship vs/ps 2.0 and 3.0 first; add 1.x after.
 4. **D3D8.** Later, as a thin layer onto d3d9 (the d8vk approach), not part of this plan.

@@ -24,6 +24,4 @@ And most importantly, please **sign off** your commit with your legal name.
 
 ## AI Policy
 
-We cannot accept contributions made or co-authored by AI/LLM (Large Language Model).
-
-You are still free to use AI to do your own research and share your findings with others (including the developers, but please don't create a PR).
+This fork accepts contributions made or co-authored by AI/LLM (Large Language Model). Upstream [3Shain/dxmt](https://github.com/3Shain/dxmt) does not, so don't submit such changes there.
