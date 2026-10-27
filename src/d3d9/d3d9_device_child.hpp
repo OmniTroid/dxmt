@@ -69,7 +69,7 @@ protected:
   IDirect3DDevice9Ex *device_;
 };
 
-template <typename... Base> class MTLD3D9Resource : public MTLD3D9DeviceChild<Base...> {
+template <typename... Base> class MTLD3D9PrivateDataObject : public MTLD3D9DeviceChild<Base...> {
 public:
   using MTLD3D9DeviceChild<Base...>::MTLD3D9DeviceChild;
 
@@ -111,6 +111,14 @@ public:
     return private_data_.setData(refguid, 0, nullptr) == S_OK ? D3D_OK : D3DERR_NOTFOUND;
   }
 
+private:
+  ConcurrentComPrivateData private_data_;
+};
+
+template <typename... Base> class MTLD3D9Resource : public MTLD3D9PrivateDataObject<Base...> {
+public:
+  using MTLD3D9PrivateDataObject<Base...>::MTLD3D9PrivateDataObject;
+
   DWORD STDMETHODCALLTYPE
   SetPriority(DWORD PriorityNew) override {
     return std::exchange(priority_, PriorityNew);
@@ -125,7 +133,6 @@ public:
   PreLoad() override {}
 
 private:
-  ConcurrentComPrivateData private_data_;
   DWORD priority_ = 0;
 };
 

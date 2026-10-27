@@ -1,6 +1,7 @@
 d3d9_src = [
   'd3d9.cpp',
   'd3d9_adapter.cpp',
+  'd3d9_buffer.cpp',
   'd3d9_caps.cpp',
   'd3d9_device.cpp',
   'd3d9_device_unimpl.cpp',
@@ -9,6 +10,7 @@ d3d9_src = [
   'd3d9_state.cpp',
   'd3d9_surface.cpp',
   'd3d9_swapchain.cpp',
+  'd3d9_texture.cpp',
 ]
 
 d3d9_ld_args      = ['-L' + windows_native_install_dir] # a nice trick to force relink

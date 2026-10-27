@@ -17,6 +17,8 @@
  */
 
 #include "d3d9_device.hpp"
+#include "d3d9_buffer.hpp"
+#include "d3d9_texture.hpp"
 #include "d3d9_format.hpp"
 #include "d3d9_state.hpp"
 #include "log/log.hpp"
@@ -386,6 +388,140 @@ CreateStandaloneSurface(
   }
   *ppSurface = ref(new MTLD3D9Surface(pDevice, Desc, std::move(texture), nullptr, Lockable));
   return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateTexture(
+    UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9 **ppTexture,
+    HANDLE *pSharedHandle
+) {
+  auto lock = Lock();
+  InitReturnPtr(ppTexture);
+  if (pSharedHandle) {
+    ERR("IDirect3DDevice9::CreateTexture: shared textures are not implemented");
+    return D3DERR_INVALIDCALL;
+  }
+  D3D9_TEXTURE_DESC desc = {D3DRTYPE_TEXTURE, Width, Height, 1, Levels, Usage, Format, Pool};
+  return CreateD3D9Texture(this, desc, reinterpret_cast<IDirect3DBaseTexture9 **>(ppTexture));
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateCubeTexture(
+    UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9 **ppCubeTexture,
+    HANDLE *pSharedHandle
+) {
+  auto lock = Lock();
+  InitReturnPtr(ppCubeTexture);
+  if (pSharedHandle)
+    return D3DERR_INVALIDCALL;
+  D3D9_TEXTURE_DESC desc = {D3DRTYPE_CUBETEXTURE, EdgeLength, EdgeLength, 1, Levels, Usage, Format, Pool};
+  return CreateD3D9Texture(this, desc, reinterpret_cast<IDirect3DBaseTexture9 **>(ppCubeTexture));
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateVolumeTexture(
+    UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
+    IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *pSharedHandle
+) {
+  auto lock = Lock();
+  InitReturnPtr(ppVolumeTexture);
+  if (pSharedHandle)
+    return D3DERR_INVALIDCALL;
+  D3D9_TEXTURE_DESC desc = {D3DRTYPE_VOLUMETEXTURE, Width, Height, Depth, Levels, Usage, Format, Pool};
+  return CreateD3D9Texture(this, desc, reinterpret_cast<IDirect3DBaseTexture9 **>(ppVolumeTexture));
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateVertexBuffer(
+    UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9 **ppVertexBuffer, HANDLE *pSharedHandle
+) {
+  auto lock = Lock();
+  InitReturnPtr(ppVertexBuffer);
+  if (!ppVertexBuffer || !Length || pSharedHandle)
+    return D3DERR_INVALIDCALL;
+  D3DVERTEXBUFFER_DESC desc = {D3DFMT_VERTEXDATA, D3DRTYPE_VERTEXBUFFER, Usage, Pool, Length, FVF};
+  *ppVertexBuffer = ref(new MTLD3D9VertexBuffer(this, desc));
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateIndexBuffer(
+    UINT Length, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DIndexBuffer9 **ppIndexBuffer,
+    HANDLE *pSharedHandle
+) {
+  auto lock = Lock();
+  InitReturnPtr(ppIndexBuffer);
+  if (!ppIndexBuffer || !Length || pSharedHandle)
+    return D3DERR_INVALIDCALL;
+  if (Format != D3DFMT_INDEX16 && Format != D3DFMT_INDEX32)
+    return D3DERR_INVALIDCALL;
+  D3DINDEXBUFFER_DESC desc = {Format, D3DRTYPE_INDEXBUFFER, Usage, Pool, Length};
+  *ppIndexBuffer = ref(new MTLD3D9IndexBuffer(this, desc));
+  return D3D_OK;
+}
+
+template <typename T>
+static T *
+AsTextureBase(IDirect3DBaseTexture9 *pTexture) {
+  return static_cast<T *>(pTexture);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBaseTexture9 *pDestinationTexture) {
+  auto lock = Lock();
+  if (!pSourceTexture || !pDestinationTexture)
+    return D3DERR_INVALIDCALL;
+  D3DRESOURCETYPE type = pSourceTexture->GetType();
+  if (type != pDestinationTexture->GetType())
+    return D3DERR_INVALIDCALL;
+
+  auto copy = [&](auto *src, auto *dst) -> HRESULT {
+    auto &sd = src->Desc();
+    auto &dd = dst->Desc();
+    if (sd.Pool != D3DPOOL_SYSTEMMEM || dd.Pool != D3DPOOL_DEFAULT || sd.Format != dd.Format || !dst->texture())
+      return D3DERR_INVALIDCALL;
+    uint32_t offset = 0;
+    while (offset < sd.Levels && std::max(1u, sd.Width >> offset) != dd.Width)
+      offset++;
+    if (offset == sd.Levels || sd.Levels - offset < (dd.Usage & D3DUSAGE_AUTOGENMIPMAP ? 1 : dd.Levels))
+      return D3DERR_INVALIDCALL;
+
+    uint32_t levels = dd.Usage & D3DUSAGE_AUTOGENMIPMAP ? 1 : dd.Levels;
+    for (uint32_t level = 0; level < levels; level++) {
+      if (type == D3DRTYPE_VOLUMETEXTURE) {
+        auto sv = src->volume(level + offset);
+        auto &vd = sv->Desc();
+        CopyBufferToTexture(
+            sv->EnsureShadow(), sv->layout(), dst->texture(), level, 0, {0, 0, vd.Width, vd.Height, 0, vd.Depth}
+        );
+        continue;
+      }
+      for (uint32_t face = 0; face < dst->faces(); face++) {
+        auto ss = src->surface(face, level + offset);
+        auto &desc = ss->Desc();
+        CopyBufferToTexture(
+            ss->EnsureShadow(), ss->layout(), dst->texture(), level, face, {0, 0, desc.Width, desc.Height, 0, 1}
+        );
+      }
+    }
+    dst->MarkMipsDirty();
+    return D3D_OK;
+  };
+
+  switch (type) {
+  case D3DRTYPE_TEXTURE:
+    return copy(AsTextureBase<MTLD3D9Texture>(pSourceTexture), AsTextureBase<MTLD3D9Texture>(pDestinationTexture));
+  case D3DRTYPE_CUBETEXTURE:
+    return copy(
+        AsTextureBase<MTLD3D9CubeTexture>(pSourceTexture), AsTextureBase<MTLD3D9CubeTexture>(pDestinationTexture)
+    );
+  case D3DRTYPE_VOLUMETEXTURE:
+    return copy(
+        AsTextureBase<MTLD3D9VolumeTexture>(pSourceTexture), AsTextureBase<MTLD3D9VolumeTexture>(pDestinationTexture)
+    );
+  default:
+    return D3DERR_INVALIDCALL;
+  }
 }
 
 HRESULT STDMETHODCALLTYPE

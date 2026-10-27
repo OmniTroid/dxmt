@@ -18,6 +18,7 @@
 
 #include "d3d9_surface.hpp"
 #include "d3d9_device.hpp"
+#include "d3d9_texture.hpp"
 #include "d3d9_format.hpp"
 #include "log/log.hpp"
 #include "util_string.hpp"
@@ -194,50 +195,11 @@ MTLD3D9Surface::ReleaseDC(HDC hdc) {
   return D3DERR_INVALIDCALL;
 }
 
-static bool
-D3D9IsRenderableColor(MTLD3D9Device *pDevice, D3DFORMAT Format) {
-  D3D9_FORMAT_DESC desc;
-  if (!D3D9QueryFormat(Format, desc) || (desc.Flags & (D3D9_FORMAT_DEPTH | D3D9_FORMAT_BC)))
-    return false;
-  return int(pDevice->GetAdapter()->GetFormatCapability(Format)) & int(FormatCapability::Color);
-}
-
 HRESULT
 CreateD3D9SurfaceTexture(MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, Rc<Texture> &OutTexture) {
-  WMTPixelFormat pixel_format = D3D9GetPixelFormat(pDevice->GetMTLDevice(), Desc.Format);
-  if (pixel_format == WMTPixelFormatInvalid) {
-    ERR("D3D9: unsupported surface format ", Desc.Format);
-    return D3DERR_INVALIDCALL;
-  }
-
+  D3D9_TEXTURE_DESC desc = {D3DRTYPE_SURFACE, Desc.Width, Desc.Height, 1, 1, Desc.Usage, Desc.Format, Desc.Pool};
   uint32_t samples = Desc.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? Desc.MultiSampleType : 1;
-  if (samples > 1 && !pDevice->GetMTLDevice().supportsTextureSampleCount(samples)) {
-    ERR("D3D9: unsupported sample count ", samples);
-    return D3DERR_INVALIDCALL;
-  }
-
-  WMTTextureInfo info = {};
-  info.pixel_format = (WMTPixelFormat)ORIGINAL_FORMAT(pixel_format);
-  info.type = samples > 1 ? WMTTextureType2DMultisample : WMTTextureType2D;
-  info.width = Desc.Width;
-  info.height = Desc.Height;
-  info.depth = 1;
-  info.array_length = 1;
-  info.mipmap_level_count = 1;
-  info.sample_count = samples;
-  info.usage = WMTTextureUsageShaderRead;
-  if (Desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL) || D3D9IsRenderableColor(pDevice, Desc.Format))
-    info.usage = (WMTTextureUsage)(info.usage | WMTTextureUsageRenderTarget);
-  if (!(Desc.Usage & D3DUSAGE_DEPTHSTENCIL))
-    info.usage = (WMTTextureUsage)(info.usage | WMTTextureUsagePixelFormatView);
-
-  OutTexture = new Texture(info, pDevice->GetMTLDevice());
-
-  Flags<TextureAllocationFlag> flags;
-  flags.set(TextureAllocationFlag::GpuPrivate);
-  OutTexture->rename(OutTexture->allocate(flags));
-  pDevice->queue().initializer.initWithZero(OutTexture.ptr(), OutTexture->current(), 0, 0);
-  return D3D_OK;
+  return CreateD3D9TextureStorage(pDevice, desc, 1, samples, OutTexture);
 }
 
 } // namespace dxmt
