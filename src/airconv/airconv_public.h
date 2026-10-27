@@ -316,6 +316,11 @@ AIRCONV_API int SM50Initialize(
   const void *pBytecode, size_t BytecodeSize, sm50_shader_t *ppShader,
   struct MTL_SHADER_REFLECTION *pRefl, sm50_error_t *ppError
 );
+/* D3D9 shader model 1-3 bytecode. The result is compiled and released with the SM50 functions. */
+AIRCONV_API int SM30Initialize(
+  const void *pBytecode, size_t BytecodeSize, sm50_shader_t *ppShader,
+  struct MTL_SHADER_REFLECTION *pRefl, sm50_error_t *ppError
+);
 AIRCONV_API void SM50Destroy(sm50_shader_t pShader);
 AIRCONV_API int SM50Compile(
   sm50_shader_t pShader, struct SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs,

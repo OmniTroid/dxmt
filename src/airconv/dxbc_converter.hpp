@@ -22,6 +22,10 @@
 
 #include "airconv_public.h"
 
+namespace dxmt::d3d9 {
+struct ShaderData;
+}
+
 namespace dxmt::dxbc {
 
 struct ResourceRange {
@@ -352,6 +356,7 @@ public:
   std::unique_ptr<llvm::LLVMContext> dxil_context;
   std::unique_ptr<llvm::Module> dxil;
   dxil::EntryPoint dxil_entry;
+  std::shared_ptr<d3d9::ShaderData> d3d9;
   std::vector<std::function<void(SignatureContext &)>> signature_handlers;
   microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE shader_type;
   /* for domain shader, it refers to patch constant input count */
