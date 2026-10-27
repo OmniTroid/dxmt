@@ -155,7 +155,9 @@ MTLD3D9SwapChain::CreateBackBuffers() {
     HRESULT hr = CreateD3D9SurfaceTexture(parent_, desc, texture);
     if (FAILED(hr))
       return hr;
-    backbuffers_.emplace_back(new MTLD3D9Surface(parent_, desc, std::move(texture), this));
+    backbuffers_.emplace_back(new MTLD3D9Surface(
+        parent_, desc, std::move(texture), this, params_.Flags & D3DPRESENTFLAG_LOCKABLE_BACKBUFFER
+    ));
   }
   return D3D_OK;
 }

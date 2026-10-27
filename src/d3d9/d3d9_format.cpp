@@ -179,6 +179,21 @@ D3D9GetPixelFormat(WMT::Device Device, D3DFORMAT Format) {
   return (WMTPixelFormat)(ORIGINAL_FORMAT(metal.PixelFormat) | desc.Swizzle);
 }
 
+bool
+D3D9GetFormatLayout(WMT::Device Device, D3DFORMAT Format, D3D9_FORMAT_LAYOUT &Layout) {
+  D3D9_FORMAT_DESC desc;
+  if (!D3D9QueryFormat(Format, desc) || desc.DXGIFormat == DXGI_FORMAT_UNKNOWN)
+    return false;
+  MTL_DXGI_FORMAT_DESC metal;
+  if (FAILED(MTLQueryDXGIFormat(Device, desc.DXGIFormat, metal)))
+    return false;
+  if (metal.Flag & MTL_DXGI_FORMAT_BC)
+    Layout = {metal.BlockSize, 4};
+  else
+    Layout = {metal.BytesPerTexel, 1};
+  return Layout.BlockBytes != 0;
+}
+
 UINT
 D3D9GetFormatBitsPerPixel(D3DFORMAT Format) {
   switch (Format) {

@@ -204,8 +204,30 @@ public:
     queue().CurrentChunk()->emitcc(std::forward<cmd>(fn));
   }
 
+  template <typename Fn>
+  void
+  EmitBlit(Fn &&fn) {
+    Emit([fn = std::forward<Fn>(fn)](ArgumentEncodingContext &enc) mutable {
+      enc.startBlitPass();
+      fn(enc);
+      enc.endPass();
+    });
+  }
+
   void FlushCommands();
   void WaitUntilGPUIdle();
+
+  HRESULT MapStaging(Rc<StagingResource> &Staging, bool Read, bool Write, bool DoNotWait, void **ppData);
+
+  // Box offsets are in pixels relative to the subresource; the buffer holds the whole subresource.
+  void CopyTextureToBuffer(
+      const Rc<Texture> &Src, uint32_t Level, uint32_t Slice, const D3DBOX &Box, const Rc<StagingResource> &Dst,
+      const D3D9_FORMAT_LAYOUT &Layout
+  );
+  void CopyBufferToTexture(
+      const Rc<StagingResource> &Src, const D3D9_FORMAT_LAYOUT &Layout, const Rc<Texture> &Dst, uint32_t Level,
+      uint32_t Slice, const D3DBOX &Box, uint32_t DstX = ~0u, uint32_t DstY = ~0u
+  );
 
 private:
   HRESULT ResetState(D3DPRESENT_PARAMETERS *pParams);

@@ -58,4 +58,22 @@ WMTPixelFormat D3D9GetPixelFormat(WMT::Device Device, D3DFORMAT Format);
 
 UINT D3D9GetFormatBitsPerPixel(D3DFORMAT Format);
 
+struct D3D9_FORMAT_LAYOUT {
+  uint32_t BlockBytes;
+  uint32_t BlockSize;
+
+  uint32_t
+  Pitch(uint32_t Width) const {
+    uint32_t pitch = (Width + BlockSize - 1) / BlockSize * BlockBytes;
+    return (pitch + 3) & ~3u;
+  }
+
+  uint32_t
+  Rows(uint32_t Height) const {
+    return (Height + BlockSize - 1) / BlockSize;
+  }
+};
+
+bool D3D9GetFormatLayout(WMT::Device Device, D3DFORMAT Format, D3D9_FORMAT_LAYOUT &Layout);
+
 } // namespace dxmt

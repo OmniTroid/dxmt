@@ -22,6 +22,7 @@
 #include "log/log.hpp"
 #include "util_string.hpp"
 #include <algorithm>
+#include <cstring>
 
 namespace dxmt {
 
@@ -132,6 +133,92 @@ MTLD3D9Device::WaitUntilGPUIdle() {
   uint64_t seq = queue().CurrentSeqId();
   FlushCommands();
   queue().WaitCPUFence(seq);
+}
+
+HRESULT
+MTLD3D9Device::MapStaging(Rc<StagingResource> &Staging, bool Read, bool Write, bool DoNotWait, void **ppData) {
+  bool flushed = false;
+  for (;;) {
+    uint64_t coherent = queue().CoherentSeqId();
+    auto result = Staging->tryMap(coherent, Read, Write);
+    if (result == StagingMapResult::Mapped)
+      return D3DERR_INVALIDCALL;
+    if (result == StagingMapResult::Renamable) {
+      auto next = Staging->allocate(coherent);
+      std::memcpy(Staging->mappedMemory(next), Staging->mappedImmediateMemory(), Staging->length);
+      Staging->updateImmediateName(queue().CurrentSeqId(), next);
+      Emit([Staging, next](ArgumentEncodingContext &enc) mutable {
+        auto _ = Staging->buffer()->rename(Staging->allocation(next));
+      });
+      result = StagingMapResult::Mappable;
+    }
+    if (result == StagingMapResult::Mappable) {
+      *ppData = Staging->mappedImmediateMemory();
+      return D3D_OK;
+    }
+    if (DoNotWait)
+      return D3DERR_WASSTILLDRAWING;
+    if (!flushed) {
+      FlushCommands();
+      flushed = true;
+    }
+    queue().WaitCPUFence(coherent + uint64_t(result));
+  }
+}
+
+static uint64_t
+BoxOffset(const D3DBOX &Box, const D3D9_FORMAT_LAYOUT &Layout, uint32_t BytesPerRow) {
+  return (uint64_t)(Box.Top / Layout.BlockSize) * BytesPerRow + (Box.Left / Layout.BlockSize) * Layout.BlockBytes;
+}
+
+void
+MTLD3D9Device::CopyTextureToBuffer(
+    const Rc<Texture> &Src, uint32_t Level, uint32_t Slice, const D3DBOX &Box, const Rc<StagingResource> &Dst,
+    const D3D9_FORMAT_LAYOUT &Layout
+) {
+  Dst->useCopyDestination(queue().CurrentSeqId());
+  uint64_t offset = BoxOffset(Box, Layout, Dst->bytesPerRow);
+  EmitBlit([=](ArgumentEncodingContext &enc) {
+    auto src = enc.access(Src, Level, Slice, ResourceAccess::Read);
+    auto [dst, dst_offset] = enc.access(Dst->buffer(), 0, Dst->length, ResourceAccess::Write);
+    auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+    cmd.type = WMTBlitCommandCopyFromTextureToBuffer;
+    cmd.src = src;
+    cmd.slice = Slice;
+    cmd.level = Level;
+    cmd.origin = {Box.Left, Box.Top, Box.Front};
+    cmd.size = {Box.Right - Box.Left, Box.Bottom - Box.Top, Box.Back - Box.Front};
+    cmd.dst = dst->buffer();
+    cmd.offset = dst_offset + offset;
+    cmd.bytes_per_row = Dst->bytesPerRow;
+    cmd.bytes_per_image = Dst->bytesPerImage;
+  });
+}
+
+void
+MTLD3D9Device::CopyBufferToTexture(
+    const Rc<StagingResource> &Src, const D3D9_FORMAT_LAYOUT &Layout, const Rc<Texture> &Dst, uint32_t Level,
+    uint32_t Slice, const D3DBOX &Box, uint32_t DstX, uint32_t DstY
+) {
+  Src->useCopySource(queue().CurrentSeqId());
+  uint64_t offset = BoxOffset(Box, Layout, Src->bytesPerRow);
+  uint32_t x = DstX == ~0u ? Box.Left : DstX;
+  uint32_t y = DstY == ~0u ? Box.Top : DstY;
+  EmitBlit([=](ArgumentEncodingContext &enc) {
+    auto [src, src_offset] = enc.access(Src->buffer(), 0, Src->length, ResourceAccess::Read);
+    auto dst = enc.access(Dst, Level, Slice, ResourceAccess::Write);
+    auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_texture>();
+    cmd.type = WMTBlitCommandCopyFromBufferToTexture;
+    cmd.src = src->buffer();
+    cmd.src_offset = src_offset + offset;
+    cmd.bytes_per_row = Src->bytesPerRow;
+    cmd.bytes_per_image = Src->bytesPerImage;
+    cmd.size = {Box.Right - Box.Left, Box.Bottom - Box.Top, Box.Back - Box.Front};
+    cmd.dst = dst;
+    cmd.slice = Slice;
+    cmd.level = Level;
+    cmd.origin = {x, y, Box.Front};
+  });
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -284,16 +371,20 @@ MTLD3D9Device::GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP *pRamp) {
 }
 
 static HRESULT
-CreateStandaloneSurface(MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, IDirect3DSurface9 **ppSurface) {
+CreateStandaloneSurface(
+    MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, bool Lockable, IDirect3DSurface9 **ppSurface
+) {
   InitReturnPtr(ppSurface);
   if (!ppSurface || !Desc.Width || !Desc.Height)
     return D3DERR_INVALIDCALL;
 
   Rc<Texture> texture;
-  HRESULT hr = CreateD3D9SurfaceTexture(pDevice, Desc, texture);
-  if (FAILED(hr))
-    return hr;
-  *ppSurface = ref(new MTLD3D9Surface(pDevice, Desc, std::move(texture)));
+  if (Desc.Pool != D3DPOOL_SYSTEMMEM && Desc.Pool != D3DPOOL_SCRATCH) {
+    HRESULT hr = CreateD3D9SurfaceTexture(pDevice, Desc, texture);
+    if (FAILED(hr))
+      return hr;
+  }
+  *ppSurface = ref(new MTLD3D9Surface(pDevice, Desc, std::move(texture), nullptr, Lockable));
   return D3D_OK;
 }
 
@@ -331,7 +422,7 @@ MTLD3D9Device::CreateRenderTargetEx(
   desc.MultiSampleQuality = MultisampleQuality;
   desc.Width = Width;
   desc.Height = Height;
-  return CreateStandaloneSurface(this, desc, ppSurface);
+  return CreateStandaloneSurface(this, desc, Lockable, ppSurface);
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -368,7 +459,188 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
   desc.MultiSampleQuality = MultisampleQuality;
   desc.Width = Width;
   desc.Height = Height;
-  return CreateStandaloneSurface(this, desc, ppSurface);
+  return CreateStandaloneSurface(this, desc, format.Flags & D3D9_FORMAT_LOCKABLE, ppSurface);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateOffscreenPlainSurface(
+    UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
+) {
+  return CreateOffscreenPlainSurfaceEx(Width, Height, Format, Pool, ppSurface, pSharedHandle, 0);
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
+    UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle,
+    DWORD Usage
+) {
+  auto lock = Lock();
+  if (pSharedHandle) {
+    ERR("IDirect3DDevice9::CreateOffscreenPlainSurface: shared surfaces are not implemented");
+    return D3DERR_INVALIDCALL;
+  }
+  if (Pool == D3DPOOL_MANAGED)
+    return D3DERR_INVALIDCALL;
+
+  D3D9_FORMAT_DESC format;
+  if (!D3D9QueryFormat(Format, format) || (format.Flags & (D3D9_FORMAT_DEPTH | D3D9_FORMAT_NULL_RT)))
+    return D3DERR_INVALIDCALL;
+
+  D3DSURFACE_DESC desc = {};
+  desc.Format = Format;
+  desc.Type = D3DRTYPE_SURFACE;
+  desc.Usage = Usage & D3DUSAGE_RESTRICTED_CONTENT;
+  desc.Pool = Pool;
+  desc.MultiSampleType = D3DMULTISAMPLE_NONE;
+  desc.Width = Width;
+  desc.Height = Height;
+  return CreateStandaloneSurface(this, desc, true, ppSurface);
+}
+
+static D3DBOX
+RectToBox(const RECT *pRect, const D3DSURFACE_DESC &Desc) {
+  if (!pRect)
+    return {0, 0, Desc.Width, Desc.Height, 0, 1};
+  return {(UINT)pRect->left, (UINT)pRect->top, (UINT)pRect->right, (UINT)pRect->bottom, 0, 1};
+}
+
+static bool
+BoxInside(const D3DBOX &Box, const D3DSURFACE_DESC &Desc) {
+  return Box.Left < Box.Right && Box.Top < Box.Bottom && Box.Right <= Desc.Width && Box.Bottom <= Desc.Height;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSurface9 *pDestSurface) {
+  auto lock = Lock();
+  auto src = static_cast<MTLD3D9Surface *>(pRenderTarget);
+  auto dst = static_cast<MTLD3D9Surface *>(pDestSurface);
+  if (!src || !dst || src == dst)
+    return D3DERR_INVALIDCALL;
+
+  auto &sd = src->Desc();
+  auto &dd = dst->Desc();
+  if (sd.Pool != D3DPOOL_DEFAULT || dd.Pool != D3DPOOL_SYSTEMMEM || !src->texture() || dst->IsLocked())
+    return D3DERR_INVALIDCALL;
+  if (sd.Width != dd.Width || sd.Height != dd.Height || sd.Format != dd.Format)
+    return D3DERR_INVALIDCALL;
+  if (sd.MultiSampleType != D3DMULTISAMPLE_NONE) {
+    ERR_ONCE("IDirect3DDevice9::GetRenderTargetData: multisampled source is not implemented");
+    return D3DERR_INVALIDCALL;
+  }
+
+  CopyTextureToBuffer(
+      src->texture(), src->level(), src->slice(), RectToBox(nullptr, sd), dst->EnsureShadow(), dst->layout()
+  );
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::UpdateSurface(
+    IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestinationSurface,
+    const POINT *pDestPoint
+) {
+  auto lock = Lock();
+  auto src = static_cast<MTLD3D9Surface *>(pSourceSurface);
+  auto dst = static_cast<MTLD3D9Surface *>(pDestinationSurface);
+  if (!src || !dst)
+    return D3DERR_INVALIDCALL;
+
+  auto &sd = src->Desc();
+  auto &dd = dst->Desc();
+  if (sd.Pool != D3DPOOL_SYSTEMMEM || dd.Pool != D3DPOOL_DEFAULT || !dst->texture() || src->IsLocked())
+    return D3DERR_INVALIDCALL;
+  if (sd.Format != dd.Format || dd.MultiSampleType != D3DMULTISAMPLE_NONE)
+    return D3DERR_INVALIDCALL;
+
+  D3DBOX box = RectToBox(pSourceRect, sd);
+  if (!BoxInside(box, sd))
+    return D3DERR_INVALIDCALL;
+  uint32_t x = pDestPoint ? pDestPoint->x : box.Left;
+  uint32_t y = pDestPoint ? pDestPoint->y : box.Top;
+  if (x + (box.Right - box.Left) > dd.Width || y + (box.Bottom - box.Top) > dd.Height)
+    return D3DERR_INVALIDCALL;
+  uint32_t mask = src->layout().BlockSize - 1;
+  if ((box.Left | box.Top | x | y) & mask)
+    return D3DERR_INVALIDCALL;
+
+  CopyBufferToTexture(src->EnsureShadow(), src->layout(), dst->texture(), dst->level(), dst->slice(), box, x, y);
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLOR Color) {
+  auto lock = Lock();
+  auto surface = static_cast<MTLD3D9Surface *>(pSurface);
+  if (!surface || surface->Desc().Pool != D3DPOOL_DEFAULT || !surface->texture() || surface->IsDepthStencil())
+    return D3DERR_INVALIDCALL;
+  if (!(surface->texture()->usage() & WMTTextureUsageRenderTarget)) {
+    ERR_ONCE("IDirect3DDevice9::ColorFill: non-renderable format ", surface->Desc().Format);
+    return D3DERR_INVALIDCALL;
+  }
+
+  D3DBOX box = RectToBox(pRect, surface->Desc());
+  if (!BoxInside(box, surface->Desc()))
+    return D3DERR_INVALIDCALL;
+  RECT rect = {(LONG)box.Left, (LONG)box.Top, (LONG)box.Right, (LONG)box.Bottom};
+  ClearSurface(surface, rect, D3DCLEAR_TARGET, Color, 0.0f, 0);
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::StretchRect(
+    IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestSurface,
+    const RECT *pDestRect, D3DTEXTUREFILTERTYPE Filter
+) {
+  auto lock = Lock();
+  auto src = static_cast<MTLD3D9Surface *>(pSourceSurface);
+  auto dst = static_cast<MTLD3D9Surface *>(pDestSurface);
+  if (!src || !dst || src == dst || !src->texture() || !dst->texture())
+    return D3DERR_INVALIDCALL;
+
+  auto &sd = src->Desc();
+  auto &dd = dst->Desc();
+  if (sd.Pool != D3DPOOL_DEFAULT || dd.Pool != D3DPOOL_DEFAULT)
+    return D3DERR_INVALIDCALL;
+
+  D3DBOX sbox = RectToBox(pSourceRect, sd);
+  D3DBOX dbox = RectToBox(pDestRect, dd);
+  if (!BoxInside(sbox, sd) || !BoxInside(dbox, dd))
+    return D3DERR_INVALIDCALL;
+
+  bool same_size = sbox.Right - sbox.Left == dbox.Right - dbox.Left && sbox.Bottom - sbox.Top == dbox.Bottom - dbox.Top;
+  bool same_format = ORIGINAL_FORMAT(src->texture()->pixelFormat()) == ORIGINAL_FORMAT(dst->texture()->pixelFormat());
+  bool src_ms = sd.MultiSampleType != D3DMULTISAMPLE_NONE;
+  bool dst_ms = dd.MultiSampleType != D3DMULTISAMPLE_NONE;
+
+  if (src_ms && !dst_ms && same_format && same_size && !pSourceRect && !pDestRect && sd.Width == dd.Width &&
+      sd.Height == dd.Height) {
+    Emit([src = src->texture(), src_view = src->viewKey(), dst = dst->texture(),
+          dst_view = dst->viewKey()](ArgumentEncodingContext &enc) mutable {
+      enc.resolveTexture(std::move(src), src_view, std::move(dst), dst_view);
+    });
+    return D3D_OK;
+  }
+
+  if (same_size && same_format && src_ms == dst_ms) {
+    EmitBlit([src = src->texture(), src_level = src->level(), src_slice = src->slice(), dst = dst->texture(),
+              dst_level = dst->level(), dst_slice = dst->slice(), sbox, dbox](ArgumentEncodingContext &enc) {
+      auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_texture>();
+      cmd.type = WMTBlitCommandCopyFromTextureToTexture;
+      cmd.src = enc.access(src, src_level, src_slice, ResourceAccess::Read);
+      cmd.src_slice = src_slice;
+      cmd.src_level = src_level;
+      cmd.src_origin = {sbox.Left, sbox.Top, 0};
+      cmd.src_size = {sbox.Right - sbox.Left, sbox.Bottom - sbox.Top, 1};
+      cmd.dst = enc.access(dst, dst_level, dst_slice, ResourceAccess::Write);
+      cmd.dst_slice = dst_slice;
+      cmd.dst_level = dst_level;
+      cmd.dst_origin = {dbox.Left, dbox.Top, 0};
+    });
+    return D3D_OK;
+  }
+
+  ERR_ONCE("IDirect3DDevice9::StretchRect: scaling and format conversion are not implemented");
+  return D3D_OK;
 }
 
 HRESULT STDMETHODCALLTYPE

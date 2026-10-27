@@ -21,17 +21,43 @@
 #include "d3d9_format.hpp"
 #include "log/log.hpp"
 #include "util_string.hpp"
+#include <algorithm>
 
 namespace dxmt {
 
 MTLD3D9Surface::MTLD3D9Surface(
-    MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, Rc<Texture> &&pTexture, IUnknown *pContainer
+    MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, Rc<Texture> &&pTexture, IUnknown *pContainer,
+    bool Lockable, uint32_t Level, uint32_t Slice
 ) :
     MTLD3D9Resource(pDevice),
+    parent_(pDevice),
     desc_(Desc),
     texture_(std::move(pTexture)),
-    container_(pContainer) {
-  view_ = texture_->fullView;
+    container_(pContainer),
+    lockable_(Lockable || Desc.Pool != D3DPOOL_DEFAULT),
+    level_(Level),
+    slice_(Slice) {
+  D3D9GetFormatLayout(pDevice->GetMTLDevice(), Desc.Format, layout_);
+
+  if (texture_) {
+    bool whole = texture_->miplevelCount() == 1 && texture_->arrayLength() == 1 &&
+                 (texture_->textureType() == WMTTextureType2D || texture_->textureType() == WMTTextureType2DMultisample);
+    if (whole) {
+      view_ = texture_->fullView;
+    } else {
+      view_ = texture_->createView({
+          .format = texture_->pixelFormat(),
+          .type = WMTTextureType2D,
+          .firstMiplevel = Level,
+          .miplevelCount = 1,
+          .firstArraySlice = Slice,
+          .arraySize = 1,
+      });
+    }
+  }
+
+  if (Desc.Pool == D3DPOOL_SYSTEMMEM || Desc.Pool == D3DPOOL_SCRATCH)
+    EnsureShadow();
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -86,15 +112,75 @@ MTLD3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
   return D3D_OK;
 }
 
+Rc<StagingResource>
+MTLD3D9Surface::EnsureShadow() {
+  if (!shadow_ && layout_.BlockBytes) {
+    uint32_t pitch = layout_.Pitch(desc_.Width);
+    uint32_t image = pitch * layout_.Rows(desc_.Height);
+    shadow_ = new StagingResource(parent_->GetMTLDevice(), image, pitch, image);
+  }
+  return shadow_;
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
-  ERR_ONCE("IDirect3DSurface9::LockRect: not implemented");
-  return D3DERR_INVALIDCALL;
+  if (!pLockedRect)
+    return D3DERR_INVALIDCALL;
+  pLockedRect->pBits = nullptr;
+  pLockedRect->Pitch = 0;
+
+  if (!lockable_ || locked_ || !layout_.BlockBytes)
+    return D3DERR_INVALIDCALL;
+
+  RECT rect = {0, 0, (LONG)desc_.Width, (LONG)desc_.Height};
+  if (pRect) {
+    if (pRect->left < 0 || pRect->top < 0 || pRect->right > rect.right || pRect->bottom > rect.bottom ||
+        pRect->left >= pRect->right || pRect->top >= pRect->bottom)
+      return D3DERR_INVALIDCALL;
+    uint32_t mask = layout_.BlockSize - 1;
+    if ((pRect->left & mask) || (pRect->top & mask))
+      return D3DERR_INVALIDCALL;
+    rect = *pRect;
+  }
+
+  auto shadow = EnsureShadow();
+  bool read_back = texture_ && desc_.Pool == D3DPOOL_DEFAULT && !(Flags & D3DLOCK_DISCARD);
+  if (read_back)
+    parent_->CopyTextureToBuffer(texture_, level_, slice_, {0, 0, desc_.Width, desc_.Height, 0, 1}, shadow, layout_);
+
+  void *data = nullptr;
+  HRESULT hr = parent_->MapStaging(
+      shadow, !(Flags & D3DLOCK_DISCARD), !(Flags & D3DLOCK_READONLY), Flags & D3DLOCK_DONOTWAIT, &data
+  );
+  if (FAILED(hr))
+    return hr;
+
+  uint32_t pitch = shadow->bytesPerRow;
+  pLockedRect->Pitch = pitch;
+  pLockedRect->pBits = (char *)data + (rect.top / layout_.BlockSize) * pitch +
+                       (rect.left / layout_.BlockSize) * layout_.BlockBytes;
+  locked_ = true;
+  lock_flags_ = Flags;
+  lock_rect_ = rect;
+  return D3D_OK;
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::UnlockRect() {
-  return D3DERR_INVALIDCALL;
+  if (!locked_)
+    return D3DERR_INVALIDCALL;
+  locked_ = false;
+  shadow_->unmap();
+
+  if (texture_ && !(lock_flags_ & D3DLOCK_READONLY)) {
+    uint32_t mask = layout_.BlockSize - 1;
+    D3DBOX box = {
+        (UINT)lock_rect_.left, (UINT)lock_rect_.top, std::min((UINT)(lock_rect_.right + mask) & ~mask, desc_.Width),
+        std::min((UINT)(lock_rect_.bottom + mask) & ~mask, desc_.Height), 0, 1
+    };
+    parent_->CopyBufferToTexture(shadow_, layout_, texture_, level_, slice_, box);
+  }
+  return D3D_OK;
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -106,6 +192,14 @@ MTLD3D9Surface::GetDC(HDC *phdc) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::ReleaseDC(HDC hdc) {
   return D3DERR_INVALIDCALL;
+}
+
+static bool
+D3D9IsRenderableColor(MTLD3D9Device *pDevice, D3DFORMAT Format) {
+  D3D9_FORMAT_DESC desc;
+  if (!D3D9QueryFormat(Format, desc) || (desc.Flags & (D3D9_FORMAT_DEPTH | D3D9_FORMAT_BC)))
+    return false;
+  return int(pDevice->GetAdapter()->GetFormatCapability(Format)) & int(FormatCapability::Color);
 }
 
 HRESULT
@@ -132,9 +226,9 @@ CreateD3D9SurfaceTexture(MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, Rc
   info.mipmap_level_count = 1;
   info.sample_count = samples;
   info.usage = WMTTextureUsageShaderRead;
-  if (Desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL))
+  if (Desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL) || D3D9IsRenderableColor(pDevice, Desc.Format))
     info.usage = (WMTTextureUsage)(info.usage | WMTTextureUsageRenderTarget);
-  if (Desc.Usage & D3DUSAGE_RENDERTARGET)
+  if (!(Desc.Usage & D3DUSAGE_DEPTHSTENCIL))
     info.usage = (WMTTextureUsage)(info.usage | WMTTextureUsagePixelFormatView);
 
   OutTexture = new Texture(info, pDevice->GetMTLDevice());

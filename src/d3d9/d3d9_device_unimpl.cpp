@@ -58,44 +58,14 @@ MTLD3D9Device::CreateIndexBuffer(UINT size, DWORD usage, D3DFORMAT format, D3DPO
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::UpdateSurface(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const POINT *dst_point) {
-  ERR_ONCE("MTLD3D9Device::UpdateSurface: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *src_texture, IDirect3DBaseTexture9 *dst_texture) {
   ERR_ONCE("MTLD3D9Device::UpdateTexture: not implemented");
   return D3DERR_INVALIDCALL;
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *render_target, IDirect3DSurface9 *dst_surface) {
-  ERR_ONCE("MTLD3D9Device::GetRenderTargetData: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetFrontBufferData(UINT swapchain_idx, IDirect3DSurface9 *dst_surface) {
   ERR_ONCE("MTLD3D9Device::GetFrontBufferData: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::StretchRect(IDirect3DSurface9 *src_surface, const RECT *src_rect, IDirect3DSurface9 *dst_surface, const RECT *dst_rect, D3DTEXTUREFILTERTYPE filter) {
-  ERR_ONCE("MTLD3D9Device::StretchRect: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::ColorFill(IDirect3DSurface9 *surface, const RECT *rect, D3DCOLOR colour) {
-  ERR_ONCE("MTLD3D9Device::ColorFill: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::CreateOffscreenPlainSurface(UINT width, UINT height, D3DFORMAT format, D3DPOOL pool, IDirect3DSurface9 **surface, HANDLE *shared_handle) {
-  ERR_ONCE("MTLD3D9Device::CreateOffscreenPlainSurface: not implemented");
   return D3DERR_INVALIDCALL;
 }
 
@@ -510,12 +480,6 @@ MTLD3D9Device::SetConvolutionMonoKernel(UINT width, UINT height, float *rows, fl
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ComposeRects(IDirect3DSurface9 *src_surface, IDirect3DSurface9 *dst_surface, IDirect3DVertexBuffer9 *src_descs, UINT rect_count, IDirect3DVertexBuffer9 *dst_descs, D3DCOMPOSERECTSOP operation, INT offset_x, INT offset_y) {
   ERR_ONCE("MTLD3D9Device::ComposeRects: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::CreateOffscreenPlainSurfaceEx(UINT width, UINT Height, D3DFORMAT format, D3DPOOL pool, IDirect3DSurface9 **surface, HANDLE *shared_handle, DWORD usage) {
-  ERR_ONCE("MTLD3D9Device::CreateOffscreenPlainSurfaceEx: not implemented");
   return D3DERR_INVALIDCALL;
 }
 
