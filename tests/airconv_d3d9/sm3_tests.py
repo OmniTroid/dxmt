@@ -54,14 +54,10 @@ TESTS = [
 LOOP_BODY = 'float4 s = 0; [loop] for (int k = 0; k < 4; k++) s += c[k]; return s;'
 HEADER = 'float4 c[32] : register(c0);\nbool b[4] : register(b0);\nsampler2D s0 : register(s0);\n'
 
-def compile(path, entry, target, out):
-    r = subprocess.run([WINE, HLSLC, path, entry, target, out], env=ENV, capture_output=True, text=True)
-    return r.returncode == 0, (r.stdout + r.stderr).strip()
-
 def body(expr):
     return LOOP_BODY if expr == 'L' else f'return {expr};'
 
-def build(name, stage, model, expr):
+def source(name, stage, model, expr):
     src = f'{WORK}/{name}_{stage}{model}.hlsl'
     with open(src, 'w') as f:
         f.write(HEADER)
@@ -74,11 +70,14 @@ def build(name, stage, model, expr):
             f.write(f'float4 calc(float4 t) {{ {body(expr)} }}\n')
             f.write('VSOut vs_main(float4 pos : POSITION) { VSOut o; o.pos = pos; o.t = calc(float4(0.25, 0.5, 0.75, 1.0)); return o; }\n')
             f.write('float4 ps_main(float4 t : TEXCOORD0) : COLOR0 { return t; }\n')
+    return src
+
+def build(name, stage, model):
     out = {}
-    for kind, entry in (('vs', 'vs_main'), ('ps', 'ps_main')):
+    for kind in ('vs', 'ps'):
         base = f'{WORK}/{name}_{stage}{model}_{kind}'
-        ok, msg = (True, '') if os.path.exists(base + '.bin') else compile(src, entry, f'{kind}_{model}', base + '.bin')
-        if not ok:
+        if not os.path.exists(base + '.bin'):
+            msg = open(base + '.bin.err').read().strip() if os.path.exists(base + '.bin.err') else ''
             return None, f'hlsl: {msg.splitlines()[0] if msg else "?"}'
         r = subprocess.run([AIRCONV, base + '.bin', '-A', '-o', base + '.metallib', '--reflection', base + '.refl'],
                            capture_output=True, text=True)
@@ -87,6 +86,27 @@ def build(name, stage, model, expr):
         out[kind] = base
     return out, None
 
+def variants():
+    for name, expr, expected in TESTS:
+        for stage in ('ps', 'vs'):
+            if stage == 'vs' and name == 'tex2d':
+                continue
+            for model in ('2_0', '3_0'):
+                yield name, expr, expected, stage, model
+
+# Starting Wine costs seconds, so every missing shader compiles in one batch.
+jobs = []
+for name, expr, expected, stage, model in variants():
+    src = source(name, stage, model, expr)
+    for kind, entry in (('vs', 'vs_main'), ('ps', 'ps_main')):
+        base = f'{WORK}/{name}_{stage}{model}_{kind}'
+        if not os.path.exists(base + '.bin'):
+            jobs.append(f'{src}\t{entry}\t{kind}_{model}\t{base}.bin\n')
+if jobs:
+    with open(f'{WORK}/jobs.txt', 'w') as f:
+        f.writelines(jobs)
+    subprocess.run([WINE, HLSLC, '-b', f'{WORK}/jobs.txt'], env=ENV, capture_output=True)
+
 passed = failed = skipped = 0
 for name, expr, expected in TESTS:
     for stage in ('ps', 'vs'):
@@ -94,7 +114,7 @@ for name, expr, expected in TESTS:
             continue
         for model in ('2_0', '3_0'):
             label = f'{name} {stage}_{model}'
-            files, err = build(name, stage, model, expr)
+            files, err = build(name, stage, model)
             if err and err.startswith('hlsl'):
                 skipped += 1
                 print(f'SKIP {label}: {err}')
