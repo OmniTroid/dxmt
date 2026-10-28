@@ -34,24 +34,6 @@ MTLD3D9Device::GetFrontBufferData(UINT swapchain_idx, IDirect3DSurface9 *dst_sur
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9 **stateblock) {
-  ERR_ONCE("MTLD3D9Device::CreateStateBlock: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::BeginStateBlock() {
-  ERR_ONCE("MTLD3D9Device::BeginStateBlock: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::EndStateBlock(IDirect3DStateBlock9 **stateblock) {
-  ERR_ONCE("MTLD3D9Device::EndStateBlock: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetClipStatus(const D3DCLIPSTATUS9 *clip_status) {
   ERR_ONCE("MTLD3D9Device::SetClipStatus: not implemented");
   return D3D_OK;

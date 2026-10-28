@@ -18,6 +18,7 @@
 
 #include "d3d9_device.hpp"
 #include "d3d9_fixed_function.hpp"
+#include "d3d9_state_block.hpp"
 #include "log/log.hpp"
 #include <cmath>
 
@@ -189,6 +190,10 @@ MTLD3D9Device::SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatri
   auto lock = Lock();
   if (!pMatrix || (UINT)State >= transforms_.size())
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetTransform(State, *pMatrix);
+    return D3D_OK;
+  }
   transforms_[State] = *pMatrix;
   return D3D_OK;
 }
@@ -207,6 +212,10 @@ MTLD3D9Device::MultiplyTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *p
   auto lock = Lock();
   if (!pMatrix || (UINT)State >= transforms_.size())
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetTransform(State, Multiply(*pMatrix, transforms_[State]));
+    return D3D_OK;
+  }
   transforms_[State] = Multiply(*pMatrix, transforms_[State]);
   return D3D_OK;
 }
@@ -216,6 +225,10 @@ MTLD3D9Device::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, 
   auto lock = Lock();
   if (Stage >= texture_stage_states_.size() || Type > D3DTSS_CONSTANT)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetTextureStageState(Stage, Type, Value);
+    return D3D_OK;
+  }
   texture_stage_states_[Stage][Type] = Value;
   return D3D_OK;
 }
@@ -234,6 +247,10 @@ MTLD3D9Device::SetMaterial(const D3DMATERIAL9 *pMaterial) {
   auto lock = Lock();
   if (!pMaterial)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetMaterial(*pMaterial);
+    return D3D_OK;
+  }
   material_ = *pMaterial;
   return D3D_OK;
 }
@@ -263,6 +280,10 @@ MTLD3D9Device::SetLight(DWORD Index, const D3DLIGHT9 *pLight) {
   auto lock = Lock();
   if (!pLight || Index >= kMaxLightIndex)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetLight(Index, *pLight);
+    return D3D_OK;
+  }
   if (Index >= lights_.size())
     lights_.resize(Index + 1, {DefaultLight(), false});
   lights_[Index].first = *pLight;
@@ -283,6 +304,10 @@ MTLD3D9Device::LightEnable(DWORD Index, BOOL Enable) {
   auto lock = Lock();
   if (Index >= kMaxLightIndex)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->LightEnable(Index, Enable);
+    return D3D_OK;
+  }
   if (Index >= lights_.size())
     lights_.resize(Index + 1, {DefaultLight(), false});
   lights_[Index].second = Enable;
@@ -296,6 +321,36 @@ MTLD3D9Device::GetLightEnable(DWORD Index, BOOL *pEnable) {
     return D3DERR_INVALIDCALL;
   // native d3d9 reports enabled lights as 128
   *pEnable = lights_[Index].second ? 128 : 0;
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) {
+  auto lock = Lock();
+  InitReturnPtr(ppSB);
+  if (!ppSB || (Type != D3DSBT_ALL && Type != D3DSBT_PIXELSTATE && Type != D3DSBT_VERTEXSTATE) || recording_)
+    return D3DERR_INVALIDCALL;
+  *ppSB = ref(new MTLD3D9StateBlock(this, Type));
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::BeginStateBlock() {
+  auto lock = Lock();
+  if (recording_)
+    return D3DERR_INVALIDCALL;
+  recording_ = new MTLD3D9StateBlock(this);
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::EndStateBlock(IDirect3DStateBlock9 **ppSB) {
+  auto lock = Lock();
+  InitReturnPtr(ppSB);
+  if (!ppSB || !recording_)
+    return D3DERR_INVALIDCALL;
+  *ppSB = ref(recording_.ptr());
+  recording_ = nullptr;
   return D3D_OK;
 }
 

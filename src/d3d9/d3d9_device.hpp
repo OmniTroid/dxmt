@@ -22,6 +22,7 @@
 #include "d3d9_constants.hpp"
 #include "d3d9_interface.hpp"
 #include "d3d9_shader_object.hpp"
+#include "d3d9_state_block.hpp"
 #include "d3d9_vertex_declaration.hpp"
 #include "dxmt_sampler.hpp"
 #include "sha1/sha1_util.hpp"
@@ -238,6 +239,16 @@ public:
 
   void EndRenderPass();
 
+  bool
+  IsRecordingStateBlock() const {
+    return recording_ != nullptr;
+  }
+
+  DWORD
+  LightCount() const {
+    return lights_.size();
+  }
+
   std::unique_lock<std::recursive_mutex>
   Lock() {
     if (multithreaded_)
@@ -336,6 +347,7 @@ private:
   D3DMATERIAL9 material_ = {};
   std::vector<std::pair<D3DLIGHT9, bool>> lights_;
   std::unordered_map<Sha1Digest, std::unique_ptr<MTLD3D9ShaderCode>> ff_shaders_;
+  Com<MTLD3D9StateBlock, false> recording_;
   std::unique_ptr<MTLD3D9BufferStorage> ff_constants_;
   UINT ff_constants_offset_ = 0;
 

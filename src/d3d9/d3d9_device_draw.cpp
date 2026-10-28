@@ -18,6 +18,7 @@
 
 #include "d3d9_device.hpp"
 #include "d3d9_fixed_function.hpp"
+#include "d3d9_state_block.hpp"
 #include "d3d9_format.hpp"
 #include "d3d9_texture.hpp"
 #include "log/log.hpp"
@@ -641,6 +642,10 @@ MTLD3D9Device::SetClipPlane(DWORD Index, const float *pPlane) {
   auto lock = Lock();
   if (Index >= caps::MaxClipPlanes || !pPlane)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetClipPlane(Index, pPlane);
+    return D3D_OK;
+  }
   std::memcpy(clip_planes_[Index].data(), pPlane, sizeof(float) * 4);
   return D3D_OK;
 }
@@ -1095,6 +1100,10 @@ MTLD3D9Device::CreateVertexDeclaration(
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) {
   auto lock = Lock();
+  if (recording_) {
+    recording_->SetVertexDeclaration(pDecl);
+    return D3D_OK;
+  }
   vertex_declaration_ = static_cast<MTLD3D9VertexDeclaration *>(pDecl);
   fvf_ = vertex_declaration_ ? vertex_declaration_->fvf() : 0;
   return D3D_OK;
@@ -1116,6 +1125,10 @@ MTLD3D9Device::SetFVF(DWORD FVF) {
   auto lock = Lock();
   if (!FVF)
     return D3D_OK;
+  if (recording_) {
+    recording_->SetFVF(FVF);
+    return D3D_OK;
+  }
   auto &decl = fvf_declarations_[FVF];
   if (!decl)
     decl = new MTLD3D9VertexDeclaration(this, D3D9DeclarationFromFVF(FVF), FVF);
@@ -1165,6 +1178,10 @@ MTLD3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 *
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShader(IDirect3DVertexShader9 *pShader) {
   auto lock = Lock();
+  if (recording_) {
+    recording_->SetVertexShader(pShader);
+    return D3D_OK;
+  }
   vertex_shader_ = static_cast<MTLD3D9VertexShader *>(pShader);
   return D3D_OK;
 }
@@ -1183,6 +1200,10 @@ MTLD3D9Device::GetVertexShader(IDirect3DVertexShader9 **ppShader) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShader(IDirect3DPixelShader9 *pShader) {
   auto lock = Lock();
+  if (recording_) {
+    recording_->SetPixelShader(pShader);
+    return D3D_OK;
+  }
   pixel_shader_ = static_cast<MTLD3D9PixelShader *>(pShader);
   return D3D_OK;
 }
@@ -1195,6 +1216,18 @@ MTLD3D9Device::GetPixelShader(IDirect3DPixelShader9 **ppShader) {
     return D3DERR_INVALIDCALL;
   if (pixel_shader_)
     *ppShader = pixel_shader_.ref();
+  return D3D_OK;
+}
+
+template <typename T>
+static HRESULT
+RecordRegisters(
+    MTLD3D9StateBlock *Block, void (MTLD3D9StateBlock::*Record)(bool, UINT, const T *, UINT), bool Pixel, UINT Start,
+    const T *pData, UINT Count, UINT Max
+) {
+  if (!pData || Start + Count > Max)
+    return D3DERR_INVALIDCALL;
+  (Block->*Record)(Pixel, Start, pData, Count);
   return D3D_OK;
 }
 
@@ -1219,6 +1252,8 @@ GetRegisters(const std::array<T, N> &regs, UINT Start, void *pData, UINT Count, 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShaderConstantF(UINT StartRegister, const float *pConstantData, UINT Vector4fCount) {
   auto lock = Lock();
+  if (recording_)
+    return RecordRegisters(recording_.ptr(), &MTLD3D9StateBlock::SetConstantF, false, StartRegister, pConstantData, Vector4fCount, caps::MaxFloatConstantsVS);
   const_dirty_[0] |= 1;
   return SetRegisters(const_float_[0], StartRegister, pConstantData, Vector4fCount, 4, caps::MaxFloatConstantsVS);
 }
@@ -1231,6 +1266,8 @@ MTLD3D9Device::GetVertexShaderConstantF(UINT StartRegister, float *pConstantData
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShaderConstantI(UINT StartRegister, const int *pConstantData, UINT Vector4iCount) {
   auto lock = Lock();
+  if (recording_)
+    return RecordRegisters(recording_.ptr(), &MTLD3D9StateBlock::SetConstantI, false, StartRegister, pConstantData, Vector4iCount, caps::MaxOtherConstants);
   const_dirty_[0] |= 2;
   return SetRegisters(const_int_[0], StartRegister, pConstantData, Vector4iCount, 4, caps::MaxOtherConstants);
 }
@@ -1261,6 +1298,8 @@ GetBools(const std::array<uint32_t, 16> &regs, UINT Start, BOOL *pData, UINT Cou
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShaderConstantB(UINT StartRegister, const BOOL *pConstantData, UINT BoolCount) {
   auto lock = Lock();
+  if (recording_)
+    return RecordRegisters(recording_.ptr(), &MTLD3D9StateBlock::SetConstantB, false, StartRegister, pConstantData, BoolCount, caps::MaxOtherConstants);
   const_dirty_[0] |= 4;
   return SetBools(const_bool_[0], StartRegister, pConstantData, BoolCount);
 }
@@ -1273,6 +1312,8 @@ MTLD3D9Device::GetVertexShaderConstantB(UINT StartRegister, BOOL *pConstantData,
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShaderConstantF(UINT StartRegister, const float *pConstantData, UINT Vector4fCount) {
   auto lock = Lock();
+  if (recording_)
+    return RecordRegisters(recording_.ptr(), &MTLD3D9StateBlock::SetConstantF, true, StartRegister, pConstantData, Vector4fCount, caps::MaxFloatConstantsPS);
   const_dirty_[1] |= 1;
   return SetRegisters(const_float_[1], StartRegister, pConstantData, Vector4fCount, 4, caps::MaxFloatConstantsPS);
 }
@@ -1285,6 +1326,8 @@ MTLD3D9Device::GetPixelShaderConstantF(UINT StartRegister, float *pConstantData,
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShaderConstantI(UINT StartRegister, const int *pConstantData, UINT Vector4iCount) {
   auto lock = Lock();
+  if (recording_)
+    return RecordRegisters(recording_.ptr(), &MTLD3D9StateBlock::SetConstantI, true, StartRegister, pConstantData, Vector4iCount, caps::MaxOtherConstants);
   const_dirty_[1] |= 2;
   return SetRegisters(const_int_[1], StartRegister, pConstantData, Vector4iCount, 4, caps::MaxOtherConstants);
 }
@@ -1297,6 +1340,8 @@ MTLD3D9Device::GetPixelShaderConstantI(UINT StartRegister, int *pConstantData, U
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShaderConstantB(UINT StartRegister, const BOOL *pConstantData, UINT BoolCount) {
   auto lock = Lock();
+  if (recording_)
+    return RecordRegisters(recording_.ptr(), &MTLD3D9StateBlock::SetConstantB, true, StartRegister, pConstantData, BoolCount, caps::MaxOtherConstants);
   const_dirty_[1] |= 4;
   return SetBools(const_bool_[1], StartRegister, pConstantData, BoolCount);
 }
@@ -1311,6 +1356,10 @@ MTLD3D9Device::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9 *pStrea
   auto lock = Lock();
   if (StreamNumber >= caps::MaxStreams)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetStreamSource(StreamNumber, pStreamData, OffsetInBytes, Stride);
+    return D3D_OK;
+  }
   auto &stream = streams_[StreamNumber];
   stream.buffer = static_cast<MTLD3D9VertexBuffer *>(pStreamData);
   stream.offset = OffsetInBytes;
@@ -1342,6 +1391,10 @@ MTLD3D9Device::SetStreamSourceFreq(UINT StreamNumber, UINT Setting) {
   bool indexed = Setting & D3DSTREAMSOURCE_INDEXEDDATA, instanced = Setting & D3DSTREAMSOURCE_INSTANCEDATA;
   if ((indexed && instanced) || (StreamNumber == 0 && instanced))
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetStreamSourceFreq(StreamNumber, Setting);
+    return D3D_OK;
+  }
   streams_[StreamNumber].frequency = Setting;
   return D3D_OK;
 }
@@ -1357,6 +1410,10 @@ MTLD3D9Device::GetStreamSourceFreq(UINT StreamNumber, UINT *pSetting) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
   auto lock = Lock();
+  if (recording_) {
+    recording_->SetIndices(pIndexData);
+    return D3D_OK;
+  }
   index_buffer_ = static_cast<MTLD3D9IndexBuffer *>(pIndexData);
   return D3D_OK;
 }
@@ -1387,6 +1444,10 @@ MTLD3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) {
   int index = SamplerIndex(Stage);
   if (index < 0)
     return Stage == D3DDMAPSAMPLER ? D3D_OK : D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetTexture(index, pTexture);
+    return D3D_OK;
+  }
   auto &binding = textures_[index];
   if (binding.texture == pTexture)
     return D3D_OK;
@@ -1417,6 +1478,10 @@ MTLD3D9Device::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Va
   int index = SamplerIndex(Sampler);
   if (index < 0 || Type < D3DSAMP_ADDRESSU || Type > D3DSAMP_DMAPOFFSET)
     return index < 0 && Sampler == D3DDMAPSAMPLER ? D3D_OK : D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetSamplerState(index, Type, Value);
+    return D3D_OK;
+  }
   sampler_states_[index][Type] = Value;
   return D3D_OK;
 }

@@ -135,6 +135,7 @@ MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams) {
   SetDefaultViewport(render_targets_[0].ptr());
   D3D9InitRenderStates(render_states_, pParams->EnableAutoDepthStencil);
   D3D9InitTextureStageStates(texture_stage_states_);
+  recording_ = nullptr;
   for (auto &m : transforms_)
     m = {{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
   material_ = {};
@@ -1007,6 +1008,10 @@ MTLD3D9Device::SetViewport(const D3DVIEWPORT9 *pViewport) {
   auto lock = Lock();
   if (!pViewport)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetViewport(*pViewport);
+    return D3D_OK;
+  }
   viewport_ = *pViewport;
   return D3D_OK;
 }
@@ -1025,6 +1030,10 @@ MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
   auto lock = Lock();
   if ((uint32_t)State >= render_states_.size())
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetRenderState(State, Value);
+    return D3D_OK;
+  }
   if (State == D3DRS_SRGBWRITEENABLE && render_states_[State] != Value)
     EndRenderPass();
   render_states_[State] = Value;
@@ -1049,6 +1058,10 @@ MTLD3D9Device::SetScissorRect(const RECT *pRect) {
   auto lock = Lock();
   if (!pRect)
     return D3DERR_INVALIDCALL;
+  if (recording_) {
+    recording_->SetScissorRect(*pRect);
+    return D3D_OK;
+  }
   scissor_rect_ = *pRect;
   return D3D_OK;
 }
