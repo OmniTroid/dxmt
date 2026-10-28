@@ -348,6 +348,7 @@ private:
   std::vector<std::pair<D3DLIGHT9, bool>> lights_;
   std::unordered_map<Sha1Digest, std::unique_ptr<MTLD3D9ShaderCode>> ff_shaders_;
   Com<MTLD3D9StateBlock, false> recording_;
+  Rc<Texture> resolve_temp_;
   std::unique_ptr<MTLD3D9BufferStorage> ff_constants_;
   UINT ff_constants_offset_ = 0;
 

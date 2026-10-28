@@ -52,6 +52,7 @@ template <typename Context> struct SimpleCommandContext {
   void setScissorRect(WMTScissorRect rect);
   void setStencilReference(uint8_t stencil_ref);
   void *setFragmentBytes(uint32_t index, uint32_t length);
+  void setFragmentTexture(uint32_t index, const Rc<Texture> &texture, uint64_t viewId);
   void draw(
       WMTPrimitiveType primitive, uint32_t vertex_start, uint32_t vertex_count, int32_t base_instance,
       uint32_t instance_count

@@ -34,6 +34,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
     lib(lib),
     emulated_cmd(device, lib, *this),
     clear_rt_cmd(device, *this),
+    blit_color_cmd(device, *this),
     blit_depth_stencil_cmd(device, lib, *this),
     clear_uav_cmd(device, *this),
     mv_scale_cmd(device, lib, *this),
@@ -1794,6 +1795,18 @@ SimpleCommandContext<ArgumentEncodingContext>::setFragmentBytes(uint32_t index, 
   setmeta.length = length;
   setmeta.index = index;
   return temp;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setFragmentTexture(
+    uint32_t index, const Rc<Texture> &texture, uint64_t viewId
+) {
+  auto &src = ctx.access<PipelineStage::Pixel>(texture, viewId, ResourceAccess::Read);
+  auto &settex = ctx.encodeRenderCommand<wmtcmd_render_settexture>();
+  settex.type = WMTRenderCommandSetFragmentTexture;
+  settex.texture = src.texture;
+  settex.index = index;
 }
 
 template <>

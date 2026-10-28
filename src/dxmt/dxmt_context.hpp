@@ -21,6 +21,7 @@
 #include "Metal.hpp"
 #include "dxmt_buffer.hpp"
 #include "dxmt_command.hpp"
+#include "dxmt_command_blit.hpp"
 #include "dxmt_command_clear.hpp"
 #include "dxmt_counter.hpp"
 #include "dxmt_deptrack.hpp"
@@ -840,6 +841,7 @@ public:
   InternalCommandLibrary &lib;
   EmulatedCommandContext emulated_cmd;
   ClearRTV<ArgumentEncodingContext> clear_rt_cmd;
+  BlitColor<ArgumentEncodingContext> blit_color_cmd;
   DepthStencilBlitContext blit_depth_stencil_cmd;
   ClearUAV<ArgumentEncodingContext> clear_uav_cmd;
   MTLFXMVScaleContext mv_scale_cmd;

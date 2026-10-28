@@ -817,7 +817,38 @@ MTLD3D9Device::StretchRect(
     return D3D_OK;
   }
 
-  ERR_ONCE("IDirect3DDevice9::StretchRect: scaling and format conversion are not implemented");
+  if (dst_ms || (sd.Usage & D3DUSAGE_DEPTHSTENCIL) || (dd.Usage & D3DUSAGE_DEPTHSTENCIL))
+    return D3DERR_INVALIDCALL;
+  if (!(dst->texture()->usage() & WMTTextureUsageRenderTarget)) {
+    ERR_ONCE("IDirect3DDevice9::StretchRect: destination format ", dd.Format, " is not renderable");
+    return D3DERR_INVALIDCALL;
+  }
+
+  Rc<Texture> source = src->texture();
+  TextureViewKey source_view = src->viewKey();
+  EndRenderPass();
+  if (src_ms) {
+    if (!resolve_temp_ || resolve_temp_->width() != sd.Width || resolve_temp_->height() != sd.Height ||
+        resolve_temp_->pixelFormat() != source->pixelFormat()) {
+      D3D9_TEXTURE_DESC desc = {D3DRTYPE_SURFACE, sd.Width, sd.Height, 1, 1, D3DUSAGE_RENDERTARGET, sd.Format, D3DPOOL_DEFAULT};
+      if (FAILED(CreateD3D9TextureStorage(this, desc, 1, 1, resolve_temp_)))
+        return D3DERR_INVALIDCALL;
+    }
+    Emit([src = source, src_view = source_view, dst = resolve_temp_](ArgumentEncodingContext &enc) mutable {
+      auto view = dst->fullView;
+      enc.resolveTexture(std::move(src), src_view, std::move(dst), view);
+    });
+    source = resolve_temp_;
+    source_view = resolve_temp_->fullView;
+  }
+  float src_rect[4] = {(float)sbox.Left, (float)sbox.Top, (float)sbox.Right, (float)sbox.Bottom};
+  WMTScissorRect dst_rect = {dbox.Left, dbox.Top, dbox.Right - dbox.Left, dbox.Bottom - dbox.Top};
+  bool linear = Filter == D3DTEXF_LINEAR || Filter == D3DTEXF_ANISOTROPIC;
+  Emit([source = std::move(source), source_view, src_rect = std::to_array(src_rect), dst = dst->texture(),
+        dst_view = dst->viewKey(), dst_rect, linear](ArgumentEncodingContext &enc) mutable {
+    float rect[4] = {src_rect[0], src_rect[1], src_rect[2], src_rect[3]};
+    enc.blit_color_cmd.blit(source, source_view, rect, dst, dst_view, dst_rect, linear);
+  });
   return D3D_OK;
 }
 
