@@ -40,3 +40,8 @@ executable('d3d9_queries', ['d3d9_queries.cpp'],
   dependencies: [ lib_d3d9 ],
   link_args: [ '-mwindows' ],
 )
+
+executable('d3d9_state_blocks', ['d3d9_state_blocks.cpp'],
+  dependencies: [ lib_d3d9 ],
+  link_args: [ '-mwindows' ],
+)

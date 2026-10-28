@@ -38,6 +38,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - A prefix keeps its own copies of builtin DLLs in `drive_c/windows/system32`, and Wine may load either that copy or the one in `lib/wine/<arch>-windows`; both have been seen to win. After rebuilding, replace both, or rerun `run.sh` (fresh prefix). Updating only one silently tested the old DLL twice, once in each direction.
 - First prefix creation shows a Mono/Gecko install dialog and blocks forever headless. Set `WINEDLLOVERRIDES="mscoree,mshtml="`.
 - A newly added builtin DLL (like `winemetal.dll`) is only found once `wineboot -u` or a new prefix registers it.
+- A crashing test opens winedbg's crash dialog and the run hangs; `run.sh` sets `HKCU\Software\Wine\WineDbg\ShowCrashDialog=0` so the crash is printed and the run continues.
 - `wineserver -k` only stops the server for the current `WINEPREFIX`; set it explicitly so other Wine sessions are untouched.
 - Test executables need `-static` or they fail on missing `libstdc++-6.dll`/`libgcc_s_*.dll` (exit code 53).
 

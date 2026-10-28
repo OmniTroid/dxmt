@@ -23,6 +23,8 @@ cp "$root/build/src/winemetal/unix/winemetal.so" "$runtime/lib/wine/x86_64-unix/
 
 export WINEPREFIX="$work/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" DXMT_LOG_PATH="$work/logs"
 "$runtime/bin/wine" wineboot -i > /dev/null 2>&1
+# a crash dialog would block the run forever
+"$runtime/bin/wine" reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f > /dev/null 2>&1
 
 failed=0
 for build in build build32; do
