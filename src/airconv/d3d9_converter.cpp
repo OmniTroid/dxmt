@@ -163,7 +163,6 @@ struct Driver {
 
   void
   defineVertexOutputs() {
-    uint32_t defined = 0;
     auto has = [&](Usage usage, uint32_t index) {
       for (auto &out : data.outputs)
         if (out.usage == usage && out.usage_index == index)
@@ -186,7 +185,6 @@ struct Driver {
       epilogue.Add([=](llvm::Value *ret, IOHelper &io) -> llvm::Expected<llvm::Value *> {
         return io.PopulateOutput(reg, 0xF, ret, index);
       });
-      defined++;
     }
 
     // Pixel shaders before ps_3_0 read colors and texture coordinates the vertex shader may not write; Metal
