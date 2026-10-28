@@ -70,13 +70,14 @@ struct LitVertex {
   float nx, ny, nz;
 };
 
+// lighting is per vertex, so a small quad keeps every vertex close to the light axis
 static void
-lit_quad(float nx, float ny, float nz) {
+lit_quad(float nx, float ny, float nz, float half = 1) {
   LitVertex v[4] = {
-      {-1, -1, 0.5f, nx, ny, nz},
-      {-1, 1, 0.5f, nx, ny, nz},
-      {1, -1, 0.5f, nx, ny, nz},
-      {1, 1, 0.5f, nx, ny, nz},
+      {-half, -half, 0.5f, nx, ny, nz},
+      {-half, half, 0.5f, nx, ny, nz},
+      {half, -half, 0.5f, nx, ny, nz},
+      {half, half, 0.5f, nx, ny, nz},
   };
   device->SetFVF(D3DFVF_XYZ | D3DFVF_NORMAL);
   device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(LitVertex));
@@ -255,6 +256,136 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   device->GetLightEnable(0, &enabled);
   printf("%s: GetLightEnable\n", enabled ? "PASS" : "FAIL");
   failures += !enabled;
+
+  // point and spot lights at the eye, 0.5 in front of the quad
+  material = {};
+  material.Diffuse = {1, 1, 1, 1};
+  device->SetMaterial(&material);
+  device->SetRenderState(D3DRS_AMBIENT, 0);
+  light = {};
+  light.Type = D3DLIGHT_POINT;
+  light.Diffuse = {0, 1, 0, 1};
+  light.Attenuation0 = 2;
+  light.Range = 10;
+  device->SetLight(0, &light);
+  clear();
+  lit_quad(0, 0, -1, 0.05f);
+  // N.L at the corners is 0.5 / |(0.05, 0.05, 0.5)| = 0.99, times attenuation 1/2
+  expect("point light attenuation", 32, 32, 0xFF007E00);
+  light.Range = 0.4f;
+  device->SetLight(0, &light);
+  clear();
+  lit_quad(0, 0, -1, 0.05f);
+  expect("point light out of range", 32, 32, 0xFF000000);
+  light.Type = D3DLIGHT_SPOT;
+  light.Range = 10;
+  light.Attenuation0 = 1;
+  light.Direction = {0, 0, 1};
+  light.Theta = 0.4f;
+  light.Phi = 0.8f;
+  light.Falloff = 1;
+  device->SetLight(0, &light);
+  clear();
+  lit_quad(0, 0, -1, 0.05f);
+  expect("spot light inside the cone", 32, 32, 0xFF00FF00);
+  clear();
+  lit_quad(0, 0, -1);
+  expect("spot light outside the cone", 32, 32, 0xFF000000);
+
+  light = {};
+  light.Type = D3DLIGHT_DIRECTIONAL;
+  light.Specular = {0, 0, 1, 1};
+  light.Direction = {0, 0, 1};
+  device->SetLight(0, &light);
+  material = {};
+  material.Specular = {1, 1, 1, 1};
+  material.Power = 10;
+  device->SetMaterial(&material);
+  // the material's diffuse alpha (0) is the vertex alpha
+  device->SetRenderState(D3DRS_SPECULARENABLE, TRUE);
+  device->SetRenderState(D3DRS_LOCALVIEWER, FALSE);
+  clear();
+  lit_quad(0, 0, -1);
+  expect("specular highlight", 32, 32, 0x000000FF);
+  // with a local viewer the corners see N.H = 0.8165, and 0.8165^10 = 0.13
+  device->SetRenderState(D3DRS_LOCALVIEWER, TRUE);
+  clear();
+  lit_quad(0, 0, -1);
+  expect("local viewer specular", 32, 32, 0x00000022);
+  device->SetRenderState(D3DRS_SPECULARENABLE, FALSE);
+  clear();
+  lit_quad(0, 0, -1);
+  expect("no specular without SPECULARENABLE", 32, 32, 0x00000000);
+  device->LightEnable(0, FALSE);
+  device->SetRenderState(D3DRS_LIGHTING, FALSE);
+
+  // texture coordinate transforms and generation on transformed vertices
+  const DWORD strip_texels[4] = {0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0xFFFFFFFF};
+  IDirect3DTexture9 *strip = nullptr;
+  device->CreateTexture(4, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &strip, nullptr);
+  strip->LockRect(0, &lr, nullptr, 0);
+  memcpy(lr.pBits, strip_texels, sizeof(strip_texels));
+  strip->UnlockRect(0);
+  device->SetTexture(0, strip);
+  device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+  stage(0, D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTA_CURRENT, D3DTOP_SELECTARG1, D3DTA_TEXTURE);
+  struct TexVertex {
+    float x, y, z, u, v;
+  } tex_quad[4] = {{-1, -1, 0.5f, 0, 1}, {-1, 1, 0.5f, 0, 0}, {1, -1, 0.5f, 1, 1}, {1, 1, 0.5f, 1, 0}};
+  device->SetFVF(D3DFVF_XYZ | D3DFVF_TEX1);
+  D3DMATRIX shift = {{{1, 0, 0, 0, 0, 1, 0, 0, 0.5f, 0, 1, 0, 0, 0, 0, 1}}};
+  device->SetTransform(D3DTS_TEXTURE0, &shift);
+  device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
+  clear();
+  device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, tex_quad, sizeof(TexVertex));
+  expect("texture matrix shifts u", 4, 32, 0xFF0000FF);
+  device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+  clear();
+  device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, tex_quad, sizeof(TexVertex));
+  expect("no texture matrix when disabled", 4, 32, 0xFFFF0000);
+  D3DMATRIX to_unit = {{{0.5f, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 1, 0, 0.5f, 0.5f, 0, 1}}};
+  device->SetTransform(D3DTS_TEXTURE0, &to_unit);
+  device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT2);
+  device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_CAMERASPACEPOSITION);
+  device->SetFVF(D3DFVF_XYZ);
+  LitVertex plain[4] = {{-1, -1, 0.5f}, {-1, 1, 0.5f}, {1, -1, 0.5f}, {1, 1, 0.5f}};
+  clear();
+  device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, plain, sizeof(LitVertex));
+  expect("camera-space position left", 4, 32, 0xFFFF0000);
+  expect("camera-space position right", 60, 32, 0xFFFFFFFF);
+  device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+  device->SetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+  device->SetTexture(0, nullptr);
+  strip->Release();
+  default_stages();
+
+  // vertex fog from view-space depth, and from specular alpha for pretransformed vertices
+  float fog_start = 0, fog_end = 1;
+  device->SetRenderState(D3DRS_FOGENABLE, TRUE);
+  device->SetRenderState(D3DRS_FOGCOLOR, 0xFF0000FF);
+  device->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
+  device->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
+  device->SetRenderState(D3DRS_FOGSTART, *(DWORD *)&fog_start);
+  device->SetRenderState(D3DRS_FOGEND, *(DWORD *)&fog_end);
+  ColorVertex fogged[4] = {
+      {-1, -1, 0.25f, 0xFFFF0000}, {-1, 1, 0.25f, 0xFFFF0000}, {1, -1, 0.25f, 0xFFFF0000}, {1, 1, 0.25f, 0xFFFF0000}
+  };
+  device->SetFVF(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+  clear();
+  device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, fogged, sizeof(ColorVertex));
+  expect("linear vertex fog", 32, 32, 0xFFBF0040);
+  struct SpecVertex {
+    float x, y, z, rhw;
+    DWORD diffuse, specular;
+  } spec_quad[4] = {
+      {0, 0, 0.5f, 1, 0xFFFF0000, 0x40000000}, {64, 0, 0.5f, 1, 0xFFFF0000, 0x40000000},
+      {0, 64, 0.5f, 1, 0xFFFF0000, 0x40000000}, {64, 64, 0.5f, 1, 0xFFFF0000, 0x40000000},
+  };
+  device->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_SPECULAR);
+  clear();
+  device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, spec_quad, sizeof(SpecVertex));
+  expect("fog from specular alpha", 32, 32, 0xFF4000BF);
+  device->SetRenderState(D3DRS_FOGENABLE, FALSE);
 
   device->EndScene();
   if (ps)
