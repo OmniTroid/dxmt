@@ -28,7 +28,7 @@ namespace dxmt {
 namespace ff {
 
 constexpr uint32_t VSWorldViewProj = 0;
-constexpr uint32_t VSWorld = 4;
+constexpr uint32_t VSWorldView = 4;
 constexpr uint32_t VSViewportScale = 8;
 constexpr uint32_t VSViewportOffset = 9;
 constexpr uint32_t VSMaterialDiffuse = 10;
@@ -36,8 +36,15 @@ constexpr uint32_t VSMaterialAmbient = 11;
 constexpr uint32_t VSMaterialSpecular = 12;
 constexpr uint32_t VSMaterialEmissive = 13;
 constexpr uint32_t VSAmbient = 14;
-constexpr uint32_t VSLightBase = 16;
-constexpr uint32_t VSConstantCount = VSLightBase + 2 * 8;
+// c15 and c19 are defined by the shader
+constexpr uint32_t VSMaterialPower = 16;
+constexpr uint32_t VSFog = 17; // start, end, density, 1 / (end - start)
+// per light: position or negated direction, spot direction, diffuse, specular, ambient,
+// attenuation (a0, a1, a2, range), spot (cos theta/2, cos phi/2, 1 / difference, falloff)
+constexpr uint32_t VSLightBase = 20;
+constexpr uint32_t VSLightStride = 7;
+constexpr uint32_t VSTextureMatrixBase = VSLightBase + 8 * VSLightStride;
+constexpr uint32_t VSConstantCount = VSTextureMatrixBase + 8 * 4;
 
 constexpr uint32_t PSTextureFactor = 0;
 constexpr uint32_t PSStageConstantBase = 1;
@@ -46,7 +53,21 @@ constexpr uint32_t PSConstantCount = 16;
 constexpr uint32_t MaxStages = 8;
 constexpr uint32_t MaxLights = 8;
 
+// D3D9FFTexCoord::source values past the 8 input sets
+constexpr uint8_t TexGenNormal = 8;
+constexpr uint8_t TexGenPosition = 9;
+constexpr uint8_t TexGenReflection = 10;
+constexpr uint8_t TexNone = 0xFF;
+
+constexpr DWORD FogNone = 0xFF;
+
 } // namespace ff
+
+struct D3D9FFTexCoord {
+  uint8_t source;
+  uint8_t count; // D3DTTFF_COUNTn of the texture transform, 0 when disabled
+  bool projected;
+};
 
 struct D3D9FFVertexState {
   bool pretransformed;
@@ -54,11 +75,19 @@ struct D3D9FFVertexState {
   bool diffuse;
   bool specular;
   uint32_t texcoord_mask;
+  uint8_t texcoord_size[8];
   bool lighting;
+  bool specular_lighting;
+  bool local_viewer;
   uint32_t light_count;
+  D3DLIGHTTYPE light_types[ff::MaxLights];
   D3DMATERIALCOLORSOURCE diffuse_source;
   D3DMATERIALCOLORSOURCE ambient_source;
+  D3DMATERIALCOLORSOURCE specular_source;
   D3DMATERIALCOLORSOURCE emissive_source;
+  D3D9FFTexCoord texcoords[ff::MaxStages];
+  DWORD fog_mode; // D3DFOGMODE computed per vertex, D3DFOG_NONE for specular alpha, ff::FogNone without vertex fog
+  bool range_fog;
 };
 
 struct D3D9FFStage {
@@ -67,7 +96,7 @@ struct D3D9FFStage {
   DWORD alpha_op;
   DWORD alpha_arg[3];
   DWORD result_arg;
-  DWORD texcoord;
+  bool projected;
   D3DRESOURCETYPE texture_type;
 };
 

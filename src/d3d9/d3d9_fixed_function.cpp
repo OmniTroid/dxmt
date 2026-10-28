@@ -20,6 +20,7 @@
 #include "d3d9_bytecode.hpp"
 #include "log/log.hpp"
 #include <bit>
+#include <algorithm>
 #include <initializer_list>
 
 namespace dxmt {
@@ -71,8 +72,8 @@ struct Writer {
   std::vector<DWORD> code;
 
   void
-  op(Opcode Op, std::initializer_list<DWORD> Args) {
-    code.push_back((DWORD)Op | ((DWORD)Args.size() << 24));
+  op(Opcode Op, std::initializer_list<DWORD> Args, DWORD Controls = 0) {
+    code.push_back((DWORD)Op | (Controls << 16) | ((DWORD)Args.size() << 24));
     code.insert(code.end(), Args);
   }
 
@@ -118,9 +119,18 @@ std::vector<DWORD>
 D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   Writer w;
   w.code.push_back(0xFFFE0300);
-  auto in = [](uint32_t n) { return Src(RegisterType::Input, n); };
+  auto in = [](uint32_t n, DWORD swizzle = kXYZW) { return Src(RegisterType::Input, n, swizzle); };
   auto out = [](uint32_t n, uint32_t mask = 0xF, bool sat = false) { return Dst(RegisterType::Output, n, mask, sat); };
   auto c = [](uint32_t n, DWORD swizzle = kXYZW) { return Src(RegisterType::Const, n, swizzle); };
+  auto r = [](uint32_t n, uint32_t mask = 0xF, bool sat = false) { return Dst(RegisterType::Temp, n, mask, sat); };
+  auto t = [](uint32_t n, DWORD swizzle = kXYZW, SrcModifier mod = SrcModifier::None) {
+    return Src(RegisterType::Temp, n, swizzle, mod);
+  };
+  // c19 = (epsilon, -1, log2(e), 0)
+  constexpr uint32_t kHelper2 = 19;
+  constexpr uint32_t kFogOut = 11;
+  // r6 view position, r7 view normal, r8 vertex-to-eye, r9-r11 ambient/diffuse/specular sums
+  constexpr uint32_t P = 6, N = 7, V = 8, Amb = 9, Diff = 10, Spec = 11;
 
   w.dcl(S.pretransformed ? Usage::PositionT : Usage::Position, 0, Dst(RegisterType::Input, 0));
   if (S.normal)
@@ -135,50 +145,181 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   w.dcl(Usage::Position, 0, out(0));
   w.dcl(Usage::Color, 0, out(1));
   w.dcl(Usage::Color, 1, out(2));
-  for (uint32_t i = 0; i < 8; i++)
-    if (S.texcoord_mask & (1 << i))
+  for (uint32_t i = 0; i < ff::MaxStages; i++)
+    if (S.texcoords[i].source != ff::TexNone)
       w.dcl(Usage::TexCoord, i, out(3 + i));
+  if (S.fog_mode != ff::FogNone)
+    w.dcl(Usage::Fog, 0, out(kFogOut, 0x1));
   w.def_helper();
+  w.op(Opcode::Def, {Dst(RegisterType::Const, kHelper2), std::bit_cast<DWORD>(1e-6f), std::bit_cast<DWORD>(-1.0f),
+                     std::bit_cast<DWORD>(1.442695f), std::bit_cast<DWORD>(0.0f)});
 
   if (S.pretransformed) {
-    w.op(Opcode::Mad, {Dst(RegisterType::Temp, 0, 0x7), in(0), c(ff::VSViewportScale), c(ff::VSViewportOffset)});
-    w.op(Opcode::Rcp, {Dst(RegisterType::Temp, 0, 0x8), Src(RegisterType::Input, 0, kWWWW)});
-    w.op(Opcode::Mul, {out(0, 0x7), Temp(0), Temp(0, kWWWW)});
-    w.op(Opcode::Mov, {out(0, 0x8), Temp(0, kWWWW)});
+    w.op(Opcode::Mad, {r(0, 0x7), in(0), c(ff::VSViewportScale), c(ff::VSViewportOffset)});
+    w.op(Opcode::Rcp, {r(0, 0x8), in(0, kWWWW)});
+    w.op(Opcode::Mul, {out(0, 0x7), t(0), t(0, kWWWW)});
+    w.op(Opcode::Mov, {out(0, 0x8), t(0, kWWWW)});
   } else {
     for (uint32_t i = 0; i < 4; i++)
       w.op(Opcode::Dp4, {out(0, 1 << i), in(0), c(ff::VSWorldViewProj + i)});
   }
 
-  if (S.lighting && !S.pretransformed) {
+  bool lit = S.lighting && !S.pretransformed;
+  bool needs_normal = (lit && S.normal) || std::any_of(std::begin(S.texcoords), std::end(S.texcoords), [](auto &tc) {
+                        return tc.source == ff::TexGenNormal || tc.source == ff::TexGenReflection;
+                      });
+  bool needs_position = !S.pretransformed;
+  if (needs_position) {
+    for (uint32_t i = 0; i < 3; i++)
+      w.op(Opcode::Dp4, {r(P, 1 << i), in(0), c(ff::VSWorldView + i)});
+    w.op(Opcode::Mov, {r(P, 0x8), Helper(kYYYY)});
+    if (S.local_viewer) {
+      w.op(Opcode::Nrm, {r(V, 0x7), t(P, kXYZW, SrcModifier::Neg)});
+    } else {
+      w.op(Opcode::Mov, {r(V), Helper(kXXXX)});
+      w.op(Opcode::Mov, {r(V, 0x4), c(kHelper2, kYYYY)});
+    }
+  }
+  if (needs_normal) {
+    if (S.normal) {
+      for (uint32_t i = 0; i < 3; i++)
+        w.op(Opcode::Dp3, {r(12, 1 << i), in(1), c(ff::VSWorldView + i)});
+      w.op(Opcode::Nrm, {r(N, 0x7), t(12)});
+    } else {
+      w.op(Opcode::Mov, {r(N), Helper(kXXXX)});
+    }
+  }
+
+  if (lit) {
     DWORD diffuse = MaterialSource(S.diffuse_source, ff::VSMaterialDiffuse);
     DWORD ambient = MaterialSource(S.ambient_source, ff::VSMaterialAmbient);
+    DWORD specular = MaterialSource(S.specular_source, ff::VSMaterialSpecular);
     DWORD emissive = MaterialSource(S.emissive_source, ff::VSMaterialEmissive);
-    w.op(Opcode::Mad, {Dst(RegisterType::Temp, 1), c(ff::VSAmbient), ambient, emissive});
-    if (S.normal && S.light_count) {
-      for (uint32_t i = 0; i < 3; i++)
-        w.op(Opcode::Dp3, {Dst(RegisterType::Temp, 2, 1 << i), in(1), c(ff::VSWorld + i)});
-      w.op(Opcode::Nrm, {Dst(RegisterType::Temp, 3, 0x7), Temp(2)});
-      w.op(Opcode::Mov, {Dst(RegisterType::Temp, 4), Helper(kXXXX)});
-      for (uint32_t i = 0; i < S.light_count; i++) {
-        w.op(Opcode::Dp3, {Dst(RegisterType::Temp, 5, 0x1), Temp(3), c(ff::VSLightBase + 2 * i)});
-        w.op(Opcode::Max, {Dst(RegisterType::Temp, 5, 0x1), Temp(5), Helper(kXXXX)});
-        w.op(Opcode::Mad, {Dst(RegisterType::Temp, 4, 0x7), c(ff::VSLightBase + 2 * i + 1), Temp(5, kXXXX), Temp(4)});
+    w.op(Opcode::Mov, {r(Amb), c(ff::VSAmbient)});
+    w.op(Opcode::Mov, {r(Diff), Helper(kXXXX)});
+    w.op(Opcode::Mov, {r(Spec), Helper(kXXXX)});
+    for (uint32_t i = 0; i < S.light_count; i++) {
+      uint32_t B = ff::VSLightBase + ff::VSLightStride * i;
+      auto type = S.light_types[i];
+      // r12 light vector, r13.x attenuation * spot
+      if (type == D3DLIGHT_DIRECTIONAL) {
+        w.op(Opcode::Mov, {r(12), c(B)});
+        w.op(Opcode::Mov, {r(13, 0x1), Helper(kYYYY)});
+      } else {
+        w.op(Opcode::Add, {r(12, 0x7), c(B), t(P, kXYZW, SrcModifier::Neg)});
+        w.op(Opcode::Dp3, {r(13, 0x2), t(12), t(12)});
+        w.op(Opcode::Rsq, {r(13, 0x4), t(13, kYYYY)});
+        w.op(Opcode::Mul, {r(12, 0x7), t(12), t(13, kZZZZ)});
+        w.op(Opcode::Rcp, {r(13, 0x8), t(13, kZZZZ)});
+        w.op(Opcode::Mad, {r(14, 0x1), c(B + 5, kZZZZ), t(13, kYYYY), c(B + 5, kXXXX)});
+        w.op(Opcode::Mad, {r(14, 0x1), c(B + 5, kYYYY), t(13, kWWWW), t(14, kXXXX)});
+        w.op(Opcode::Rcp, {r(13, 0x1), t(14, kXXXX)});
+        w.op(Opcode::Sge, {r(14, 0x2), c(B + 5, kWWWW), t(13, kWWWW)});
+        w.op(Opcode::Mul, {r(13, 0x1), t(13, kXXXX), t(14, kYYYY)});
+        if (type == D3DLIGHT_SPOT) {
+          // pow(saturate((rho - cos phi/2) / (cos theta/2 - cos phi/2)), falloff), zero outside the cone
+          w.op(Opcode::Dp3, {r(14, 0x4), t(12, kXYZW, SrcModifier::Neg), c(B + 1)});
+          w.op(Opcode::Add, {r(14, 0x4), t(14, kZZZZ), Src(RegisterType::Const, B + 6, kYYYY, SrcModifier::Neg)});
+          w.op(Opcode::Mul, {r(14, 0x4, true), t(14, kZZZZ), c(B + 6, kZZZZ)});
+          w.op(Opcode::Slt, {r(15, 0x1), Helper(kXXXX), t(14, kZZZZ)});
+          w.op(Opcode::Max, {r(14, 0x4), t(14, kZZZZ), c(kHelper2, kXXXX)});
+          w.op(Opcode::Pow, {r(14, 0x8), t(14, kZZZZ), c(B + 6, kWWWW)});
+          w.op(Opcode::Mul, {r(14, 0x8), t(14, kWWWW), t(15, kXXXX)});
+          w.op(Opcode::Mul, {r(13, 0x1), t(13, kXXXX), t(14, kWWWW)});
+        }
       }
-      w.op(Opcode::Mad, {out(1, 0x7, true), Temp(4), diffuse, Temp(1)});
-    } else {
-      w.op(Opcode::Mov, {out(1, 0x7, true), Temp(1)});
+      w.op(Opcode::Mad, {r(Amb, 0x7), c(B + 4), t(13, kXXXX), t(Amb)});
+      if (!S.normal)
+        continue;
+      w.op(Opcode::Dp3, {r(14, 0x1), t(N), t(12)});
+      w.op(Opcode::Slt, {r(15, 0x2), Helper(kXXXX), t(14, kXXXX)});
+      w.op(Opcode::Max, {r(14, 0x1), t(14, kXXXX), Helper(kXXXX)});
+      w.op(Opcode::Mul, {r(14, 0x1), t(14, kXXXX), t(13, kXXXX)});
+      w.op(Opcode::Mad, {r(Diff, 0x7), c(B + 2), t(14, kXXXX), t(Diff)});
+      if (S.specular_lighting) {
+        w.op(Opcode::Add, {r(16, 0x7), t(12), t(V)});
+        w.op(Opcode::Nrm, {r(17, 0x7), t(16)});
+        w.op(Opcode::Dp3, {r(14, 0x2), t(N), t(17)});
+        w.op(Opcode::Max, {r(14, 0x2), t(14, kYYYY), c(kHelper2, kXXXX)});
+        w.op(Opcode::Pow, {r(14, 0x2), t(14, kYYYY), c(ff::VSMaterialPower, kXXXX)});
+        w.op(Opcode::Mul, {r(14, 0x2), t(14, kYYYY), t(13, kXXXX)});
+        w.op(Opcode::Mul, {r(14, 0x2), t(14, kYYYY), t(15, kYYYY)});
+        w.op(Opcode::Mad, {r(Spec, 0x7), c(B + 3), t(14, kYYYY), t(Spec)});
+      }
     }
+    w.op(Opcode::Mad, {r(18, 0x7), t(Amb), ambient, emissive});
+    w.op(Opcode::Mad, {out(1, 0x7, true), t(Diff), diffuse, t(18)});
     w.op(Opcode::Mov, {out(1, 0x8), Swizzled(diffuse, kWWWW)});
-    w.op(Opcode::Mov, {out(2), Helper(kXXXX)});
+    w.op(Opcode::Mul, {out(2, 0x7, true), t(Spec), specular});
+    w.op(Opcode::Mov, {out(2, 0x8), S.specular ? in(3, kWWWW) : Helper(kXXXX)});
   } else {
     w.op(Opcode::Mov, {out(1), S.diffuse ? in(2) : Helper(kYYYY)});
     w.op(Opcode::Mov, {out(2), S.specular ? in(3) : Helper(kXXXX)});
   }
 
-  for (uint32_t i = 0; i < 8; i++)
-    if (S.texcoord_mask & (1 << i))
-      w.op(Opcode::Mov, {out(3 + i), in(4 + i)});
+  for (uint32_t i = 0; i < ff::MaxStages; i++) {
+    auto &tc = S.texcoords[i];
+    if (tc.source == ff::TexNone)
+      continue;
+    constexpr uint32_t Coord = 20, Result = 21;
+    if (tc.source < 8) {
+      w.op(Opcode::Mov, {r(Coord), in(4 + tc.source)});
+      // D3D pads a transformed coordinate with 1 after its last component and 0 after that
+      if (tc.count) {
+        uint32_t size = S.texcoord_size[tc.source];
+        if (size < 4)
+          w.op(Opcode::Mov, {r(Coord, 1u << size), Helper(kYYYY)});
+        if (size < 3)
+          w.op(Opcode::Mov, {r(Coord, (0xFu << (size + 1)) & 0xF), Helper(kXXXX)});
+      }
+    } else if (tc.source == ff::TexGenNormal) {
+      w.op(Opcode::Mov, {r(Coord), t(N)});
+      w.op(Opcode::Mov, {r(Coord, 0x8), Helper(kYYYY)});
+    } else if (tc.source == ff::TexGenPosition) {
+      w.op(Opcode::Mov, {r(Coord), t(P)});
+    } else {
+      // reflect the eye-to-vertex direction about the normal
+      w.op(Opcode::Mov, {r(22, 0x7), t(V, kXYZW, SrcModifier::Neg)});
+      w.op(Opcode::Dp3, {r(23, 0x1), t(N), t(22)});
+      w.op(Opcode::Add, {r(23, 0x1), t(23, kXXXX), t(23, kXXXX)});
+      w.op(Opcode::Mad, {r(Coord, 0x7), t(N, kXYZW, SrcModifier::Neg), t(23, kXXXX), t(22)});
+      w.op(Opcode::Mov, {r(Coord, 0x8), Helper(kYYYY)});
+    }
+    uint32_t coord = Coord;
+    if (tc.count) {
+      for (uint32_t k = 0; k < 4; k++)
+        w.op(Opcode::Dp4, {r(Result, 1u << k), t(Coord), c(ff::VSTextureMatrixBase + 4 * i + k)});
+      coord = Result;
+    }
+    if (tc.projected && tc.count > 1 && tc.count < 4)
+      w.op(Opcode::Mov, {r(coord, 0x8), t(coord, ((tc.count - 1) * 0x55) & 0xFF)});
+    w.op(Opcode::Mov, {out(3 + i), t(coord)});
+  }
+
+  if (S.fog_mode != ff::FogNone) {
+    if (S.fog_mode == D3DFOG_NONE || S.pretransformed) {
+      w.op(Opcode::Mov, {out(kFogOut, 0x1), S.specular ? in(3, kWWWW) : Helper(kYYYY)});
+    } else {
+      constexpr uint32_t F = 24;
+      if (S.range_fog) {
+        w.op(Opcode::Dp3, {r(F, 0x1), t(P), t(P)});
+        w.op(Opcode::Rsq, {r(F, 0x1), t(F, kXXXX)});
+        w.op(Opcode::Rcp, {r(F, 0x1), t(F, kXXXX)});
+      } else {
+        w.op(Opcode::Mov, {r(F, 0x1), t(P, kZZZZ)});
+      }
+      if (S.fog_mode == D3DFOG_LINEAR) {
+        w.op(Opcode::Add, {r(F, 0x1), c(ff::VSFog, kYYYY), t(F, kXXXX, SrcModifier::Neg)});
+        w.op(Opcode::Mul, {out(kFogOut, 0x1, true), t(F, kXXXX), c(ff::VSFog, kWWWW)});
+      } else {
+        w.op(Opcode::Mul, {r(F, 0x1), t(F, kXXXX), c(ff::VSFog, kZZZZ)});
+        if (S.fog_mode == D3DFOG_EXP2)
+          w.op(Opcode::Mul, {r(F, 0x1), t(F, kXXXX), t(F, kXXXX)});
+        w.op(Opcode::Mul, {r(F, 0x1), t(F, kXXXX), c(kHelper2, kZZZZ)});
+        w.op(Opcode::Exp, {out(kFogOut, 0x1, true), t(F, kXXXX, SrcModifier::Neg)});
+      }
+    }
+  }
   w.code.push_back(0x0000FFFF);
   return std::move(w.code);
 }
@@ -312,7 +453,7 @@ D3D9GenerateFixedFunctionPS(const D3D9FFPixelState &S) {
     if (stage.color_op == D3DTOP_DISABLE)
       break;
     if (stage.texture_type)
-      texcoord_mask |= 1 << (stage.texcoord & 7);
+      texcoord_mask |= 1 << stage_count;
   }
 
   w.dcl(Usage::Color, 0, Dst(RegisterType::Input, 0));
@@ -336,8 +477,8 @@ D3D9GenerateFixedFunctionPS(const D3D9FFPixelState &S) {
     if (textured && !stage.texture_type)
       continue;
     if (textured)
-      w.op(Opcode::Tex, {Dst(RegisterType::Temp, 1), Src(RegisterType::Input, 2 + (stage.texcoord & 7)),
-                         Src(RegisterType::Sampler, i)});
+      w.op(Opcode::Tex, {Dst(RegisterType::Temp, 1), Src(RegisterType::Input, 2 + i), Src(RegisterType::Sampler, i)},
+           stage.projected ? kTexLdProject : 0);
     EmitStageOp(w, stage.color_op, stage.color_arg, i, 0x7);
     if (stage.color_op != D3DTOP_DOTPRODUCT3) {
       if (alpha_enabled)

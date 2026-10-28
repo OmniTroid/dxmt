@@ -280,7 +280,7 @@ struct SM30_SHADER_D3D9_DATA {
   void *next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
   uint32_t alpha_func; /* D3DCMPFUNC; 0 or D3DCMP_ALWAYS disables the alpha test */
-  uint32_t fog_mode;   /* SM30_FOG_MODE, pixel shaders before ps_3_0 only */
+  uint32_t fog_mode;   /* SM30_FOG_MODE; D3D9 leaves fog to ps_3_0 shaders, so callers pass NONE for those */
   uint32_t clip_plane_mask;
   uint32_t flags; /* SM30_SHADER_FLAG */
   /* ps_1_x declares no samplers: 2 bits per stage, 0 2D, 1 cube, 2 volume */

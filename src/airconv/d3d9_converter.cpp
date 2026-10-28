@@ -117,7 +117,7 @@ struct Driver {
     SM30_SHADER_D3D9_DATA *d3d9 = nullptr;
     if (args_get_data<SM30_SHADER_D3D9, SM30_SHADER_D3D9_DATA>(args, &d3d9))
       variant = *d3d9;
-    if (!data.version.pixel || data.version.atLeast(3, 0))
+    if (!data.version.pixel)
       variant.fog_mode = SM30_FOG_NONE;
   }
 

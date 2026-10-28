@@ -20,6 +20,7 @@
 #include "d3d9_fixed_function.hpp"
 #include "d3d9_state_block.hpp"
 #include "log/log.hpp"
+#include <bit>
 #include <cmath>
 
 namespace dxmt {
@@ -71,6 +72,40 @@ MTLD3D9Device::FixedFunctionShader(std::vector<DWORD> &&Bytecode, bool Pixel) {
   return ff_shaders_.emplace(key, std::move(code)).first->second.get();
 }
 
+static uint8_t
+DeclTypeSize(BYTE Type) {
+  switch (Type) {
+  case D3DDECLTYPE_FLOAT1:
+    return 1;
+  case D3DDECLTYPE_FLOAT2:
+  case D3DDECLTYPE_SHORT2:
+  case D3DDECLTYPE_SHORT2N:
+  case D3DDECLTYPE_USHORT2N:
+  case D3DDECLTYPE_FLOAT16_2:
+    return 2;
+  case D3DDECLTYPE_FLOAT3:
+  case D3DDECLTYPE_UDEC3:
+  case D3DDECLTYPE_DEC3N:
+    return 3;
+  default:
+    return 4;
+  }
+}
+
+static void
+Transform(float *Out, const D3DVECTOR &V, const D3DMATRIX &M, float W) {
+  for (int j = 0; j < 3; j++)
+    Out[j] = V.x * M.m[0][j] + V.y * M.m[1][j] + V.z * M.m[2][j] + W * M.m[3][j];
+}
+
+static void
+Normalize(float *V) {
+  float length = std::sqrt(V[0] * V[0] + V[1] * V[1] + V[2] * V[2]);
+  if (length > 0)
+    for (int i = 0; i < 3; i++)
+      V[i] /= length;
+}
+
 MTLD3D9ShaderCode *
 MTLD3D9Device::FixedFunctionVS(float *C) {
   D3D9FFVertexState s = {};
@@ -80,7 +115,7 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
       s.pretransformed = true;
       break;
     case D3DDECLUSAGE_NORMAL:
-      s.normal = e.UsageIndex == 0;
+      s.normal = s.normal || e.UsageIndex == 0;
       break;
     case D3DDECLUSAGE_COLOR:
       if (e.UsageIndex == 0)
@@ -89,12 +124,16 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
         s.specular = true;
       break;
     case D3DDECLUSAGE_TEXCOORD:
-      if (e.UsageIndex < 8)
+      if (e.UsageIndex < 8) {
         s.texcoord_mask |= 1 << e.UsageIndex;
+        s.texcoord_size[e.UsageIndex] = DeclTypeSize(e.Type);
+      }
       break;
     }
   }
   s.lighting = render_states_[D3DRS_LIGHTING];
+  s.specular_lighting = render_states_[D3DRS_SPECULARENABLE];
+  s.local_viewer = render_states_[D3DRS_LOCALVIEWER];
   auto source = [&](D3DRENDERSTATETYPE State) {
     auto value = (D3DMATERIALCOLORSOURCE)render_states_[State];
     if (!render_states_[D3DRS_COLORVERTEX] || (value == D3DMCS_COLOR1 && !s.diffuse) ||
@@ -104,11 +143,14 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   };
   s.diffuse_source = source(D3DRS_DIFFUSEMATERIALSOURCE);
   s.ambient_source = source(D3DRS_AMBIENTMATERIALSOURCE);
+  s.specular_source = source(D3DRS_SPECULARMATERIALSOURCE);
   s.emissive_source = source(D3DRS_EMISSIVEMATERIALSOURCE);
 
   auto &world = transforms_[D3DTS_WORLDMATRIX(0)];
-  StoreColumns(C + 4 * ff::VSWorldViewProj, Multiply(Multiply(world, transforms_[D3DTS_VIEW]), transforms_[D3DTS_PROJECTION]), 4);
-  StoreColumns(C + 4 * ff::VSWorld, world, 3);
+  auto &view = transforms_[D3DTS_VIEW];
+  auto world_view = Multiply(world, view);
+  StoreColumns(C + 4 * ff::VSWorldViewProj, Multiply(world_view, transforms_[D3DTS_PROJECTION]), 4);
+  StoreColumns(C + 4 * ff::VSWorldView, world_view, 4);
 
   float depth = viewport_.MaxZ - viewport_.MinZ;
   float depth_scale = depth != 0.0f ? 1.0f / depth : 1.0f;
@@ -124,32 +166,80 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   StoreColor(C + 4 * ff::VSMaterialAmbient, material_.Ambient);
   StoreColor(C + 4 * ff::VSMaterialSpecular, material_.Specular);
   StoreColor(C + 4 * ff::VSMaterialEmissive, material_.Emissive);
-  float *ambient = C + 4 * ff::VSAmbient;
-  StoreColor(ambient, (D3DCOLOR)render_states_[D3DRS_AMBIENT]);
+  StoreColor(C + 4 * ff::VSAmbient, (D3DCOLOR)render_states_[D3DRS_AMBIENT]);
+  C[4 * ff::VSMaterialPower] = material_.Power;
 
-  if (s.lighting && render_states_[D3DRS_SPECULARENABLE]) {
-    WARN_ONCE("D3D9: fixed-function specular lighting is not implemented");
-  }
   for (auto &[light, enabled] : lights_) {
     if (!enabled || s.light_count == ff::MaxLights)
       continue;
-    ambient[0] += light.Ambient.r;
-    ambient[1] += light.Ambient.g;
-    ambient[2] += light.Ambient.b;
-    if (light.Type != D3DLIGHT_DIRECTIONAL) {
-      WARN_ONCE("D3D9: fixed-function point and spot lights are not implemented");
-      continue;
+    float *l = C + 4 * (ff::VSLightBase + ff::VSLightStride * s.light_count);
+    if (light.Type == D3DLIGHT_DIRECTIONAL) {
+      Transform(l, light.Direction, view, 0);
+      Normalize(l);
+      for (int i = 0; i < 3; i++)
+        l[i] = -l[i];
+    } else {
+      Transform(l, light.Position, view, 1);
     }
-    float *l = C + 4 * (ff::VSLightBase + 2 * s.light_count);
-    auto &d = light.Direction;
-    float length = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
-    if (length > 0) {
-      l[0] = -d.x / length;
-      l[1] = -d.y / length;
-      l[2] = -d.z / length;
+    Transform(l + 4, light.Direction, view, 0);
+    Normalize(l + 4);
+    StoreColor(l + 8, light.Diffuse);
+    StoreColor(l + 12, light.Specular);
+    StoreColor(l + 16, light.Ambient);
+    l[20] = light.Attenuation0;
+    l[21] = light.Attenuation1;
+    l[22] = light.Attenuation2;
+    l[23] = light.Range;
+    float inner = std::cos(light.Theta / 2), outer = std::cos(light.Phi / 2);
+    l[24] = inner;
+    l[25] = outer;
+    l[26] = inner > outer ? 1.0f / (inner - outer) : 1e6f;
+    l[27] = light.Falloff;
+    s.light_types[s.light_count++] = light.Type;
+  }
+
+  for (uint32_t i = 0; i < ff::MaxStages; i++) {
+    auto &tss = texture_stage_states_[i];
+    auto &tc = s.texcoords[i];
+    DWORD index = tss[D3DTSS_TEXCOORDINDEX];
+    switch (index & 0xFFFF0000) {
+    case D3DTSS_TCI_PASSTHRU:
+      tc.source = s.texcoord_mask & (1 << (index & 7)) ? index & 7 : ff::TexNone;
+      break;
+    case D3DTSS_TCI_CAMERASPACENORMAL:
+      tc.source = ff::TexGenNormal;
+      break;
+    case D3DTSS_TCI_CAMERASPACEPOSITION:
+      tc.source = ff::TexGenPosition;
+      break;
+    case D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR:
+      tc.source = ff::TexGenReflection;
+      break;
+    default:
+      WARN_ONCE("D3D9: sphere-map texture coordinate generation is not implemented");
+      tc.source = ff::TexNone;
+      break;
     }
-    StoreColor(l + 4, light.Diffuse);
-    s.light_count++;
+    if (s.pretransformed && tc.source >= 8)
+      tc.source = ff::TexNone;
+    DWORD flags = tss[D3DTSS_TEXTURETRANSFORMFLAGS];
+    tc.count = s.pretransformed ? 0 : std::min<DWORD>(flags & ~D3DTTFF_PROJECTED, 4);
+    tc.projected = flags & D3DTTFF_PROJECTED;
+    if (tc.count)
+      StoreColumns(C + 4 * (ff::VSTextureMatrixBase + 4 * i), transforms_[D3DTS_TEXTURE0 + i], 4);
+  }
+
+  s.fog_mode = ff::FogNone;
+  if (render_states_[D3DRS_FOGENABLE] && render_states_[D3DRS_FOGTABLEMODE] == D3DFOG_NONE) {
+    s.fog_mode = render_states_[D3DRS_FOGVERTEXMODE];
+    s.range_fog = render_states_[D3DRS_RANGEFOGENABLE];
+    float start = std::bit_cast<float>(render_states_[D3DRS_FOGSTART]);
+    float end = std::bit_cast<float>(render_states_[D3DRS_FOGEND]);
+    float *fog = C + 4 * ff::VSFog;
+    fog[0] = start;
+    fog[1] = end;
+    fog[2] = std::bit_cast<float>(render_states_[D3DRS_FOGDENSITY]);
+    fog[3] = end != start ? 1.0f / (end - start) : 0.0f;
   }
   return FixedFunctionShader(D3D9GenerateFixedFunctionVS(s), false);
 }
@@ -169,13 +259,7 @@ MTLD3D9Device::FixedFunctionPS(float *C) {
     stage.alpha_arg[1] = tss[D3DTSS_ALPHAARG1];
     stage.alpha_arg[2] = tss[D3DTSS_ALPHAARG2];
     stage.result_arg = tss[D3DTSS_RESULTARG];
-    stage.texcoord = tss[D3DTSS_TEXCOORDINDEX] & 0xFFFF;
-    if (tss[D3DTSS_TEXCOORDINDEX] & 0xFFFF0000) {
-      WARN_ONCE("D3D9: generated texture coordinates are not implemented");
-    }
-    if (tss[D3DTSS_TEXTURETRANSFORMFLAGS] != D3DTTFF_DISABLE) {
-      WARN_ONCE("D3D9: texture coordinate transforms are not implemented");
-    }
+    stage.projected = tss[D3DTSS_TEXTURETRANSFORMFLAGS] & D3DTTFF_PROJECTED;
     if (auto texture = textures_[i].texture)
       stage.texture_type = texture->GetType();
     StoreColor(C + 4 * (ff::PSStageConstantBase + i), (D3DCOLOR)tss[D3DTSS_CONSTANT]);

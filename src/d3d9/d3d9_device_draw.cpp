@@ -724,7 +724,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
   ps_d3d9.type = SM30_SHADER_D3D9;
   if (render_states_[D3DRS_ALPHATESTENABLE])
     ps_d3d9.alpha_func = render_states_[D3DRS_ALPHAFUNC];
-  if (render_states_[D3DRS_FOGENABLE]) {
+  // D3D9 leaves fog to ps_3_0 shaders themselves
+  bool shader_fog = pixel_shader_ && ps_code->bytecode()[0] >= 0xFFFF0300;
+  if (render_states_[D3DRS_FOGENABLE] && !shader_fog) {
     switch (render_states_[D3DRS_FOGTABLEMODE]) {
     case D3DFOG_EXP:
       ps_d3d9.fog_mode = SM30_FOG_EXP;
