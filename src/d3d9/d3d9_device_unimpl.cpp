@@ -27,16 +27,4 @@ MTLD3D9Device::ProcessVertices(UINT src_start_idx, UINT dst_idx, UINT vertex_cou
   return D3DERR_INVALIDCALL;
 }
 
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetConvolutionMonoKernel(UINT width, UINT height, float *rows, float *columns) {
-  ERR_ONCE("MTLD3D9Device::SetConvolutionMonoKernel: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::ComposeRects(IDirect3DSurface9 *src_surface, IDirect3DSurface9 *dst_surface, IDirect3DVertexBuffer9 *src_descs, UINT rect_count, IDirect3DVertexBuffer9 *dst_descs, D3DCOMPOSERECTSOP operation, INT offset_x, INT offset_y) {
-  ERR_ONCE("MTLD3D9Device::ComposeRects: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
 } // namespace dxmt

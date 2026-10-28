@@ -197,9 +197,6 @@ MTLD3D9SwapChain::Present(
   if (!presenter_ || backbuffers_.empty())
     return D3DERR_INVALIDCALL;
 
-  if (pSourceRect || pDestRect) {
-    WARN_ONCE("D3D9: Present source/destination rects are ignored");
-  }
   if (hDestWindowOverride && hDestWindowOverride != window_) {
     WARN_ONCE("D3D9: Present window override is ignored");
   }
@@ -213,14 +210,20 @@ MTLD3D9SwapChain::Present(
   double vsync_duration = interval / refresh_rate_;
 
   parent_->EndRenderPass();
+  Rc<Texture> presented = backbuffers_[0]->texture();
+  if (pSourceRect || pDestRect) {
+    HRESULT hr = ComposeRects(pSourceRect, pDestRect, presented);
+    if (FAILED(hr))
+      return hr;
+  }
   if (keep_front_)
-    CaptureFront();
+    CaptureFront(presented);
   auto &queue = parent_->queue();
   auto chunk = queue.CurrentChunk();
   chunk->signal_frame_latency_fence_ = queue.CurrentFrameSeq();
   presenter_->changeGammaRamp(gamma_enabled_ ? &gamma_lut_ : nullptr);
 
-  chunk->emitcc([backbuffer = backbuffers_[0]->texture(), presenter = presenter_, vsync_duration,
+  chunk->emitcc([backbuffer = std::move(presented), presenter = presenter_, vsync_duration,
                  state = presenter_->synchronizeLayerProperties()](ArgumentEncodingContext &ctx) mutable {
     ctx.present(backbuffer, presenter, vsync_duration, state.metadata);
   });
@@ -230,8 +233,53 @@ MTLD3D9SwapChain::Present(
   return D3D_OK;
 }
 
+// Draws the source rect of the back buffer into the destination rect (window client coordinates) of a black
+// back-buffer-sized texture, which is presented instead.
 HRESULT
-MTLD3D9SwapChain::CaptureFront() {
+MTLD3D9SwapChain::ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, Rc<Texture> &Out) {
+  auto &bb = backbuffers_[0]->Desc();
+  if (bb.MultiSampleType != D3DMULTISAMPLE_NONE) {
+    WARN_ONCE("D3D9: Present rects with a multisampled back buffer are ignored");
+    return D3D_OK;
+  }
+  RECT src = {0, 0, (LONG)bb.Width, (LONG)bb.Height};
+  if (pSourceRect)
+    src = *pSourceRect;
+  uint32_t window_width = bb.Width, window_height = bb.Height;
+  wsi::getWindowSize(window_, &window_width, &window_height);
+  RECT dst = {0, 0, (LONG)window_width, (LONG)window_height};
+  if (pDestRect)
+    dst = *pDestRect;
+  if (src.left >= src.right || src.top >= src.bottom || dst.left >= dst.right || dst.top >= dst.bottom)
+    return D3DERR_INVALIDCALL;
+  if (!composed_ || composed_->width() != bb.Width || composed_->height() != bb.Height) {
+    D3DSURFACE_DESC desc = bb;
+    HRESULT hr = CreateD3D9SurfaceTexture(parent_, desc, composed_);
+    if (FAILED(hr))
+      return hr;
+  }
+  float sx = float(bb.Width) / std::max(window_width, 1u), sy = float(bb.Height) / std::max(window_height, 1u);
+  LONG x0 = std::clamp<LONG>(dst.left * sx, 0, bb.Width), y0 = std::clamp<LONG>(dst.top * sy, 0, bb.Height);
+  LONG x1 = std::clamp<LONG>(dst.right * sx, x0, bb.Width), y1 = std::clamp<LONG>(dst.bottom * sy, y0, bb.Height);
+  if (x1 == x0 || y1 == y0)
+    return D3D_OK;
+  WMTScissorRect dst_rect = {(uint64_t)x0, (uint64_t)y0, (uint64_t)(x1 - x0), (uint64_t)(y1 - y0)};
+  parent_->Emit([src_texture = backbuffers_[0]->texture(), src_view = backbuffers_[0]->viewKey(), dst = composed_,
+                 src_rect = std::array<float, 4>{(float)src.left, (float)src.top, (float)src.right, (float)src.bottom},
+                 dst_rect, width = bb.Width, height = bb.Height](ArgumentEncodingContext &enc) mutable {
+    auto view = dst->fullView;
+    enc.clear_rt_cmd.begin(dst, view, 0);
+    enc.clear_rt_cmd.clear(0, 0, width, height, 1, {0, 0, 0, 1});
+    enc.clear_rt_cmd.end();
+    float rect[4] = {src_rect[0], src_rect[1], src_rect[2], src_rect[3]};
+    enc.blit_color_cmd.blit(src_texture, src_view, rect, dst, view, dst_rect, true);
+  });
+  Out = composed_;
+  return D3D_OK;
+}
+
+HRESULT
+MTLD3D9SwapChain::CaptureFront(const Rc<Texture> &Source) {
   auto &bb = backbuffers_[0]->Desc();
   if (!front_ || front_->width() != bb.Width || front_->height() != bb.Height) {
     D3DSURFACE_DESC desc = bb;
@@ -242,15 +290,15 @@ MTLD3D9SwapChain::CaptureFront() {
       return hr;
   }
   parent_->EndRenderPass();
-  if (bb.MultiSampleType != D3DMULTISAMPLE_NONE) {
-    parent_->Emit([src = backbuffers_[0]->texture(), src_view = backbuffers_[0]->viewKey(),
+  if (Source->sampleCount() > 1) {
+    parent_->Emit([src = Source, src_view = backbuffers_[0]->viewKey(),
                    dst = front_](ArgumentEncodingContext &enc) mutable {
       auto view = dst->fullView;
       enc.resolveTexture(std::move(src), src_view, std::move(dst), view);
     });
     return D3D_OK;
   }
-  parent_->EmitBlit([src = backbuffers_[0]->texture(), dst = front_, width = bb.Width,
+  parent_->EmitBlit([src = Source, dst = front_, width = bb.Width,
                      height = bb.Height](ArgumentEncodingContext &enc) {
     auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_texture>();
     cmd.type = WMTBlitCommandCopyFromTextureToTexture;
@@ -285,7 +333,7 @@ MTLD3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
   // Before the first call nothing was captured, so the back buffer stands in for the last presented frame.
   if (!keep_front_) {
     keep_front_ = true;
-    HRESULT hr = CaptureFront();
+    HRESULT hr = CaptureFront(backbuffers_[0]->texture());
     if (FAILED(hr))
       return hr;
   }

@@ -107,6 +107,22 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   device->GetFrontBufferData(0, front);
   check("front buffer ignores the frame being drawn", (read(front, 10, 10) & 0xFFFFFF) == 0xFF0000);
 
+  // Present rects: the back buffer's right half fills the window, then the whole back buffer the left half
+  RECT client;
+  GetClientRect(hwnd, &client);
+  RECT left_half = {0, 0, 32, 64}, right_half = {32, 0, 64, 64}, window_left = {0, 0, client.right / 2, client.bottom};
+  IDirect3DSurface9 *bb = nullptr;
+  device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb);
+  device->ColorFill(bb, &left_half, 0xFFFF0000);
+  device->ColorFill(bb, &right_half, 0xFF00FF00);
+  device->Present(&right_half, nullptr, nullptr, nullptr);
+  device->GetFrontBufferData(0, front);
+  check("Present source rect", (read(front, 10, 10) & 0xFFFFFF) == 0x00FF00);
+  device->Present(nullptr, &window_left, nullptr, nullptr);
+  device->GetFrontBufferData(0, front);
+  check("Present destination rect", (read(front, 5, 10) & 0xFFFFFF) == 0xFF0000 && (read(front, 60, 10) & 0xFFFFFF) == 0);
+  bb->Release();
+
   // an additional swap chain presents into its own window
   HWND second = window(instance, L"d3d9_misc second");
   D3DPRESENT_PARAMETERS pp2 = pp;

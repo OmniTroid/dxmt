@@ -139,4 +139,18 @@ MTLD3D9Device::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *pPresentationPar
   return D3D_OK;
 }
 
+// Both only apply to monochrome D3DFMT_A1 surfaces, which aren't supported.
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::SetConvolutionMonoKernel(UINT Width, UINT Height, float *pRows, float *pColumns) {
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::ComposeRects(
+    IDirect3DSurface9 *pSrc, IDirect3DSurface9 *pDst, IDirect3DVertexBuffer9 *pSrcRectDescs, UINT NumRects,
+    IDirect3DVertexBuffer9 *pDstRectDescs, D3DCOMPOSERECTSOP Operation, INT Xoffset, INT Yoffset
+) {
+  return D3DERR_INVALIDCALL;
+}
+
 } // namespace dxmt

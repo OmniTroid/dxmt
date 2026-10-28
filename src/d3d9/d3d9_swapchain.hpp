@@ -69,7 +69,8 @@ private:
   HRESULT CreateBackBuffers();
   void ApplyLayerProps();
   UINT SyncInterval() const;
-  HRESULT CaptureFront();
+  HRESULT CaptureFront(const Rc<Texture> &Source);
+  HRESULT ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, Rc<Texture> &Out);
 
   MTLD3D9Device *parent_;
   D3DPRESENT_PARAMETERS params_;
@@ -86,6 +87,7 @@ private:
   bool gamma_enabled_ = false;
   // a copy of each presented frame, kept once GetFrontBufferData has been called
   Rc<Texture> front_;
+  Rc<Texture> composed_;
   bool keep_front_ = false;
 };
 
