@@ -35,7 +35,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 
 **Wine runtime**
 
-- A prefix keeps its own copies of builtin DLLs in `drive_c/windows/system32` and Wine loads those. Copying a new `d3d9.dll` into the Wine install after the prefix exists changes nothing. Replace the `system32` copy too, or recreate the prefix (`run.sh` does).
+- A prefix keeps its own copies of builtin DLLs in `drive_c/windows/system32`, and Wine may load either that copy or the one in `lib/wine/<arch>-windows`; both have been seen to win. After rebuilding, replace both, or rerun `run.sh` (fresh prefix). Updating only one silently tested the old DLL twice, once in each direction.
 - First prefix creation shows a Mono/Gecko install dialog and blocks forever headless. Set `WINEDLLOVERRIDES="mscoree,mshtml="`.
 - A newly added builtin DLL (like `winemetal.dll`) is only found once `wineboot -u` or a new prefix registers it.
 - `wineserver -k` only stops the server for the current `WINEPREFIX`; set it explicitly so other Wine sessions are untouched.
@@ -61,6 +61,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - It ignores `register(bN)` and puts HLSL bools in a float constant; bool registers, `loop aL`, `mova`, predication, subroutines and `texkill` are only covered by the hand-assembled `sm3_raw_tests.py`.
 - It rejects loops bounded by an int uniform and the `FOG` semantic in some targets. CrossOver 26.3's vkd3d rejects `[loop]` in SM2/SM3 entirely (E5017 "not yet implemented"), so the HLSL loop cases skip.
 - Each Wine process costs seconds to start; compile many shaders with one `hlslc.exe -b jobs.txt` call, as `sm3_tests.py` does.
+- When a sabotage doesn't make a check fail, first confirm the broken DLL is the one running (a temporary `fprintf(stderr, ...)` in the code path) before concluding the check is weak.
 - `D3DDisassemble` works on SM1-3 bytecode: `hlslc.exe -d file.bin`.
 
 **Shell**
