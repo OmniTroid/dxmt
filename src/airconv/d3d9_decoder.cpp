@@ -156,8 +156,14 @@ public:
   std::optional<std::string>
   run(Reader &reader) {
     cur_ = fresh("entry");
-    ret_main_ = fresh("return");
-    ret_main_->target = BasicBlockReturn{};
+    ret_main_ = fresh("final");
+    auto copy = fresh("copy_out");
+    auto ret = fresh("return");
+    ret->target = BasicBlockReturn{};
+    ret_main_->target = BasicBlockUnconditionalBranch{copy};
+    copy->target = BasicBlockUnconditionalBranch{ret};
+    d_.final_bb = ret_main_;
+    d_.copy_bb = copy;
 
     d3d9bc::Instruction inst;
     while (!error_ && reader.next(inst)) {
@@ -173,13 +179,29 @@ public:
 
     inline_calls(std::move(call_targets_), func_entries_, [this](const char *name) { return fresh(name); });
 
+    auto copy_out = [&](uint32_t temp, uint32_t output) {
+      d_.copy_bb->instructions.push_back(InstMov{
+          ic(), DstOperandOutput{._ = {0xF, OperandDataType::Float}, .regid = output, .phase = kNoPhase},
+          temp_src(temp)
+      });
+    };
+    for (uint32_t i = 0; i < 4; i++)
+      if (d_.color_output_mask & (1 << i))
+        copy_out(reg::OutColorBase + i, i);
+    if (d_.pos_output_reg != ~0u)
+      copy_out(reg::OutPos, d_.pos_output_reg);
+    if (d_.fog_output_reg != ~0u)
+      copy_out(reg::OutFog, d_.fog_output_reg);
+
+    // cb3 carries the values the compile-time epilogue needs, so every shader declares it
+    cb_used_ |= 1 << cb::Runtime;
     info_.tempRegisterCount = reg::TotalTemps;
-    for (uint32_t i = 0; i < 3; i++) {
+    for (uint32_t i = 0; i < 4; i++) {
       if (!(cb_used_ & (1 << i)))
         continue;
       ConstantBufferInfo cbv;
       cbv.range = {.range_id = i, .lower_bound = i, .size = 1, .space = 0};
-      cbv.size_in_vec4 = i == cb::Float ? 256 : i == cb::Int ? 16 : 4;
+      cbv.size_in_vec4 = i == cb::Float ? 256 : i == cb::Int ? 16 : i == cb::Bool ? 4 : 16;
       info_.cbufferMap[i] = cbv;
     }
     return std::nullopt;
@@ -410,7 +432,13 @@ private:
     case RegisterType::RastOut: {
       uint32_t reg = n == 0 ? reg::VSOutPos : n == 1 ? reg::VSOutFog : reg::VSOutPSize;
       record_legacy_output(reg, n == 0 ? Usage::Position : n == 1 ? Usage::Fog : Usage::PSize, 0);
-      result.op = DstOperandOutput{._ = {mask, OperandDataType::Float}, .regid = reg, .phase = kNoPhase};
+      if (n == 0)
+        d_.pos_output_reg = reg;
+      else if (n == 1)
+        d_.fog_output_reg = reg;
+      else
+        d_.writes_psize = true;
+      result.op = temp_dst(n == 0 ? reg::OutPos : n == 1 ? reg::OutFog : reg::OutPSize, mask);
       break;
     }
     case RegisterType::AttrOut:
@@ -425,7 +453,14 @@ private:
           result.op = DstOperandIndexableOutput{
               ._ = {mask, OperandDataType::Float}, .regindex = relative_index(p, n), .phase = kNoPhase
           };
-        else
+        else if (n == d_.pos_output_reg)
+          result.op = temp_dst(reg::OutPos, mask);
+        else if (n == d_.fog_output_reg)
+          result.op = temp_dst(reg::OutFog, mask);
+        else if (n == psize_output_reg_) {
+          d_.writes_psize = true;
+          result.op = temp_dst(reg::OutPSize, mask);
+        } else
           result.op = DstOperandOutput{._ = {mask, OperandDataType::Float}, .regid = n, .phase = kNoPhase};
       } else {
         record_legacy_output(reg::VSOutTexCoordBase + n, Usage::TexCoord, n);
@@ -436,7 +471,7 @@ private:
       break;
     case RegisterType::ColorOut:
       d_.color_output_mask |= 1 << n;
-      result.op = DstOperandOutput{._ = {mask, OperandDataType::Float}, .regid = n, .phase = kNoPhase};
+      result.op = temp_dst(reg::OutColorBase + n, mask);
       break;
     case RegisterType::DepthOut:
       d_.writes_depth = true;
@@ -966,6 +1001,12 @@ private:
       break;
     case RegisterType::Output:
       d_.outputs.push_back({n, usage, usage_index, mask, false});
+      if (usage == Usage::Position && usage_index == 0)
+        d_.pos_output_reg = n;
+      else if (usage == Usage::Fog)
+        d_.fog_output_reg = n;
+      else if (usage == Usage::PSize)
+        psize_output_reg_ = n;
       break;
     case RegisterType::MiscType:
       if (n == 0) {
@@ -1217,6 +1258,7 @@ private:
   std::vector<std::pair<BasicBlock *, BasicBlockCall *>> call_targets_;
   uint32_t scratch_next_ = 0;
   uint32_t cb_used_ = 0;
+  uint32_t psize_output_reg_ = ~0u;
   bool pred_not_ = false;
   std::optional<std::string> error_;
 };

@@ -19,6 +19,7 @@
 #include "d3d9_decoder.hpp"
 #include "dxbc_converter.hpp"
 #include "llvm/Support/raw_ostream.h"
+#include <bit>
 
 namespace dxmt::d3d9 {
 
@@ -27,6 +28,55 @@ using namespace air;
 using d3d9bc::Usage;
 
 namespace {
+
+SrcOperand
+temp_src(uint32_t reg, Swizzle swz = swizzle_identity, OperandDataType type = OperandDataType::Float) {
+  return SrcOperandTemp{._ = {swz, false, false, type}, .regid = reg, .phase = ~0u};
+}
+
+DstOperand
+temp_dst(uint32_t reg, uint32_t mask, OperandDataType type = OperandDataType::Float) {
+  return DstOperandTemp{._ = {mask, type}, .regid = reg, .phase = ~0u};
+}
+
+SrcOperand
+runtime_src(uint32_t index, Swizzle swz = swizzle_identity) {
+  return SrcOperandConstantBuffer{
+      ._ = {swz, false, false, OperandDataType::Float}, .rangeid = cb::Runtime, .rangeindex = cb::Runtime,
+      .regindex = index
+  };
+}
+
+SrcOperand
+imm(float v) {
+  SrcOperandImmediate32 imm{._ = {swizzle_identity, false, false, OperandDataType::Float}};
+  for (auto &f : imm.fvalue)
+    f = v;
+  return imm;
+}
+
+SrcOperand
+neg(SrcOperand src) {
+  std::visit([](auto &o) { o._.neg = !o._.neg; }, src);
+  return src;
+}
+
+Swizzle
+rep(uint8_t c) {
+  return {c, c, c, c};
+}
+
+// D3DCMPFUNC
+constexpr uint32_t D3DCMP_NEVER_VALUE = 1;
+constexpr uint32_t D3DCMP_LESS_VALUE = 2;
+constexpr uint32_t D3DCMP_EQUAL_VALUE = 3;
+constexpr uint32_t D3DCMP_LESSEQUAL_VALUE = 4;
+constexpr uint32_t D3DCMP_GREATER_VALUE = 5;
+constexpr uint32_t D3DCMP_NOTEQUAL_VALUE = 6;
+constexpr uint32_t D3DCMP_ALWAYS_VALUE = 8;
+
+constexpr InstructionCommon kNoSat = {false, 0};
+constexpr InstructionCommon kSat = {true, 0};
 
 struct Driver {
   SM50ShaderInternal *shader;
@@ -41,6 +91,8 @@ struct Driver {
   io_binding_map resource_map;
   AirType types;
   SM50_SHADER_METAL_VERSION metal_version = SM50_SHADER_METAL_310;
+  SM30_SHADER_D3D9_DATA variant = {};
+  std::vector<std::unique_ptr<BasicBlock>> epilogue_blocks;
   SM50_SHADER_FLAG shader_flags = {};
   uint32_t max_output_register;
 
@@ -61,6 +113,11 @@ struct Driver {
       metal_version = common->metal_version;
       shader_flags = common->flags;
     }
+    SM30_SHADER_D3D9_DATA *d3d9 = nullptr;
+    if (args_get_data<SM30_SHADER_D3D9, SM30_SHADER_D3D9_DATA>(args, &d3d9))
+      variant = *d3d9;
+    if (!data.version.pixel || data.version.atLeast(3, 0))
+      variant.fog_mode = SM30_FOG_NONE;
   }
 
   void
@@ -150,22 +207,48 @@ struct Driver {
     for (uint32_t i = 0; i < 8; i++)
       fill(Usage::TexCoord, i);
     fill(Usage::Fog, 0);
-    max_output_register = fill_reg;
+    max_output_register = std::max(fill_reg, reg::VSOutCount);
+
+    if (variant.flags & SM30_SHADER_FLAG_POINT_SIZE) {
+      auto index = func_signature.DefineOutput(OutputPointSize{});
+      epilogue.Add([=](llvm::Value *ret, IOHelper &io) -> llvm::Expected<llvm::Value *> {
+        return io.PopulateOutput(reg::VSOutPointSize, 0x1, ret, index);
+      });
+    }
   }
 
   void
   definePixelInputs() {
+    bool flat = variant.flags & SM30_SHADER_FLAG_FLAT_SHADING;
+    bool point_sprite = variant.flags & SM30_SHADER_FLAG_POINT_SPRITE;
     for (auto &input : data.inputs) {
       uint32_t reg = input.reg;
+      if (point_sprite && input.usage == Usage::TexCoord) {
+        auto index = func_signature.DefineInput(InputPointCoord{});
+        prologue.Add([=](IOHelper &io) -> llvm::Error { return io.InitializeInput(index, reg, 0x3); });
+        continue;
+      }
+      auto interpolation = input.centroid ? Interpolation::centroid_perspective : Interpolation::center_perspective;
+      if (flat && input.usage == Usage::Color)
+        interpolation = Interpolation::flat;
       auto index = func_signature.DefineInput(InputFragmentStageIn{
           .user = input.attributeName(),
           .type = msl_float4,
-          .interpolation = input.centroid ? Interpolation::centroid_perspective : Interpolation::center_perspective,
+          .interpolation = interpolation,
           .pull_mode = false,
       });
       prologue.Add([=](IOHelper &io) -> llvm::Error { return io.InitializeInput(index, reg, 0xF); });
     }
-    if (data.uses_vpos) {
+    if (variant.fog_mode == SM30_FOG_VERTEX) {
+      auto index = func_signature.DefineInput(InputFragmentStageIn{
+          .user = IOElement{0, Usage::Fog, 0, 0xF, false}.attributeName(),
+          .type = msl_float4,
+          .interpolation = Interpolation::center_perspective,
+          .pull_mode = false,
+      });
+      prologue.Add([=](IOHelper &io) -> llvm::Error { return io.InitializeInput(index, reg::PSInputFog, 0xF); });
+    }
+    if (data.uses_vpos || variant.fog_mode >= SM30_FOG_EXP) {
       auto index = func_signature.DefineInput(InputPosition{.interpolation = Interpolation::center_no_perspective});
       prologue.Add([=](IOHelper &io) -> llvm::Error { return io.InitializeInput(index, reg::PSInputVPos, 0xF); });
     }
@@ -215,16 +298,130 @@ struct Driver {
     }
   }
 
+  BasicBlock *
+  newBlock(const char *name) {
+    epilogue_blocks.push_back(std::make_unique<BasicBlock>(name));
+    return epilogue_blocks.back().get();
+  }
+
+  // Compiled-in D3D9 fixed-function steps, spliced between the shader body and the output copy.
+  void
+  buildEpilogueBlocks() {
+    BasicBlock *cur = newBlock("d3d9_epilogue");
+    BasicBlock *first = cur;
+    uint32_t e = reg::EpilogueBase;
+    auto discard_unless = [&](BasicBlockCondition pass) {
+      auto discard = newBlock("d3d9_alpha_discard");
+      auto next = newBlock("d3d9_epilogue_next");
+      discard->instructions.push_back(InstPixelDiscard{});
+      discard->target = BasicBlockUnconditionalBranch{next};
+      cur->target = BasicBlockConditionalBranch{pass, next, discard};
+      cur = next;
+    };
+
+    bool color0 = data.color_output_mask & 1;
+    if (data.version.pixel && color0 && variant.alpha_func && variant.alpha_func != D3DCMP_ALWAYS_VALUE) {
+      SrcOperand a = temp_src(reg::OutColorBase, rep(3)), ref = runtime_src(0, rep(0));
+      auto mask = temp_dst(e, 0x1, OperandDataType::Integer);
+      switch (variant.alpha_func) {
+      case D3DCMP_NEVER_VALUE:
+        cur->instructions.push_back(InstMov{kNoSat, mask, SrcOperandImmediate32{._ = {swizzle_identity, false, false, OperandDataType::Integer}, .uvalue = {0, 0, 0, 0}}});
+        break;
+      case D3DCMP_LESS_VALUE:
+        cur->instructions.push_back(InstFloatCompare{kNoSat, FloatComparison::LessThan, mask, a, ref});
+        break;
+      case D3DCMP_EQUAL_VALUE:
+        cur->instructions.push_back(InstFloatCompare{kNoSat, FloatComparison::Equal, mask, a, ref});
+        break;
+      case D3DCMP_LESSEQUAL_VALUE:
+        cur->instructions.push_back(InstFloatCompare{kNoSat, FloatComparison::GreaterEqual, mask, ref, a});
+        break;
+      case D3DCMP_GREATER_VALUE:
+        cur->instructions.push_back(InstFloatCompare{kNoSat, FloatComparison::LessThan, mask, ref, a});
+        break;
+      case D3DCMP_NOTEQUAL_VALUE:
+        cur->instructions.push_back(InstFloatCompare{kNoSat, FloatComparison::NotEqual, mask, a, ref});
+        break;
+      default:
+        cur->instructions.push_back(InstFloatCompare{kNoSat, FloatComparison::GreaterEqual, mask, a, ref});
+        break;
+      }
+      discard_unless({temp_src(e, rep(0), OperandDataType::Integer), true});
+    }
+
+    if (data.version.pixel && color0 && variant.fog_mode != SM30_FOG_NONE) {
+      auto f = temp_dst(e, 0x1);
+      SrcOperand fx = temp_src(e, rep(0));
+      SrcOperand z = SrcOperandInput{._ = {rep(2), false, false, OperandDataType::Float}, .regid = reg::PSInputVPos};
+      auto &ins = cur->instructions;
+      switch (variant.fog_mode) {
+      case SM30_FOG_VERTEX:
+        ins.push_back(InstMov{kSat, f, SrcOperandInput{._ = {rep(0), false, false, OperandDataType::Float}, .regid = reg::PSInputFog}});
+        break;
+      case SM30_FOG_EXP:
+        ins.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Mul, f, z, runtime_src(2, rep(2))});
+        ins.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Mul, f, fx, imm(-1.4426950f)});
+        ins.push_back(InstFloatUnaryOp{kSat, FloatUnaryOp::Exp2, f, fx});
+        break;
+      case SM30_FOG_EXP2:
+        ins.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Mul, f, z, runtime_src(2, rep(2))});
+        ins.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Mul, f, fx, fx});
+        ins.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Mul, f, fx, imm(-1.4426950f)});
+        ins.push_back(InstFloatUnaryOp{kSat, FloatUnaryOp::Exp2, f, fx});
+        break;
+      default:
+        ins.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Add, f, runtime_src(2, rep(1)), neg(z)});
+        ins.push_back(InstFloatBinaryOp{kSat, FloatBinaryOp::Mul, f, fx, runtime_src(2, rep(3))});
+        break;
+      }
+      ins.push_back(InstFloatBinaryOp{
+          kNoSat, FloatBinaryOp::Add, temp_dst(e + 1, 0x7), temp_src(reg::OutColorBase), neg(runtime_src(1))
+      });
+      ins.push_back(InstFloatMAD{kNoSat, temp_dst(reg::OutColorBase, 0x7), temp_src(e + 1), fx, runtime_src(1)});
+    }
+
+    if (!data.version.pixel) {
+      uint32_t k = 0;
+      for (uint32_t i = 0; i < 6; i++) {
+        if (!(variant.clip_plane_mask & (1 << i)))
+          continue;
+        cur->instructions.push_back(InstDotProduct{
+            kNoSat, DstOperandOutput{._ = {0x1, OperandDataType::Float}, .regid = reg::VSOutClipBase + k++, .phase = ~0u},
+            temp_src(reg::OutPos), runtime_src(3 + i), 4
+        });
+      }
+      if (variant.flags & SM30_SHADER_FLAG_POINT_SIZE) {
+        SrcOperand size = data.writes_psize ? temp_src(reg::OutPSize, rep(0)) : runtime_src(0, rep(1));
+        cur->instructions.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Max, temp_dst(e, 0x1), size, runtime_src(0, rep(2))});
+        cur->instructions.push_back(InstFloatBinaryOp{
+            kNoSat, FloatBinaryOp::Min,
+            DstOperandOutput{._ = {0x1, OperandDataType::Float}, .regid = reg::VSOutPointSize, .phase = ~0u},
+            temp_src(e, rep(0)), runtime_src(0, rep(3))
+        });
+      }
+    }
+
+    cur->target = BasicBlockUnconditionalBranch{data.copy_bb};
+    data.final_bb->target = BasicBlockUnconditionalBranch{first};
+  }
+
+  uint32_t
+  clipPlaneCount() const {
+    return data.version.pixel ? 0 : std::popcount(variant.clip_plane_mask & 0x3F);
+  }
+
   llvm::Error
   run(const char *name) {
     bool pixel = data.version.pixel;
-    uint32_t vertex_idx = 0, base_vertex_idx = 0, instance_idx = 0, base_instance_idx = 0;
+    uint32_t vertex_idx = 0, base_vertex_idx = 0, instance_idx = 0, base_instance_idx = 0, clip_distance_idx = ~0u;
     if (pixel) {
       definePixelInputs();
       definePixelOutputs();
     } else {
       defineVertexInputs();
       defineVertexOutputs();
+      if (clipPlaneCount())
+        clip_distance_idx = func_signature.DefineOutput(OutputClipDistance{clipPlaneCount()});
       vertex_idx = func_signature.DefineInput(InputVertexID{});
       base_vertex_idx = func_signature.DefineInput(InputBaseVertex{});
       instance_idx = func_signature.DefineInput(InputInstanceID{});
@@ -293,7 +490,9 @@ struct Driver {
     IOHelper io(air, function, types, resource_map);
     if (auto err = prologue.Run(io))
       return err;
+    buildEpilogueBlocks();
     auto real_entry = convert_basicblocks(shader->entry(), ctx, epilogue_bb);
+    data.final_bb->target = BasicBlockUnconditionalBranch{data.copy_bb};
     if (auto err = real_entry.takeError())
       return err;
     builder.CreateBr(real_entry.get());
@@ -302,8 +501,21 @@ struct Driver {
     auto result = epilogue.Run(function->getReturnType(), io);
     if (auto err = result.takeError())
       return err;
-    if (result.get())
-      builder.CreateRet(result.get());
+    llvm::Value *ret = result.get();
+    if (clip_distance_idx != ~0u) {
+      auto array_ty = llvm::ArrayType::get(types._float, clipPlaneCount());
+      llvm::Value *array = llvm::ConstantAggregateZero::get(array_ty);
+      for (uint32_t k = 0; k < clipPlaneCount(); k++) {
+        auto ptr = builder.CreateGEP(
+            resource_map.output.ptr_float4->getType()->getNonOpaquePointerElementType(), resource_map.output.ptr_float4,
+            {builder.getInt32(0), builder.getInt32(reg::VSOutClipBase + k), builder.getInt32(0)}
+        );
+        array = builder.CreateInsertValue(array, builder.CreateLoad(types._float, ptr), {k});
+      }
+      ret = builder.CreateInsertValue(ret, array, {clip_distance_idx});
+    }
+    if (ret)
+      builder.CreateRet(ret);
     else
       builder.CreateRetVoid();
 

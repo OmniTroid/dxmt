@@ -204,6 +204,7 @@ enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE {
   SM50_SHADER_PSO_TESSELLATOR = 7,
   SM50_SHADER_ROOT_SIGNATURE = 8,
   SM50_SHADER_ROOT_SIGNATURE2 = 9,
+  SM30_SHADER_D3D9 = 10,
   SM50_SHADER_ARGUMENT_TYPE_MAX = 0xffffffff,
 };
 
@@ -255,6 +256,40 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   uint32_t unorm_output_reg_mask;
   /** MTLPixelFormat */
   uint32_t pixel_formats[8];
+};
+
+enum SM30_FOG_MODE {
+  SM30_FOG_NONE = 0,
+  SM30_FOG_VERTEX = 1,
+  SM30_FOG_EXP = 2,
+  SM30_FOG_EXP2 = 3,
+  SM30_FOG_LINEAR = 4,
+};
+
+enum SM30_SHADER_FLAG {
+  SM30_SHADER_FLAG_FLAT_SHADING = 1 << 0,
+  SM30_SHADER_FLAG_POINT_SPRITE = 1 << 1,
+  SM30_SHADER_FLAG_POINT_SIZE = 1 << 2,
+};
+
+/*
+ * D3D9 fixed-function behaviour applied around a shader. The values it reads come from constant buffer 3,
+ * laid out as SM30_RUNTIME_CONSTANTS.
+ */
+struct SM30_SHADER_D3D9_DATA {
+  void *next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t alpha_func; /* D3DCMPFUNC; 0 or D3DCMP_ALWAYS disables the alpha test */
+  uint32_t fog_mode;   /* SM30_FOG_MODE, pixel shaders before ps_3_0 only */
+  uint32_t clip_plane_mask;
+  uint32_t flags; /* SM30_SHADER_FLAG */
+};
+
+struct SM30_RUNTIME_CONSTANTS {
+  float alpha_ref, point_size, point_size_min, point_size_max;
+  float fog_color[4];
+  float fog_start, fog_end, fog_density, fog_scale; /* fog_scale = 1 / (end - start) */
+  float clip_planes[6][4];
 };
 
 /* D3D9 vertex declaration types Metal can't fetch directly; or'd into SM50_IA_INPUT_ELEMENT.format << 16 */

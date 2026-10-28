@@ -29,7 +29,8 @@ struct SM50_SHADER_COMPILATION_ARGUMENT_DATA;
 
 namespace dxmt::dxbc {
 class SM50ShaderInternal;
-}
+class BasicBlock;
+} // namespace dxmt::dxbc
 
 namespace dxmt::d3d9 {
 
@@ -46,13 +47,21 @@ constexpr uint32_t VPos = 42;
 constexpr uint32_t VFace = 43;
 constexpr uint32_t ScratchBase = 44;
 constexpr uint32_t ScratchCount = 12;
-constexpr uint32_t TotalTemps = ScratchBase + ScratchCount;
+// shader outputs that the compile-time epilogue reads are staged in temps and copied out at the end
+constexpr uint32_t OutColorBase = 56;
+constexpr uint32_t OutPos = 60;
+constexpr uint32_t OutFog = 61;
+constexpr uint32_t OutPSize = 62;
+constexpr uint32_t EpilogueBase = 63;
+constexpr uint32_t EpilogueCount = 6;
+constexpr uint32_t TotalTemps = EpilogueBase + EpilogueCount;
 
 // pixel shader inputs before ps_3_0: v0-v1 are colors, t0-t7 are texture coordinates
 constexpr uint32_t PSTexCoordBase = 2;
 constexpr uint32_t PSInputVPos = 12;
 constexpr uint32_t PSInputVFace = 13;
-constexpr uint32_t PSInputCount = 14;
+constexpr uint32_t PSInputFog = 14;
+constexpr uint32_t PSInputCount = 15;
 
 // vertex shader outputs before vs_3_0
 constexpr uint32_t VSOutPos = 0;
@@ -61,12 +70,17 @@ constexpr uint32_t VSOutPSize = 2;
 constexpr uint32_t VSOutColorBase = 3;
 constexpr uint32_t VSOutTexCoordBase = 5;
 constexpr uint32_t VSOutLegacyCount = 13;
+// fill outputs start at the shader's own output count; these come after the largest possible fill range
+constexpr uint32_t VSOutClipBase = 40;
+constexpr uint32_t VSOutPointSize = 46;
+constexpr uint32_t VSOutCount = 48;
 } // namespace reg
 
 namespace cb {
 constexpr uint32_t Float = 0;
 constexpr uint32_t Int = 1;
 constexpr uint32_t Bool = 2;
+constexpr uint32_t Runtime = 3;
 } // namespace cb
 
 struct IOElement {
@@ -88,6 +102,12 @@ struct ShaderData {
   std::vector<IOElement> outputs;
   uint32_t color_output_mask = 0;
   bool writes_depth = false;
+  bool writes_psize = false;
+  // every path ends in final_bb, which branches to copy_bb (staged outputs to output registers) and returns
+  dxbc::BasicBlock *final_bb = nullptr;
+  dxbc::BasicBlock *copy_bb = nullptr;
+  uint32_t pos_output_reg = ~0u;
+  uint32_t fog_output_reg = ~0u;
   bool uses_vpos = false;
   bool uses_vface = false;
 };

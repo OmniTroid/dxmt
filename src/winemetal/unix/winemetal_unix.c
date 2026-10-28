@@ -1958,6 +1958,15 @@ struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
   bool RasterizationDisabled;
 };
 
+struct SM30_SHADER_D3D9_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t alpha_func;
+  uint32_t fog_mode;
+  uint32_t clip_plane_mask;
+  uint32_t flags;
+};
+
 struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
   uint32_t next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
@@ -2052,6 +2061,19 @@ sm50_compilation_argument32_convert(
       data->type = src->type;
       data->Data = src->Data;
       data->RasterizationDisabled = src->RasterizationDisabled;
+      break;
+    }
+    case SM30_SHADER_D3D9: {
+      struct SM30_SHADER_D3D9_DATA32 *src = (void *)args32;
+      struct SM30_SHADER_D3D9_DATA *data = malloc(sizeof(struct SM30_SHADER_D3D9_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->alpha_func = src->alpha_func;
+      data->fog_mode = src->fog_mode;
+      data->clip_plane_mask = src->clip_plane_mask;
+      data->flags = src->flags;
       break;
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {

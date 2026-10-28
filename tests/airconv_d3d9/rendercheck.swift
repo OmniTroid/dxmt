@@ -33,7 +33,8 @@ for k in 0..<16 { bools[k] = k % 2 == 0 ? 1 : 0 }
 let cbFloat = device.makeBuffer(bytes: floats, length: floats.count * 4, options: .storageModeShared)!
 let cbInt = device.makeBuffer(bytes: ints, length: ints.count * 4, options: .storageModeShared)!
 let cbBool = device.makeBuffer(bytes: bools, length: bools.count * 4, options: .storageModeShared)!
-let cbs = [cbFloat, cbInt, cbBool]
+let cbRuntime = device.makeBuffer(length: 256, options: .storageModeShared)!
+let cbs = [cbFloat, cbInt, cbBool, cbRuntime]
 
 let texDesc = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba32Float, width: 2, height: 2, mipmapped: false)
 let tex = device.makeTexture(descriptor: texDesc)!
