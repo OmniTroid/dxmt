@@ -24,8 +24,11 @@
 
 namespace dxmt::d3d9 {
 
-// Fills shader.bbs, shader.shader_info and data from SM2/SM3 tokens. Returns an error message on failure.
-std::optional<std::string>
-decode_shader(const uint32_t *tokens, size_t count, dxbc::SM50ShaderInternal &shader, ShaderData &data);
+// Fills shader.bbs, shader.shader_info and data from SM1-SM3 tokens. Returns an error message on failure.
+// Ps1TextureTypes gives the sampler types ps_1_x leaves undeclared (SM30_SHADER_D3D9_DATA::ps1_texture_types).
+std::optional<std::string> decode_shader(
+    const uint32_t *tokens, size_t count, dxbc::SM50ShaderInternal &shader, ShaderData &data,
+    uint32_t Ps1TextureTypes = 0
+);
 
 } // namespace dxmt::d3d9

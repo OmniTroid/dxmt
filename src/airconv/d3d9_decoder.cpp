@@ -18,7 +18,9 @@
 
 #include "d3d9_decoder.hpp"
 #include "dxbc_converter.hpp"
+#include "airconv_public.h"
 #include "adt.hpp"
+#include <algorithm>
 #include <bit>
 #include <cstring>
 #include <format>
@@ -34,6 +36,10 @@ using shader::common::ScalerDataType;
 namespace {
 
 constexpr uint32_t kNoPhase = ~0u;
+constexpr uint32_t kRuntimeBumpEnv = offsetof(SM30_RUNTIME_CONSTANTS, bump_env) / 16;
+constexpr uint32_t kRuntimeBumpLuminance = offsetof(SM30_RUNTIME_CONSTANTS, bump_luminance) / 16;
+constexpr uint32_t kRuntimeProjection = offsetof(SM30_RUNTIME_CONSTANTS, projection) / 16;
+constexpr uint32_t kRuntimeVec4Count = sizeof(SM30_RUNTIME_CONSTANTS) / 16;
 
 SrcOperandCommon &
 common(SrcOperand &src) {
@@ -120,6 +126,7 @@ ic(bool saturate = false) {
 struct Dst {
   DstOperand op;
   bool saturate = false;
+  float scale = 1.0f;
   RegisterType type = RegisterType::Temp;
   uint32_t number = 0;
 
@@ -146,12 +153,15 @@ struct IfContext {
 
 class Decoder {
 public:
-  Decoder(SM50ShaderInternal &shader, ShaderData &data, const Version &version) :
+  Decoder(SM50ShaderInternal &shader, ShaderData &data, const Version &version, uint32_t ps1_texture_types) :
       sh_(shader),
       d_(data),
       info_(shader.shader_info),
       ver_(version),
-      ps_(version.pixel) {}
+      ps_(version.pixel),
+      ps1_(version.pixel && version.major == 1),
+      ps14_(ps1_ && version.minor >= 4),
+      ps1_texture_types_(ps1_texture_types) {}
 
   std::optional<std::string>
   run(Reader &reader) {
@@ -172,6 +182,10 @@ public:
     }
     if (error_)
       return error_;
+    if (ps1_) {
+      emit(InstMov{ic(), temp_dst(reg::OutColorBase), temp_src(0)});
+      d_.color_output_mask |= 1;
+    }
     if (!loops_.empty() || !ifs_.empty())
       return "unterminated control flow";
     if (std::holds_alternative<BasicBlockUndefined>(cur_->target))
@@ -201,7 +215,7 @@ public:
         continue;
       ConstantBufferInfo cbv;
       cbv.range = {.range_id = i, .lower_bound = i, .size = 1, .space = 0};
-      cbv.size_in_vec4 = i == cb::Float ? 256 : i == cb::Int ? 16 : i == cb::Bool ? 4 : 16;
+      cbv.size_in_vec4 = i == cb::Float ? 256 : i == cb::Int ? 16 : i == cb::Bool ? 4 : kRuntimeVec4Count;
       info_.cbufferMap[i] = cbv;
     }
     return std::nullopt;
@@ -276,10 +290,16 @@ private:
     case RegisterType::Temp:
       return SrcOperandTemp{._ = c, .regid = n, .phase = kNoPhase};
     case RegisterType::Input:
+      if (ps1_)
+        record_input(n, Usage::Color, n);
       if (relative)
         return SrcOperandIndexableInput{._ = c, .regindex = relative_index(p, n)};
       return SrcOperandInput{._ = c, .regid = n};
     case RegisterType::Addr:
+      if (ps1_ && !ps14_)
+        return SrcOperandTemp{._ = c, .regid = reg::PS1TexBase + n, .phase = kNoPhase};
+      if (ps14_)
+        record_input(reg::PSTexCoordBase + n, Usage::TexCoord, n);
       if (ps_)
         return SrcOperandInput{._ = c, .regid = reg::PSTexCoordBase + n};
       c.read_type = OperandDataType::Integer;
@@ -294,9 +314,24 @@ private:
       if (auto it = defs_f_.find(n); it != defs_f_.end()) {
         SrcOperandImmediate32 imm{._ = c};
         std::memcpy(imm.uvalue, it->second.data(), 16);
+        if (ps1_)
+          for (auto &f : imm.fvalue)
+            f = std::clamp(f, -1.0f, 1.0f);
         return imm;
       }
       cb_used_ |= 1 << cb::Float;
+      if (ps1_) {
+        // ps_1_x constants are clamped to [-1, 1]
+        uint32_t t = scratch();
+        SrcOperandCommon whole{swizzle_identity, false, false, OperandDataType::Float};
+        emit(InstFloatBinaryOp{
+            ic(), FloatBinaryOp::Max, temp_dst(t),
+            SrcOperandConstantBuffer{._ = whole, .rangeid = cb::Float, .rangeindex = cb::Float, .regindex = n},
+            imm_f(-1.0f)
+        });
+        emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Min, temp_dst(t), temp_src(t), imm_f(1.0f)});
+        return temp_src(t, swz);
+      }
       return SrcOperandConstantBuffer{._ = c, .rangeid = cb::Float, .rangeindex = cb::Float, .regindex = n};
     }
     case RegisterType::ConstInt: {
@@ -400,6 +435,28 @@ private:
   }
 
   void
+  record_input(uint32_t reg, Usage usage, uint32_t index) {
+    for (auto &in : d_.inputs)
+      if (in.reg == reg)
+        return;
+    d_.inputs.push_back({reg, usage, index, 0xF, false});
+  }
+
+  SrcOperand
+  texcoord(uint32_t n, Swizzle swz = swizzle_identity) {
+    record_input(reg::PSTexCoordBase + n, Usage::TexCoord, n);
+    return SrcOperandInput{._ = {swz, false, false, OperandDataType::Float}, .regid = reg::PSTexCoordBase + n};
+  }
+
+  SrcOperand
+  runtime(uint32_t index, Swizzle swz = swizzle_identity) {
+    return SrcOperandConstantBuffer{
+        ._ = {swz, false, false, OperandDataType::Float}, .rangeid = cb::Runtime, .rangeindex = cb::Runtime,
+        .regindex = index
+    };
+  }
+
+  void
   record_legacy_output(uint32_t reg, Usage usage, uint32_t index) {
     for (auto &out : d_.outputs)
       if (out.reg == reg)
@@ -416,15 +473,21 @@ private:
     result.saturate = result_modifier(token) & kResultSaturate;
     uint32_t mask = write_mask(token);
     uint32_t n = result.number;
-    if (result_shift(token))
-      fail("d3d9: result shift is only valid in ps_1_x");
+    if (int32_t shift = result_shift(token)) {
+      if (!ps1_)
+        fail("d3d9: result shift is only valid in ps_1_x");
+      result.scale = shift > 0 ? float(1 << shift) : 1.0f / float(1 << -shift);
+    }
 
     switch (result.type) {
     case RegisterType::Temp:
       result.op = temp_dst(n, mask);
       break;
     case RegisterType::Addr:
-      result.op = temp_dst(reg::A0, mask, OperandDataType::Integer);
+      if (ps1_ && !ps14_)
+        result.op = temp_dst(reg::PS1TexBase + n, mask);
+      else
+        result.op = temp_dst(reg::A0, mask, OperandDataType::Integer);
       break;
     case RegisterType::Predicate:
       result.op = temp_dst(reg::P0, mask, OperandDataType::Integer);
@@ -508,6 +571,12 @@ private:
   void
   write(Dst d, std::optional<SrcOperand> predicate, Fn &&body, bool inline_sat) {
     bool need_temp = (d.saturate && !inline_sat) || (predicate && !is_replicate(common(*predicate).swizzle));
+    if (!predicate && d.scale != 1.0f) {
+      uint32_t t = scratch();
+      body(temp_dst(t, d.mask()), false);
+      emit(InstFloatBinaryOp{ic(d.saturate), FloatBinaryOp::Mul, d.op, temp_src(t), imm_f(d.scale)});
+      return;
+    }
     if (!predicate) {
       if (!need_temp) {
         body(d.op, d.saturate);
@@ -925,6 +994,10 @@ private:
     auto type = TextureType::Texture2D;
     if (auto it = sampler_types_.find(s); it != sampler_types_.end())
       type = it->second;
+    if (ps1_) {
+      uint32_t bits = (ps1_texture_types_ >> (2 * s)) & 3;
+      type = bits == 1 ? TextureType::Cube : bits == 2 ? TextureType::Volume : TextureType::Texture2D;
+    }
     if (!info_.srvMap.contains(s)) {
       ShaderResourceViewInfo srv;
       srv.range = {.range_id = s, .lower_bound = s, .size = 1, .space = 0};
@@ -943,12 +1016,190 @@ private:
   }
 
   void
+  ps1_sample(uint32_t stage, SrcOperand coord, DstOperand out) {
+    auto resource = use_sampler(stage, swizzle_identity);
+    SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
+    emit(InstSample{out, coord, resource, sampler, {0, 0, 0}, std::nullopt, std::nullopt});
+  }
+
+  // Samples Stage into a fresh scratch register and returns it.
+  SrcOperand
+  ps1_sample(uint32_t stage, SrcOperand coord) {
+    uint32_t t = scratch();
+    ps1_sample(stage, coord, temp_dst(t));
+    return temp_src(t);
+  }
+
+  // coord + bump matrix of Stage * du/dv, as texbem and bem compute it
+  SrcOperand
+  bump(uint32_t stage, SrcOperand base, SrcOperand delta) {
+    uint32_t t = scratch();
+    emit(InstMov{ic(), temp_dst(t), base});
+    emit(InstFloatMAD{ic(), temp_dst(t, 0x3), component(delta, 0), runtime(kRuntimeBumpEnv + stage, {0, 1, 0, 1}), temp_src(t)});
+    emit(InstFloatMAD{ic(), temp_dst(t, 0x3), component(delta, 1), runtime(kRuntimeBumpEnv + stage, {2, 3, 2, 3}), temp_src(t)});
+    return temp_src(t);
+  }
+
+  void
+  matrix_row(uint32_t stage, SrcOperand value) {
+    if (matrix_row_ > 2) {
+      fail("d3d9: too many texm3x pad instructions");
+      return;
+    }
+    emit(InstDotProduct{ic(), temp_dst(reg::PS1Matrix, 1u << matrix_row_), texcoord(stage), value, 3});
+    matrix_stages_[matrix_row_++] = stage;
+  }
+
+  void
+  write_depth(SrcOperand z, SrcOperand w) {
+    // z / w, or 1 when w is 0
+    uint32_t t = scratch(), cond = scratch();
+    emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Div, temp_dst(t, 0x1), z, w});
+    emit(InstFloatCompare{ic(), FloatComparison::Equal, temp_dst(cond, 0x1, OperandDataType::Integer), w, imm_f(0.0f)});
+    emit(InstMovConditional{
+        ic(true), DstOperandOutputDepth{._ = {0x1, OperandDataType::Float}},
+        temp_src(cond, replicate(0), OperandDataType::Integer), imm_f(1.0f), temp_src(t, replicate(0))
+    });
+    d_.writes_depth = true;
+  }
+
+  // Reflects the eye vector E about the normal in PS1Matrix: 2 N (N.E) / (N.N) - E.
+  SrcOperand
+  reflect(SrcOperand eye) {
+    SrcOperand n = temp_src(reg::PS1Matrix);
+    uint32_t t = scratch(), r = scratch();
+    emit(InstDotProduct{ic(), temp_dst(t, 0x1), n, eye, 3});
+    emit(InstDotProduct{ic(), temp_dst(t, 0x2), n, n, 3});
+    emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(t, 0x1), temp_src(t, replicate(0)), temp_src(t, replicate(0))});
+    emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Div, temp_dst(t, 0x1), temp_src(t, replicate(0)), temp_src(t, replicate(1))});
+    emit(InstFloatMAD{ic(), temp_dst(r), n, temp_src(t, replicate(0)), negate(eye)});
+    return temp_src(r);
+  }
+
+  void
+  ps1_texture(const d3d9bc::Instruction &inst) {
+    const uint32_t *p = inst.operands;
+    uint32_t m = register_number(*p);
+    Dst d = dst(p);
+    auto store = [&](SrcOperand value) {
+      write(d, std::nullopt, [&](DstOperand o, bool s) { emit(InstMov{ic(s), o, value}); }, true);
+    };
+
+    switch (inst.opcode) {
+    case Opcode::Tex: {
+      if (ps14_) {
+        SrcOperand coord = src(p);
+        return store(ps1_sample(m, coord));
+      }
+      // D3DTTFF_PROJECTED divides by the component the one-hot selector picks; dot(tc - 1, sel) + 1 is 1 without one
+      uint32_t w = scratch(), coord = scratch();
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(w), texcoord(m), imm_f(-1.0f)});
+      emit(InstDotProduct{ic(), temp_dst(w, 0x1), temp_src(w), runtime(kRuntimeProjection + m), 4});
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(w, 0x1), temp_src(w, replicate(0)), imm_f(1.0f)});
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Div, temp_dst(coord), texcoord(m), temp_src(w, replicate(0))});
+      return store(ps1_sample(m, temp_src(coord)));
+    }
+    case Opcode::TexCoord: {
+      if (ps14_)
+        return store(src(p));
+      uint32_t t = scratch();
+      emit(InstMov{ic(true), temp_dst(t), texcoord(m)});
+      emit(InstMov{ic(), temp_dst(t, 0x8), imm_f(1.0f)});
+      return store(temp_src(t));
+    }
+    case Opcode::TexBem:
+    case Opcode::TexBemL: {
+      SrcOperand delta = src(p);
+      SrcOperand sample = ps1_sample(m, bump(m, texcoord(m), delta));
+      if (inst.opcode == Opcode::TexBem)
+        return store(sample);
+      uint32_t l = scratch();
+      emit(InstFloatMAD{
+          ic(true), temp_dst(l, 0x1), component(delta, 2), runtime(kRuntimeBumpLuminance + m, replicate(0)),
+          runtime(kRuntimeBumpLuminance + m, replicate(1))
+      });
+      uint32_t t = scratch();
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Mul, temp_dst(t), sample, temp_src(l, replicate(0))});
+      return store(temp_src(t));
+    }
+    case Opcode::TexReg2AR:
+    case Opcode::TexReg2GB:
+    case Opcode::TexReg2RGB: {
+      SrcOperand value = src(p);
+      auto &c = common(value);
+      std::array<uint8_t, 4> perm = inst.opcode == Opcode::TexReg2AR   ? std::array<uint8_t, 4>{3, 0, 0, 0}
+                                    : inst.opcode == Opcode::TexReg2GB ? std::array<uint8_t, 4>{1, 2, 2, 2}
+                                                                       : std::array<uint8_t, 4>{0, 1, 2, 2};
+      return store(ps1_sample(m, with_swizzle(value, compose(c.swizzle, perm))));
+    }
+    case Opcode::TexM3x2Pad:
+    case Opcode::TexM3x3Pad:
+      matrix_row(m, src(p));
+      return;
+    case Opcode::TexM3x2Tex:
+    case Opcode::TexM3x2Depth: {
+      matrix_row(m, src(p));
+      matrix_row_ = 0;
+      if (inst.opcode == Opcode::TexM3x2Depth)
+        return write_depth(temp_src(reg::PS1Matrix, replicate(0)), temp_src(reg::PS1Matrix, replicate(1)));
+      return store(ps1_sample(m, temp_src(reg::PS1Matrix)));
+    }
+    case Opcode::TexM3x3:
+    case Opcode::TexM3x3Tex:
+    case Opcode::TexM3x3Spec:
+    case Opcode::TexM3x3VSpec: {
+      matrix_row(m, src(p));
+      matrix_row_ = 0;
+      if (inst.opcode == Opcode::TexM3x3) {
+        emit(InstMov{ic(), temp_dst(reg::PS1Matrix, 0x8), imm_f(1.0f)});
+        return store(temp_src(reg::PS1Matrix));
+      }
+      if (inst.opcode == Opcode::TexM3x3Tex)
+        return store(ps1_sample(m, temp_src(reg::PS1Matrix)));
+      SrcOperand eye = temp_src(0);
+      if (inst.opcode == Opcode::TexM3x3Spec) {
+        eye = src(p);
+      } else {
+        uint32_t e = scratch();
+        for (uint32_t i = 0; i < 3; i++)
+          emit(InstMov{ic(), temp_dst(e, 1u << i), texcoord(matrix_stages_[i], replicate(3))});
+        eye = temp_src(e);
+      }
+      return store(ps1_sample(m, reflect(eye)));
+    }
+    case Opcode::TexDp3Tex:
+    case Opcode::TexDp3: {
+      SrcOperand value = src(p);
+      uint32_t t = scratch();
+      emit(InstMov{ic(), temp_dst(t), imm_f(0.0f)});
+      emit(InstDotProduct{ic(), temp_dst(t, inst.opcode == Opcode::TexDp3 ? 0xF : 0x1), texcoord(m), value, 3});
+      return store(inst.opcode == Opcode::TexDp3 ? temp_src(t) : ps1_sample(m, temp_src(t)));
+    }
+    case Opcode::TexDepth: {
+      SrcOperand r = temp_src(m);
+      return write_depth(component(r, 0), component(r, 1));
+    }
+    case Opcode::Bem: {
+      SrcOperand a = src(p), b = src(p);
+      return store(bump(m, a, b));
+    }
+    default:
+      fail(std::format("d3d9: unsupported ps_1_x instruction {}", (uint32_t)inst.opcode));
+    }
+  }
+
+  void
   texkill(const d3d9bc::Instruction &inst) {
     uint32_t token = inst.operands[0];
     uint32_t mask = write_mask(token);
     const uint32_t *p = inst.operands;
     bool is_not;
-    SrcOperand value = src_register(p, 0, is_not);
+    // ps_1_x tests xyz, and before ps_1_4 t# names the texture coordinate rather than the texture result
+    if (ps1_)
+      mask &= 0x7;
+    SrcOperand value = ps1_ && !ps14_ && register_type(token) == RegisterType::Addr
+                           ? texcoord(register_number(token))
+                           : src_register(p, 0, is_not);
     common(value).swizzle = swizzle_identity;
     uint32_t t = scratch();
     emit(InstFloatCompare{
@@ -1138,6 +1389,11 @@ private:
       defs_b_[register_number(p[0])] = p[1] != 0;
       break;
     case Opcode::Tex:
+      if (ps1_)
+        ps1_texture(inst);
+      else
+        texture(inst);
+      break;
     case Opcode::TexLdl:
     case Opcode::TexLdd:
       texture(inst);
@@ -1212,6 +1468,8 @@ private:
       cur_->target = BasicBlockUnconditionalBranch{func_ret_ ? func_ret_ : ret_main_};
       cur_ = fresh("after_ret");
       break;
+    case Opcode::Phase:
+      break;
     case Opcode::TexCoord:
     case Opcode::TexBem:
     case Opcode::TexBemL:
@@ -1221,7 +1479,6 @@ private:
     case Opcode::TexM3x2Tex:
     case Opcode::TexM3x3Pad:
     case Opcode::TexM3x3Tex:
-    case Opcode::TexM3x3Diff:
     case Opcode::TexM3x3Spec:
     case Opcode::TexM3x3VSpec:
     case Opcode::TexReg2RGB:
@@ -1231,8 +1488,13 @@ private:
     case Opcode::TexM3x3:
     case Opcode::TexDepth:
     case Opcode::Bem:
-    case Opcode::Phase:
-      fail(std::format("d3d9: ps_1_x instruction {} is not supported", (uint32_t)inst.opcode));
+      if (ps1_)
+        ps1_texture(inst);
+      else
+        fail(std::format("d3d9: instruction {} is only valid in ps_1_x", (uint32_t)inst.opcode));
+      break;
+    case Opcode::TexM3x3Diff:
+      fail("d3d9: texm3x3diff is not supported");
       break;
     default:
       alu(inst);
@@ -1245,6 +1507,11 @@ private:
   ShaderInfo &info_;
   Version ver_;
   bool ps_;
+  bool ps1_;
+  bool ps14_;
+  uint32_t ps1_texture_types_;
+  uint32_t matrix_row_ = 0;
+  uint32_t matrix_stages_[3] = {};
   BasicBlock *cur_ = nullptr;
   BasicBlock *ret_main_ = nullptr;
   BasicBlock *func_ret_ = nullptr;
@@ -1266,12 +1533,16 @@ private:
 } // namespace
 
 std::optional<std::string>
-decode_shader(const uint32_t *tokens, size_t count, SM50ShaderInternal &shader, ShaderData &data) {
+decode_shader(
+    const uint32_t *tokens, size_t count, SM50ShaderInternal &shader, ShaderData &data, uint32_t Ps1TextureTypes
+) {
   Reader reader(tokens, count);
   data.version = reader.version();
-  if (data.version.pixel && !data.version.atLeast(2, 0))
-    return "d3d9: ps_1_x is not supported yet";
-  Decoder decoder(shader, data, data.version);
+  if (data.version.pixel && data.version.major == 1) {
+    data.ps1_tokens.assign(tokens, tokens + count);
+    data.ps1_texture_types = Ps1TextureTypes;
+  }
+  Decoder decoder(shader, data, data.version, Ps1TextureTypes);
   return decoder.run(reader);
 }
 

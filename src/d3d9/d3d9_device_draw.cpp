@@ -543,7 +543,7 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const flo
       }
       auto &storage = const_buffers_[stage][slot];
       if (!storage) {
-        UINT sizes[4] = {256 * 16, 16 * 16, 16 * 4, 16 * 16};
+        UINT sizes[4] = {256 * 16, 16 * 16, 16 * 4, (sizeof(SM30_RUNTIME_CONSTANTS) + 255) & ~255u};
         storage = std::make_unique<MTLD3D9BufferStorage>(this, sizes[slot], D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY);
         const_dirty_[stage] |= 1 << slot;
       }
@@ -630,6 +630,18 @@ MTLD3D9Device::UpdateRuntimeConstants() {
   c.fog_density = f(D3DRS_FOGDENSITY);
   c.fog_scale = c.fog_end != c.fog_start ? 1.0f / (c.fog_end - c.fog_start) : 0.0f;
   std::memcpy(c.clip_planes, clip_planes_.data(), sizeof(c.clip_planes));
+  for (uint32_t i = 0; i < 8; i++) {
+    auto &tss = texture_stage_states_[i];
+    for (uint32_t k = 0; k < 4; k++)
+      c.bump_env[i][k] = std::bit_cast<float>(tss[D3DTSS_BUMPENVMAT00 + k]);
+    c.bump_luminance[i][0] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLSCALE]);
+    c.bump_luminance[i][1] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLOFFSET]);
+    DWORD flags = tss[D3DTSS_TEXTURETRANSFORMFLAGS];
+    if (flags & D3DTTFF_PROJECTED) {
+      DWORD count = flags & ~D3DTTFF_PROJECTED;
+      c.projection[i][count ? std::min<DWORD>(count, 4) - 1 : 3] = 1.0f;
+    }
+  }
   if (std::memcmp(&c, &runtime_constants_, sizeof(c))) {
     runtime_constants_ = c;
     const_dirty_[0] |= 8;
@@ -732,6 +744,14 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
     ps_d3d9.flags |= SM30_SHADER_FLAG_FLAT_SHADING;
   if (points && render_states_[D3DRS_POINTSPRITEENABLE])
     ps_d3d9.flags |= SM30_SHADER_FLAG_POINT_SPRITE;
+  if (ps_code->bytecode()[0] < 0xFFFF0200) {
+    for (uint32_t i = 0; i < 8; i++) {
+      auto texture = textures_[i].texture;
+      D3DRESOURCETYPE type = texture ? texture->GetType() : D3DRTYPE_TEXTURE;
+      uint32_t bits = type == D3DRTYPE_CUBETEXTURE ? 1 : type == D3DRTYPE_VOLUMETEXTURE ? 2 : 0;
+      ps_d3d9.ps1_texture_types |= bits << (2 * i);
+    }
+  }
 
   SM50_SHADER_IA_INPUT_LAYOUT_DATA ia = {};
   ia.next = &vs_d3d9;
@@ -762,6 +782,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
                     .update(ps_d3d9.alpha_func)
                     .update(ps_d3d9.fog_mode)
                     .update(ps_d3d9.flags)
+                    .update(ps_d3d9.ps1_texture_types)
                     .final();
   auto ps = ps_code->GetFunction(
       GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version

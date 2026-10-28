@@ -17,6 +17,7 @@
  */
 
 #include "d3d9_decoder.hpp"
+#include "airconv_error.hpp"
 #include "dxbc_converter.hpp"
 #include "llvm/Support/raw_ostream.h"
 #include <bit>
@@ -524,11 +525,49 @@ struct Driver {
 
 } // namespace
 
+std::unique_ptr<SM50ShaderInternal>
+create_shader(const uint32_t *tokens, size_t count, uint32_t ps1_texture_types, std::string &error, BindingSlotMasks &masks) {
+  d3d9bc::Version version;
+  if (!count || !d3d9bc::read_version(tokens[0], version)) {
+    error = "Invalid D3D9 shader bytecode";
+    return nullptr;
+  }
+  auto shader = std::make_unique<SM50ShaderInternal>();
+  shader->shader_type = version.pixel ? microsoft::D3D10_SB_PIXEL_SHADER : microsoft::D3D10_SB_VERTEX_SHADER;
+  shader->d3d9 = std::make_shared<ShaderData>();
+  if (auto err = decode_shader(tokens, count, *shader, *shader->d3d9, ps1_texture_types)) {
+    error = *err;
+    return nullptr;
+  }
+  if (version.pixel) {
+    shader->max_input_register = reg::PSInputCount;
+    shader->max_output_register = 4;
+    shader->pso_valid_output_reg_mask = shader->d3d9->color_output_mask;
+  } else {
+    shader->max_input_register = 16;
+    shader->max_output_register = std::max(12u, reg::VSOutLegacyCount);
+  }
+  masks = define_argument_bindings(shader.get());
+  return shader;
+}
+
 llvm::Error
 convert_shader(
     SM50ShaderInternal *pShader, const char *name, llvm::LLVMContext &context, llvm::Module &module,
     SM50_SHADER_COMPILATION_ARGUMENT_DATA *pArgs
 ) {
+  auto &data = *pShader->d3d9;
+  SM30_SHADER_D3D9_DATA *d3d9 = nullptr;
+  if (!data.ps1_tokens.empty() && args_get_data<SM30_SHADER_D3D9, SM30_SHADER_D3D9_DATA>(pArgs, &d3d9) &&
+      d3d9->ps1_texture_types != data.ps1_texture_types) {
+    std::string error;
+    BindingSlotMasks masks;
+    auto variant = create_shader(data.ps1_tokens.data(), data.ps1_tokens.size(), d3d9->ps1_texture_types, error, masks);
+    if (!variant)
+      return llvm::make_error<dxmt::UnsupportedFeature>(error);
+    Driver driver(variant.get(), context, module, pArgs);
+    return driver.run(name);
+  }
   Driver driver(pShader, context, module, pArgs);
   return driver.run(name);
 }
@@ -548,31 +587,18 @@ SM30Initialize(
   auto errorObj = std::make_unique<SM50ErrorInternal>();
   llvm::raw_svector_ostream errorOut(errorObj->buf);
 
-  d3d9bc::Version version;
-  if (!ppShader || !pBytecode || BytecodeSize < 8 || !d3d9bc::read_version(*(const uint32_t *)pBytecode, version)) {
+  if (!ppShader || !pBytecode || BytecodeSize < 8) {
     errorOut << "Invalid D3D9 shader bytecode";
     SM50_RETURN_ERROR(errorObj, ppError, 1);
   }
-
-  auto shader = std::make_unique<SM50ShaderInternal>();
-  shader->shader_type = version.pixel ? microsoft::D3D10_SB_PIXEL_SHADER : microsoft::D3D10_SB_VERTEX_SHADER;
-  shader->d3d9 = std::make_shared<d3d9::ShaderData>();
-
-  if (auto err = d3d9::decode_shader((const uint32_t *)pBytecode, BytecodeSize / 4, *shader, *shader->d3d9)) {
-    errorOut << *err;
+  std::string error;
+  BindingSlotMasks masks;
+  auto shader = d3d9::create_shader((const uint32_t *)pBytecode, BytecodeSize / 4, 0, error, masks);
+  if (!shader) {
+    errorOut << error;
     SM50_RETURN_ERROR(errorObj, ppError, 1);
   }
-
-  if (version.pixel) {
-    shader->max_input_register = d3d9::reg::PSInputCount;
-    shader->max_output_register = 4;
-    shader->pso_valid_output_reg_mask = shader->d3d9->color_output_mask;
-  } else {
-    shader->max_input_register = 16;
-    shader->max_output_register = std::max(12u, d3d9::reg::VSOutLegacyCount);
-  }
-
-  auto masks = define_argument_bindings(shader.get());
+  bool pixel = shader->d3d9->version.pixel;
   if (pRefl) {
     *pRefl = {};
     pRefl->ConstanttBufferTableBindIndex = shader->args_reflection_cbuffer.size() > 0 ? 29 : ~0u;
@@ -584,7 +610,7 @@ SM30Initialize(
     pRefl->UAVSlotMask = masks.uav;
     pRefl->NumConstantBuffers = shader->args_reflection_cbuffer.size();
     pRefl->NumArguments = shader->args_reflection.size();
-    if (version.pixel)
+    if (pixel)
       pRefl->PixelShader.ValidRenderTargets = shader->pso_valid_output_reg_mask;
     pRefl->NumOutputElement = shader->max_output_register;
     pRefl->ArgumentTableQwords = shader->shader_info.binding_table.Size();

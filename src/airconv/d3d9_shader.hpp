@@ -38,6 +38,9 @@ namespace dxmt::d3d9 {
 // semantic name, so these only need to be consistent within one shader.
 namespace reg {
 constexpr uint32_t TempCount = 32;
+// ps_1_1-1_3 t# registers hold texture results, and texm3x* rows accumulate in PS1Matrix
+constexpr uint32_t PS1TexBase = 16;
+constexpr uint32_t PS1Matrix = 24;
 constexpr uint32_t A0 = 32;
 constexpr uint32_t P0 = 33;
 constexpr uint32_t ALBase = 34;
@@ -110,6 +113,9 @@ struct ShaderData {
   uint32_t fog_output_reg = ~0u;
   bool uses_vpos = false;
   bool uses_vface = false;
+  // ps_1_x is decoded again per sampler type combination, so it keeps its tokens
+  std::vector<uint32_t> ps1_tokens;
+  uint32_t ps1_texture_types = 0;
 };
 
 llvm::Error convert_shader(

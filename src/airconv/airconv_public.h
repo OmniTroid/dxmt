@@ -283,6 +283,8 @@ struct SM30_SHADER_D3D9_DATA {
   uint32_t fog_mode;   /* SM30_FOG_MODE, pixel shaders before ps_3_0 only */
   uint32_t clip_plane_mask;
   uint32_t flags; /* SM30_SHADER_FLAG */
+  /* ps_1_x declares no samplers: 2 bits per stage, 0 2D, 1 cube, 2 volume */
+  uint32_t ps1_texture_types;
 };
 
 struct SM30_RUNTIME_CONSTANTS {
@@ -290,6 +292,9 @@ struct SM30_RUNTIME_CONSTANTS {
   float fog_color[4];
   float fog_start, fog_end, fog_density, fog_scale; /* fog_scale = 1 / (end - start) */
   float clip_planes[6][4];
+  float bump_env[8][4];       /* D3DTSS_BUMPENVMAT00, 01, 10, 11 */
+  float bump_luminance[8][4]; /* D3DTSS_BUMPENVLSCALE, D3DTSS_BUMPENVLOFFSET, 0, 0 */
+  float projection[8][4];     /* one-hot component ps_1_x tex divides by, or zero */
 };
 
 /* D3D9 vertex declaration types Metal can't fetch directly; or'd into SM50_IA_INPUT_ELEMENT.format << 16 */

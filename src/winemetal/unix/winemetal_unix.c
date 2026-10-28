@@ -1965,6 +1965,7 @@ struct SM30_SHADER_D3D9_DATA32 {
   uint32_t fog_mode;
   uint32_t clip_plane_mask;
   uint32_t flags;
+  uint32_t ps1_texture_types;
 };
 
 struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
@@ -2074,6 +2075,7 @@ sm50_compilation_argument32_convert(
       data->fog_mode = src->fog_mode;
       data->clip_plane_mask = src->clip_plane_mask;
       data->flags = src->flags;
+      data->ps1_texture_types = src->ps1_texture_types;
       break;
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
