@@ -27,7 +27,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 ## Rules
 
 - Keep anything reused across sessions in the repo or `toolchains/`. A scratchpad under `/private/tmp` was wiped overnight and took the test runtime, tools and corpus with it.
-- Prove a new check can fail: break the feature on purpose (e.g. remove the half-pixel viewport offset) and confirm the check reports `FAIL`. Several "passing" checks turned out to test nothing.
+- Prove a new check can fail: break the feature on purpose (e.g. remove the half-pixel viewport offset) and confirm the check reports `FAIL`. Several "passing" checks turned out to test nothing. Break one thing at a time: one broad breakage (e.g. a bad pretransformed `w`) fails every check and hides whether the others are covered.
 - When a test disagrees with the expectation, re-derive the expectation before touching the code. Wrong expectations so far: SRCALPHA/INVSRCALPHA also blends alpha (0.75, not 1.0); a 2x2 texture sampled at uv (0.25, 0.5) is texel (0, 1); a constant with a negative z makes `texkill` discard.
 - Screenshots: capture a single window by its exact title (`screencapture -l <id>`), never the whole screen, and never pick a window by owner process: other Wine apps (games) may be running.
 
