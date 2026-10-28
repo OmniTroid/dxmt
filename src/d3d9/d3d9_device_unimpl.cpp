@@ -34,60 +34,6 @@ MTLD3D9Device::GetFrontBufferData(UINT swapchain_idx, IDirect3DSurface9 *dst_sur
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) {
-  ERR_ONCE("MTLD3D9Device::SetTransform: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX *matrix) {
-  ERR_ONCE("MTLD3D9Device::GetTransform: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::MultiplyTransform(D3DTRANSFORMSTATETYPE state, const D3DMATRIX *matrix) {
-  ERR_ONCE("MTLD3D9Device::MultiplyTransform: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetMaterial(const D3DMATERIAL9 *material) {
-  ERR_ONCE("MTLD3D9Device::SetMaterial: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetMaterial(D3DMATERIAL9 *material) {
-  ERR_ONCE("MTLD3D9Device::GetMaterial: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetLight(DWORD idx, const D3DLIGHT9 *light) {
-  ERR_ONCE("MTLD3D9Device::SetLight: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetLight(DWORD idx, D3DLIGHT9 *light) {
-  ERR_ONCE("MTLD3D9Device::GetLight: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::LightEnable(DWORD idx, BOOL enable) {
-  ERR_ONCE("MTLD3D9Device::LightEnable: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetLightEnable(DWORD idx, BOOL *enable) {
-  ERR_ONCE("MTLD3D9Device::GetLightEnable: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9 **stateblock) {
   ERR_ONCE("MTLD3D9Device::CreateStateBlock: not implemented");
   return D3DERR_INVALIDCALL;
@@ -115,18 +61,6 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetClipStatus(D3DCLIPSTATUS9 *clip_status) {
   ERR_ONCE("MTLD3D9Device::GetClipStatus: not implemented");
   return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE state, DWORD *value) {
-  ERR_ONCE("MTLD3D9Device::GetTextureStageState: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE state, DWORD value) {
-  ERR_ONCE("MTLD3D9Device::SetTextureStageState: not implemented");
-  return D3D_OK;
 }
 
 HRESULT STDMETHODCALLTYPE

@@ -260,7 +260,10 @@ private:
   void UpdateRuntimeConstants();
   uint64_t PreAllocateArgumentBuffer(size_t Size, size_t Alignment);
   bool PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &InstanceCount);
-  void BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code);
+  void BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const float *FFConstants, UINT FFConstantCount);
+  MTLD3D9ShaderCode *FixedFunctionShader(std::vector<DWORD> &&Bytecode, bool Pixel);
+  MTLD3D9ShaderCode *FixedFunctionVS(float *Constants);
+  MTLD3D9ShaderCode *FixedFunctionPS(float *Constants);
   WMT::RenderPipelineState GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Function VS, WMT::Function PS);
   WMT::DepthStencilState GetDepthStencilState();
   Rc<Sampler> GetSampler(uint32_t Index);
@@ -326,6 +329,15 @@ private:
   std::unique_ptr<MTLD3D9BufferStorage> const_buffers_[2][4];
   SM30_RUNTIME_CONSTANTS runtime_constants_ = {};
   std::array<std::array<float, 4>, caps::MaxClipPlanes> clip_planes_ = {};
+
+  // indexed by D3DTRANSFORMSTATETYPE; world matrices start at 256
+  std::array<D3DMATRIX, 512> transforms_;
+  std::array<std::array<DWORD, D3DTSS_CONSTANT + 1>, 8> texture_stage_states_;
+  D3DMATERIAL9 material_ = {};
+  std::vector<std::pair<D3DLIGHT9, bool>> lights_;
+  std::unordered_map<Sha1Digest, std::unique_ptr<MTLD3D9ShaderCode>> ff_shaders_;
+  std::unique_ptr<MTLD3D9BufferStorage> ff_constants_;
+  UINT ff_constants_offset_ = 0;
 
   // pixel samplers 0-15, then vertex samplers D3DVERTEXTEXTURESAMPLER0-3 at 16-19
   std::array<BoundTexture, caps::MaxSamplersPS + caps::MaxSamplersVS> textures_;

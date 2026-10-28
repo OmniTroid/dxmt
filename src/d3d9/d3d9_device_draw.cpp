@@ -17,6 +17,7 @@
  */
 
 #include "d3d9_device.hpp"
+#include "d3d9_fixed_function.hpp"
 #include "d3d9_format.hpp"
 #include "d3d9_texture.hpp"
 #include "log/log.hpp"
@@ -519,7 +520,7 @@ MTLD3D9Device::ReleaseTextureBinding(BoundTexture &Binding) {
 }
 
 void
-MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code) {
+MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const float *FFConstants, UINT FFConstantCount) {
   auto &refl = Code->reflection();
   uint32_t stage = Pixel ? 1 : 0;
 
@@ -527,6 +528,18 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code) {
     for (uint32_t slot = 0; slot < 4; slot++) {
       if (!(refl.ConstantBufferSlotMask & (1 << slot)))
         continue;
+      if (slot == 0 && FFConstants) {
+        Rc<Buffer> buffer;
+        UINT offset = 0;
+        UploadToRing(ff_constants_, ff_constants_offset_, FFConstants, FFConstantCount * 16, 256, buffer, offset);
+        Emit([buffer = std::move(buffer), offset, Pixel](ArgumentEncodingContext &enc) mutable {
+          if (Pixel)
+            enc.bindConstantBuffer<PipelineStage::Pixel>(0, offset, std::move(buffer));
+          else
+            enc.bindConstantBuffer<PipelineStage::Vertex>(0, offset, std::move(buffer));
+        });
+        continue;
+      }
       auto &storage = const_buffers_[stage][slot];
       if (!storage) {
         UINT sizes[4] = {256 * 16, 16 * 16, 16 * 4, 16 * 16};
@@ -643,21 +656,23 @@ MTLD3D9Device::GetClipPlane(DWORD Index, float *pPlane) {
 bool
 MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &InstanceCount) {
   InstanceCount = 1;
-  if (!vertex_shader_ || !pixel_shader_) {
-    ERR_ONCE("D3D9: drawing without both a vertex and a pixel shader (fixed function) is not implemented");
-    return false;
-  }
   if (!vertex_declaration_) {
     ERR_ONCE("D3D9: draw without a vertex declaration");
     return false;
   }
+  std::array<float, ff::VSConstantCount * 4> ff_vs_constants = {};
+  std::array<float, ff::PSConstantCount * 4> ff_ps_constants = {};
+  MTLD3D9ShaderCode *vs_code = vertex_shader_ ? vertex_shader_->code() : FixedFunctionVS(ff_vs_constants.data());
+  MTLD3D9ShaderCode *ps_code = pixel_shader_ ? pixel_shader_->code() : FixedFunctionPS(ff_ps_constants.data());
+  if (!vs_code || !ps_code)
+    return false;
 
   if (streams_[0].frequency & D3DSTREAMSOURCE_INDEXEDDATA)
     InstanceCount = std::max(1u, streams_[0].frequency & 0x3FFFFFFF);
 
   std::vector<SM50_IA_INPUT_ELEMENT> elements;
   uint32_t slot_mask = 0;
-  for (auto &input : vertex_shader_->code()->inputs()) {
+  for (auto &input : vs_code->inputs()) {
     for (auto &element : vertex_declaration_->elements()) {
       if (element.Usage != (BYTE)input.usage || element.UsageIndex != input.usage_index)
         continue;
@@ -726,7 +741,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
                     .update(vs_d3d9.clip_plane_mask)
                     .update(vs_d3d9.flags)
                     .final();
-  auto vs = vertex_shader_->code()->GetFunction(
+  auto vs = vs_code->GetFunction(
       GetMTLDevice(), vs_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ia, metal_version
   );
 
@@ -743,7 +758,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
                     .update(ps_d3d9.fog_mode)
                     .update(ps_d3d9.flags)
                     .final();
-  auto ps = pixel_shader_->code()->GetFunction(
+  auto ps = ps_code->GetFunction(
       GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version
   );
   if (!vs || !ps)
@@ -854,8 +869,8 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
     });
   }
 
-  BindStageResources(false, vertex_shader_->code());
-  BindStageResources(true, pixel_shader_->code());
+  BindStageResources(false, vs_code, vertex_shader_ ? nullptr : ff_vs_constants.data(), ff::VSConstantCount);
+  BindStageResources(true, ps_code, pixel_shader_ ? nullptr : ff_ps_constants.data(), ff::PSConstantCount);
   return true;
 }
 

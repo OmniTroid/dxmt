@@ -133,6 +133,11 @@ MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams) {
   depth_stencil_ = auto_depth_stencil_;
   SetDefaultViewport(render_targets_[0].ptr());
   D3D9InitRenderStates(render_states_, pParams->EnableAutoDepthStencil);
+  D3D9InitTextureStageStates(texture_stage_states_);
+  for (auto &m : transforms_)
+    m = {{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
+  material_ = {};
+  lights_.clear();
   for (auto &ss : sampler_states_) {
     ss.fill(0);
     ss[D3DSAMP_ADDRESSU] = D3DTADDRESS_WRAP;

@@ -119,4 +119,23 @@ D3D9InitRenderStates(std::array<DWORD, 256> &rs, bool AutoDepthStencil) {
   rs[D3DRS_BLENDOPALPHA] = D3DBLENDOP_ADD;
 }
 
+void
+D3D9InitTextureStageStates(std::array<std::array<DWORD, D3DTSS_CONSTANT + 1>, 8> &States) {
+  for (DWORD i = 0; i < States.size(); i++) {
+    auto &s = States[i];
+    s.fill(0);
+    s[D3DTSS_COLOROP] = i == 0 ? D3DTOP_MODULATE : D3DTOP_DISABLE;
+    s[D3DTSS_COLORARG1] = D3DTA_TEXTURE;
+    s[D3DTSS_COLORARG2] = D3DTA_CURRENT;
+    s[D3DTSS_ALPHAOP] = i == 0 ? D3DTOP_SELECTARG1 : D3DTOP_DISABLE;
+    s[D3DTSS_ALPHAARG1] = D3DTA_TEXTURE;
+    s[D3DTSS_ALPHAARG2] = D3DTA_CURRENT;
+    s[D3DTSS_TEXCOORDINDEX] = i;
+    s[D3DTSS_TEXTURETRANSFORMFLAGS] = D3DTTFF_DISABLE;
+    s[D3DTSS_COLORARG0] = D3DTA_CURRENT;
+    s[D3DTSS_ALPHAARG0] = D3DTA_CURRENT;
+    s[D3DTSS_RESULTARG] = D3DTA_CURRENT;
+  }
+}
+
 } // namespace dxmt

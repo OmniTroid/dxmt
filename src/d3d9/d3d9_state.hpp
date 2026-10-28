@@ -24,5 +24,6 @@
 namespace dxmt {
 
 void D3D9InitRenderStates(std::array<DWORD, 256> &RenderStates, bool AutoDepthStencil);
+void D3D9InitTextureStageStates(std::array<std::array<DWORD, D3DTSS_CONSTANT + 1>, 8> &States);
 
 } // namespace dxmt
