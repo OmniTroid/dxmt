@@ -39,6 +39,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - First prefix creation shows a Mono/Gecko install dialog and blocks forever headless. Set `WINEDLLOVERRIDES="mscoree,mshtml="`.
 - A newly added builtin DLL (like `winemetal.dll`) is only found once `wineboot -u` or a new prefix registers it.
 - A crashing test opens winedbg's crash dialog and the run hangs; `run.sh` sets `HKCU\Software\Wine\WineDbg\ShowCrashDialog=0` so the crash is printed and the run continues.
+- Run `wineserver -w` after `wineboot` and any setup command before the first test. Without it the first test process sat idle in a wait for 50-600 s while prefix setup finished (two `services.exe` were running); with it the whole suite takes about 40 s instead of 6.5 minutes. Measure with per-test timestamps before guessing: a pipe-based runner spread the same stall over several tests.
 - `wineserver -k` only stops the server for the current `WINEPREFIX`; set it explicitly so other Wine sessions are untouched.
 - Test executables need `-static` or they fail on missing `libstdc++-6.dll`/`libgcc_s_*.dll` (exit code 53).
 

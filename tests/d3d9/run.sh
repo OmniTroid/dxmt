@@ -25,13 +25,17 @@ export WINEPREFIX="$work/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" 
 "$runtime/bin/wine" wineboot -i > /dev/null 2>&1
 # a crash dialog would block the run forever
 "$runtime/bin/wine" reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f > /dev/null 2>&1
+# a test started while prefix setup is still settling can stall for minutes
+"$runtime/bin/wineserver" -w
 
 failed=0
 for build in build build32; do
   for exe in "$root/$build"/tests/d3d9/d3d9_*.exe; do
     name="$(basename "$exe" .exe)"
     [ "$name" = d3d9_clear ] && continue
-    result="$("$runtime/bin/wine" "$exe" 2>&1 | grep -E '^(FAIL|[0-9]+ failure)')"
+    out="$work/logs/$build-$name.out"
+    "$runtime/bin/wine" "$exe" > "$out" 2>&1
+    result="$(grep -E '^(FAIL|[0-9]+ failure)' "$out")"
     echo "$build/$name: ${result:-no output}"
     echo "$result" | grep -q '^0 failure' || failed=1
   done
