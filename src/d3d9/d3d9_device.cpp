@@ -17,6 +17,7 @@
  */
 
 #include "d3d9_device.hpp"
+#include "d3d9_query.hpp"
 #include "d3d9_buffer.hpp"
 #include "d3d9_texture.hpp"
 #include "d3d9_format.hpp"
@@ -1165,6 +1166,16 @@ CreateD3D9Device(
     return hr;
   }
   *ppDevice = device;
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) {
+  if (!MTLD3D9Query::Supported(Type))
+    return D3DERR_NOTAVAILABLE;
+  if (!ppQuery)
+    return D3D_OK;
+  *ppQuery = ref(new MTLD3D9Query(this, Type));
   return D3D_OK;
 }
 

@@ -130,12 +130,6 @@ MTLD3D9Device::DeletePatch(UINT handle) {
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::CreateQuery(D3DQUERYTYPE type, IDirect3DQuery9 **query) {
-  ERR_ONCE("MTLD3D9Device::CreateQuery: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetConvolutionMonoKernel(UINT width, UINT height, float *rows, float *columns) {
   ERR_ONCE("MTLD3D9Device::SetConvolutionMonoKernel: not implemented");
   return D3D_OK;

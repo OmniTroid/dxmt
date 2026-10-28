@@ -238,6 +238,13 @@ public:
 
   void EndRenderPass();
 
+  std::unique_lock<std::recursive_mutex>
+  Lock() {
+    if (multithreaded_)
+      return std::unique_lock<std::recursive_mutex>(mutex_);
+    return std::unique_lock<std::recursive_mutex>();
+  }
+
 private:
   struct Stream {
     Com<MTLD3D9VertexBuffer, false> buffer;
@@ -284,13 +291,6 @@ private:
   HRESULT CreateAutoDepthStencil(const D3DPRESENT_PARAMETERS &Params);
   void SetDefaultViewport(MTLD3D9Surface *pTarget);
   void ClearSurface(MTLD3D9Surface *pSurface, const RECT &Rect, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil);
-
-  std::unique_lock<std::recursive_mutex>
-  Lock() {
-    if (multithreaded_)
-      return std::unique_lock<std::recursive_mutex>(mutex_);
-    return std::unique_lock<std::recursive_mutex>();
-  }
 
   Com<MTLD3D9> parent_;
   MTLD3D9Adapter *adapter_;
