@@ -21,10 +21,4 @@
 
 namespace dxmt {
 
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::ProcessVertices(UINT src_start_idx, UINT dst_idx, UINT vertex_count, IDirect3DVertexBuffer9 *dst_buffer, IDirect3DVertexDeclaration9 *declaration, DWORD flags) {
-  ERR_ONCE("MTLD3D9Device::ProcessVertices: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
 } // namespace dxmt

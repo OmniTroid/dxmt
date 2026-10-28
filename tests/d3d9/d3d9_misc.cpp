@@ -148,6 +148,52 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     chain->Release();
   }
 
+  // ProcessVertices transforms to screen space and lights on the CPU
+  struct In {
+    float x, y, z, nx, ny, nz;
+    DWORD color;
+  } in[2] = {{0, 0, 0.5f, 0, 0, -1, 0xFF336699}, {1, 1, 0.5f, 0, 0, -1, 0xFF336699}};
+  struct Out {
+    float x, y, z, rhw;
+    DWORD color;
+  } out[2] = {};
+  IDirect3DVertexBuffer9 *src_vb = nullptr, *dst_vb = nullptr;
+  device->CreateVertexBuffer(sizeof(in), 0, D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE, D3DPOOL_MANAGED, &src_vb, nullptr);
+  device->CreateVertexBuffer(sizeof(out), 0, D3DFVF_XYZRHW | D3DFVF_DIFFUSE, D3DPOOL_SYSTEMMEM, &dst_vb, nullptr);
+  void *data = nullptr;
+  src_vb->Lock(0, 0, &data, 0);
+  memcpy(data, in, sizeof(in));
+  src_vb->Unlock();
+  device->SetStreamSource(0, src_vb, 0, sizeof(In));
+  device->SetFVF(D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE);
+  device->SetRenderState(D3DRS_LIGHTING, FALSE);
+  check("ProcessVertices", device->ProcessVertices(0, 0, 2, dst_vb, nullptr, 0) == D3D_OK);
+  dst_vb->Lock(0, 0, &data, D3DLOCK_READONLY);
+  memcpy(out, data, sizeof(out));
+  dst_vb->Unlock();
+  check("ProcessVertices screen position", out[0].x == 32 && out[0].y == 32 && out[0].z == 0.5f && out[0].rhw == 1 &&
+                                               out[1].x == 64 && out[1].y == 0);
+  check("ProcessVertices unlit color", out[0].color == 0xFF336699);
+  D3DLIGHT9 light = {};
+  light.Type = D3DLIGHT_DIRECTIONAL;
+  light.Diffuse = {1, 0, 0, 1};
+  light.Direction = {0, 0, 1};
+  device->SetLight(0, &light);
+  device->LightEnable(0, TRUE);
+  device->SetRenderState(D3DRS_LIGHTING, TRUE);
+  device->SetRenderState(D3DRS_DIFFUSEMATERIALSOURCE, D3DMCS_MATERIAL);
+  D3DMATERIAL9 material = {};
+  material.Diffuse = {0.5f, 1, 1, 1};
+  device->SetMaterial(&material);
+  device->ProcessVertices(0, 0, 1, dst_vb, nullptr, 0);
+  dst_vb->Lock(0, 0, &data, D3DLOCK_READONLY);
+  memcpy(out, data, sizeof(out));
+  dst_vb->Unlock();
+  check("ProcessVertices lighting", out[0].color == 0xFF800000);
+  device->SetStreamSource(0, nullptr, 0, 0);
+  src_vb->Release();
+  dst_vb->Release();
+
   IDirect3DSurface9 *cursor = nullptr;
   device->CreateOffscreenPlainSurface(32, 32, D3DFMT_A8R8G8B8, D3DPOOL_SCRATCH, &cursor, nullptr);
   check("SetCursorProperties", device->SetCursorProperties(1, 1, cursor) == D3D_OK);

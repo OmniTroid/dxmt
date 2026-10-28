@@ -7,6 +7,7 @@ d3d9_src = [
   'd3d9_device_draw.cpp',
   'd3d9_device_ff.cpp',
   'd3d9_device_misc.cpp',
+  'd3d9_device_process.cpp',
   'd3d9_device_unimpl.cpp',
   'd3d9_fixed_function.cpp',
   'd3d9_format.cpp',
