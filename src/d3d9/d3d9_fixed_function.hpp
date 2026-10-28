@@ -44,7 +44,10 @@ constexpr uint32_t VSFog = 17; // start, end, density, 1 / (end - start)
 constexpr uint32_t VSLightBase = 20;
 constexpr uint32_t VSLightStride = 7;
 constexpr uint32_t VSTextureMatrixBase = VSLightBase + 8 * VSLightStride;
-constexpr uint32_t VSConstantCount = VSTextureMatrixBase + 8 * 4;
+// world-view matrices 1-3 for vertex blending (0 is VSWorldView), then the projection alone
+constexpr uint32_t VSWorldViewBlend = VSTextureMatrixBase + 8 * 4;
+constexpr uint32_t VSProjection = VSWorldViewBlend + 3 * 4;
+constexpr uint32_t VSConstantCount = VSProjection + 4;
 
 constexpr uint32_t PSTextureFactor = 0;
 constexpr uint32_t PSStageConstantBase = 1;
@@ -88,6 +91,7 @@ struct D3D9FFVertexState {
   D3D9FFTexCoord texcoords[ff::MaxStages];
   DWORD fog_mode; // D3DFOGMODE computed per vertex, D3DFOG_NONE for specular alpha, ff::FogNone without vertex fog
   bool range_fog;
+  uint32_t blend_weights; // D3DRS_VERTEXBLEND weights read from BLENDWEIGHT; blends weights + 1 matrices
 };
 
 struct D3D9FFStage {

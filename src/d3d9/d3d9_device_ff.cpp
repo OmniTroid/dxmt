@@ -123,6 +123,10 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
       else if (e.UsageIndex == 1)
         s.specular = true;
       break;
+    case D3DDECLUSAGE_BLENDWEIGHT:
+      if (e.UsageIndex == 0)
+        s.blend_weights = DeclTypeSize(e.Type);
+      break;
     case D3DDECLUSAGE_TEXCOORD:
       if (e.UsageIndex < 8) {
         s.texcoord_mask |= 1 << e.UsageIndex;
@@ -131,6 +135,14 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
       break;
     }
   }
+  DWORD blend = render_states_[D3DRS_VERTEXBLEND];
+  if (blend == D3DVBF_TWEENING) {
+    WARN_ONCE("D3D9: fixed-function tweening is not implemented");
+  }
+  if (render_states_[D3DRS_INDEXEDVERTEXBLENDENABLE]) {
+    WARN_ONCE("D3D9: indexed vertex blending is not implemented");
+  }
+  s.blend_weights = blend >= D3DVBF_1WEIGHTS && blend <= D3DVBF_3WEIGHTS ? std::min<uint32_t>(blend, s.blend_weights) : 0;
   s.lighting = render_states_[D3DRS_LIGHTING];
   s.specular_lighting = render_states_[D3DRS_SPECULARENABLE];
   s.local_viewer = render_states_[D3DRS_LOCALVIEWER];
@@ -151,6 +163,10 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   auto world_view = Multiply(world, view);
   StoreColumns(C + 4 * ff::VSWorldViewProj, Multiply(world_view, transforms_[D3DTS_PROJECTION]), 4);
   StoreColumns(C + 4 * ff::VSWorldView, world_view, 4);
+  for (uint32_t i = 1; i <= s.blend_weights; i++)
+    StoreColumns(C + 4 * (ff::VSWorldViewBlend + 4 * (i - 1)), Multiply(transforms_[D3DTS_WORLDMATRIX(i)], view), 4);
+  if (s.blend_weights)
+    StoreColumns(C + 4 * ff::VSProjection, transforms_[D3DTS_PROJECTION], 4);
 
   float depth = viewport_.MaxZ - viewport_.MinZ;
   float depth_scale = depth != 0.0f ? 1.0f / depth : 1.0f;

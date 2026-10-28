@@ -142,6 +142,9 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   for (uint32_t i = 0; i < 8; i++)
     if (S.texcoord_mask & (1 << i))
       w.dcl(Usage::TexCoord, i, Dst(RegisterType::Input, 4 + i));
+  bool blend = S.blend_weights && !S.pretransformed;
+  if (blend)
+    w.dcl(Usage::BlendWeight, 0, Dst(RegisterType::Input, 12));
   w.dcl(Usage::Position, 0, out(0));
   w.dcl(Usage::Color, 0, out(1));
   w.dcl(Usage::Color, 1, out(2));
@@ -159,6 +162,28 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
     w.op(Opcode::Rcp, {r(0, 0x8), in(0, kWWWW)});
     w.op(Opcode::Mul, {out(0, 0x7), t(0), t(0, kWWWW)});
     w.op(Opcode::Mov, {out(0, 0x8), t(0, kWWWW)});
+  } else if (blend) {
+    // r6 and r12 sum the weighted view-space positions and normals; the last weight is 1 - the others
+    w.op(Opcode::Mov, {r(P), Helper(kXXXX)});
+    w.op(Opcode::Mov, {r(12), Helper(kXXXX)});
+    w.op(Opcode::Mov, {r(25, 0x1), Helper(kYYYY)});
+    for (uint32_t i = 0; i <= S.blend_weights; i++) {
+      uint32_t base = i == 0 ? ff::VSWorldView : ff::VSWorldViewBlend + 4 * (i - 1);
+      DWORD weight = i < S.blend_weights ? in(12, (i * 0x55) & 0xFF) : t(25, kXXXX);
+      if (i < S.blend_weights)
+        w.op(Opcode::Add, {r(25, 0x1), t(25, kXXXX), Src(RegisterType::Input, 12, (i * 0x55) & 0xFF, SrcModifier::Neg)});
+      for (uint32_t k = 0; k < 3; k++)
+        w.op(Opcode::Dp4, {r(26, 1u << k), in(0), c(base + k)});
+      w.op(Opcode::Mad, {r(P, 0x7), t(26), weight, t(P)});
+      if (S.normal) {
+        for (uint32_t k = 0; k < 3; k++)
+          w.op(Opcode::Dp3, {r(26, 1u << k), in(1), c(base + k)});
+        w.op(Opcode::Mad, {r(12, 0x7), t(26), weight, t(12)});
+      }
+    }
+    w.op(Opcode::Mov, {r(P, 0x8), Helper(kYYYY)});
+    for (uint32_t i = 0; i < 4; i++)
+      w.op(Opcode::Dp4, {out(0, 1 << i), t(P), c(ff::VSProjection + i)});
   } else {
     for (uint32_t i = 0; i < 4; i++)
       w.op(Opcode::Dp4, {out(0, 1 << i), in(0), c(ff::VSWorldViewProj + i)});
@@ -170,9 +195,11 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
                       });
   bool needs_position = !S.pretransformed;
   if (needs_position) {
-    for (uint32_t i = 0; i < 3; i++)
-      w.op(Opcode::Dp4, {r(P, 1 << i), in(0), c(ff::VSWorldView + i)});
-    w.op(Opcode::Mov, {r(P, 0x8), Helper(kYYYY)});
+    if (!blend) {
+      for (uint32_t i = 0; i < 3; i++)
+        w.op(Opcode::Dp4, {r(P, 1 << i), in(0), c(ff::VSWorldView + i)});
+      w.op(Opcode::Mov, {r(P, 0x8), Helper(kYYYY)});
+    }
     if (S.local_viewer) {
       w.op(Opcode::Nrm, {r(V, 0x7), t(P, kXYZW, SrcModifier::Neg)});
     } else {
@@ -182,8 +209,9 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   }
   if (needs_normal) {
     if (S.normal) {
-      for (uint32_t i = 0; i < 3; i++)
-        w.op(Opcode::Dp3, {r(12, 1 << i), in(1), c(ff::VSWorldView + i)});
+      if (!blend)
+        for (uint32_t i = 0; i < 3; i++)
+          w.op(Opcode::Dp3, {r(12, 1 << i), in(1), c(ff::VSWorldView + i)});
       w.op(Opcode::Nrm, {r(N, 0x7), t(12)});
     } else {
       w.op(Opcode::Mov, {r(N), Helper(kXXXX)});

@@ -359,6 +359,36 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   strip->Release();
   default_stages();
 
+  // one blend weight between WORLD0 (shift left) and WORLD1 (shift right)
+  D3DMATRIX left = {{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5f, 0, 0, 1}}};
+  D3DMATRIX right = {{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5f, 0, 0, 1}}};
+  device->SetTransform(D3DTS_WORLDMATRIX(0), &left);
+  device->SetTransform(D3DTS_WORLDMATRIX(1), &right);
+  device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_1WEIGHTS);
+  device->SetFVF(D3DFVF_XYZB1 | D3DFVF_DIFFUSE);
+  struct BlendVertex {
+    float x, y, z, weight;
+    DWORD color;
+  };
+  auto blended = [](float weight) {
+    BlendVertex v[4] = {
+        {-0.2f, -0.2f, 0.5f, weight, 0xFFFFFFFF}, {-0.2f, 0.2f, 0.5f, weight, 0xFFFFFFFF},
+        {0.2f, -0.2f, 0.5f, weight, 0xFFFFFFFF}, {0.2f, 0.2f, 0.5f, weight, 0xFFFFFFFF},
+    };
+    clear();
+    device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(BlendVertex));
+  };
+  blended(1.0f);
+  expect("blend weight 1 uses WORLD0", 16, 32, 0xFFFFFFFF);
+  blended(0.0f);
+  expect("blend weight 0 uses WORLD1", 48, 32, 0xFFFFFFFF);
+  blended(0.5f);
+  expect("half weights cancel out", 32, 32, 0xFFFFFFFF);
+  expect("half weights leave the left", 16, 32, 0xFF000000);
+  device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
+  device->SetTransform(D3DTS_WORLDMATRIX(0), &identity);
+  device->SetTransform(D3DTS_WORLDMATRIX(1), &identity);
+
   // vertex fog from view-space depth, and from specular alpha for pretransformed vertices
   float fog_start = 0, fog_end = 1;
   device->SetRenderState(D3DRS_FOGENABLE, TRUE);
