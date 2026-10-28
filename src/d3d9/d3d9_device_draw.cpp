@@ -524,12 +524,12 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code) {
   uint32_t stage = Pixel ? 1 : 0;
 
   if (refl.NumConstantBuffers) {
-    for (uint32_t slot = 0; slot < 3; slot++) {
+    for (uint32_t slot = 0; slot < 4; slot++) {
       if (!(refl.ConstantBufferSlotMask & (1 << slot)))
         continue;
       auto &storage = const_buffers_[stage][slot];
       if (!storage) {
-        UINT sizes[3] = {256 * 16, 16 * 16, 16 * 4};
+        UINT sizes[4] = {256 * 16, 16 * 16, 16 * 4, 16 * 16};
         storage = std::make_unique<MTLD3D9BufferStorage>(this, sizes[slot], D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY);
         const_dirty_[stage] |= 1 << slot;
       }
@@ -538,8 +538,10 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code) {
         storage->Lock(0, 0, &data, D3DLOCK_DISCARD);
         const void *src = slot == 0   ? (const void *)const_float_[stage].data()
                           : slot == 1 ? (const void *)const_int_[stage].data()
-                                      : (const void *)const_bool_[stage].data();
-        std::memcpy(data, src, storage->length());
+                          : slot == 2 ? (const void *)const_bool_[stage].data()
+                                      : (const void *)&runtime_constants_;
+        std::memset(data, 0, storage->length());
+        std::memcpy(data, src, slot == 3 ? sizeof(runtime_constants_) : storage->length());
         storage->Unlock();
         const_dirty_[stage] &= ~(1u << slot);
       }
@@ -596,6 +598,48 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code) {
   }
 }
 
+void
+MTLD3D9Device::UpdateRuntimeConstants() {
+  auto f = [&](D3DRENDERSTATETYPE state) { return std::bit_cast<float>(render_states_[state]); };
+  SM30_RUNTIME_CONSTANTS c = {};
+  c.alpha_ref = (render_states_[D3DRS_ALPHAREF] & 0xFF) / 255.0f;
+  c.point_size = f(D3DRS_POINTSIZE);
+  c.point_size_min = f(D3DRS_POINTSIZE_MIN);
+  c.point_size_max = f(D3DRS_POINTSIZE_MAX);
+  D3DCOLOR fog = render_states_[D3DRS_FOGCOLOR];
+  c.fog_color[0] = ((fog >> 16) & 0xFF) / 255.0f;
+  c.fog_color[1] = ((fog >> 8) & 0xFF) / 255.0f;
+  c.fog_color[2] = (fog & 0xFF) / 255.0f;
+  c.fog_color[3] = 1.0f;
+  c.fog_start = f(D3DRS_FOGSTART);
+  c.fog_end = f(D3DRS_FOGEND);
+  c.fog_density = f(D3DRS_FOGDENSITY);
+  c.fog_scale = c.fog_end != c.fog_start ? 1.0f / (c.fog_end - c.fog_start) : 0.0f;
+  std::memcpy(c.clip_planes, clip_planes_.data(), sizeof(c.clip_planes));
+  if (std::memcmp(&c, &runtime_constants_, sizeof(c))) {
+    runtime_constants_ = c;
+    const_dirty_[0] |= 8;
+    const_dirty_[1] |= 8;
+  }
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::SetClipPlane(DWORD Index, const float *pPlane) {
+  auto lock = Lock();
+  if (Index >= caps::MaxClipPlanes || !pPlane)
+    return D3DERR_INVALIDCALL;
+  std::memcpy(clip_planes_[Index].data(), pPlane, sizeof(float) * 4);
+  return D3D_OK;
+}
+
+HRESULT STDMETHODCALLTYPE
+MTLD3D9Device::GetClipPlane(DWORD Index, float *pPlane) {
+  if (Index >= caps::MaxClipPlanes || !pPlane)
+    return D3DERR_INVALIDCALL;
+  std::memcpy(pPlane, clip_planes_[Index].data(), sizeof(float) * 4);
+  return D3D_OK;
+}
+
 bool
 MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &InstanceCount) {
   InstanceCount = 1;
@@ -636,24 +680,69 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
   }
 
   auto metal_version = (SM50_SHADER_METAL_VERSION)GetDXMTDevice().metalVersion();
+  UpdateRuntimeConstants();
+  bool points = Topology == WMTPrimitiveTopologyClassPoint;
+
+  SM30_SHADER_D3D9_DATA vs_d3d9 = {};
+  vs_d3d9.type = SM30_SHADER_D3D9;
+  vs_d3d9.clip_plane_mask = render_states_[D3DRS_CLIPPLANEENABLE] & 0x3F;
+  vs_d3d9.flags = points ? SM30_SHADER_FLAG_POINT_SIZE : 0;
+
+  SM30_SHADER_D3D9_DATA ps_d3d9 = {};
+  ps_d3d9.type = SM30_SHADER_D3D9;
+  if (render_states_[D3DRS_ALPHATESTENABLE])
+    ps_d3d9.alpha_func = render_states_[D3DRS_ALPHAFUNC];
+  if (render_states_[D3DRS_FOGENABLE]) {
+    switch (render_states_[D3DRS_FOGTABLEMODE]) {
+    case D3DFOG_EXP:
+      ps_d3d9.fog_mode = SM30_FOG_EXP;
+      break;
+    case D3DFOG_EXP2:
+      ps_d3d9.fog_mode = SM30_FOG_EXP2;
+      break;
+    case D3DFOG_LINEAR:
+      ps_d3d9.fog_mode = SM30_FOG_LINEAR;
+      break;
+    default:
+      ps_d3d9.fog_mode = SM30_FOG_VERTEX;
+      break;
+    }
+  }
+  if (render_states_[D3DRS_SHADEMODE] == D3DSHADE_FLAT)
+    ps_d3d9.flags |= SM30_SHADER_FLAG_FLAT_SHADING;
+  if (points && render_states_[D3DRS_POINTSPRITEENABLE])
+    ps_d3d9.flags |= SM30_SHADER_FLAG_POINT_SPRITE;
+
   SM50_SHADER_IA_INPUT_LAYOUT_DATA ia = {};
+  ia.next = &vs_d3d9;
   ia.type = SM50_SHADER_IA_INPUT_LAYOUT;
   ia.index_buffer_format = SM50_INDEX_BUFFER_FORMAT_NONE;
   ia.slot_mask = slot_mask;
   ia.num_elements = elements.size();
   ia.elements = elements.data();
-  auto vs_key = Sha1HashState().update(elements.data(), elements.size() * sizeof(elements[0])).update(slot_mask).final();
+  auto vs_key = Sha1HashState()
+                    .update(elements.data(), elements.size() * sizeof(elements[0]))
+                    .update(slot_mask)
+                    .update(vs_d3d9.clip_plane_mask)
+                    .update(vs_d3d9.flags)
+                    .final();
   auto vs = vertex_shader_->code()->GetFunction(
       GetMTLDevice(), vs_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ia, metal_version
   );
 
   SM50_SHADER_PSO_PIXEL_SHADER_DATA ps_data = {};
+  ps_data.next = &ps_d3d9;
   ps_data.type = SM50_SHADER_PSO_PIXEL_SHADER;
   ps_data.sample_mask = 0xffffffff;
   for (uint32_t i = 0; i < caps::MaxSimultaneousRenderTargets; i++)
     if (render_targets_[i])
       ps_data.pixel_formats[i] = RenderTargetFormat(render_targets_[i].ptr());
-  auto ps_key = Sha1HashState::compute(ps_data.pixel_formats, sizeof(ps_data.pixel_formats));
+  auto ps_key = Sha1HashState()
+                    .update(ps_data.pixel_formats)
+                    .update(ps_d3d9.alpha_func)
+                    .update(ps_d3d9.fog_mode)
+                    .update(ps_d3d9.flags)
+                    .final();
   auto ps = pixel_shader_->code()->GetFunction(
       GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version
   );
@@ -708,8 +797,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
   }
 
   {
+    // D3D9 puts pixel centers on integer coordinates, Metal at +0.5
     WMTViewport viewport = {
-        (double)viewport_.X, (double)viewport_.Y, (double)viewport_.Width,
+        viewport_.X + 0.5, viewport_.Y + 0.5, (double)viewport_.Width,
         (double)viewport_.Height, viewport_.MinZ, viewport_.MaxZ
     };
     MTLD3D9Surface *target = render_targets_[0] ? render_targets_[0].ptr() : depth_stencil_.ptr();

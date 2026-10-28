@@ -88,18 +88,6 @@ MTLD3D9Device::GetLightEnable(DWORD idx, BOOL *enable) {
 }
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetClipPlane(DWORD idx, const float *plane) {
-  ERR_ONCE("MTLD3D9Device::SetClipPlane: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetClipPlane(DWORD idx, float *plane) {
-  ERR_ONCE("MTLD3D9Device::GetClipPlane: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE type, IDirect3DStateBlock9 **stateblock) {
   ERR_ONCE("MTLD3D9Device::CreateStateBlock: not implemented");
   return D3DERR_INVALIDCALL;

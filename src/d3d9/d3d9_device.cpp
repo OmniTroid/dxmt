@@ -118,7 +118,8 @@ MTLD3D9Device::ClearBindings() {
     c.fill(0);
   for (auto &c : const_bool_)
     c.fill(0);
-  const_dirty_[0] = const_dirty_[1] = 7;
+  const_dirty_[0] = const_dirty_[1] = 15;
+  clip_planes_ = {};
 }
 
 HRESULT

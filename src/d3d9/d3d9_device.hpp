@@ -257,6 +257,7 @@ private:
   };
 
   bool BeginRenderPass();
+  void UpdateRuntimeConstants();
   uint64_t PreAllocateArgumentBuffer(size_t Size, size_t Alignment);
   bool PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &InstanceCount);
   void BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code);
@@ -321,8 +322,10 @@ private:
   std::array<std::array<float, 256 * 4>, 2> const_float_ = {};
   std::array<std::array<int32_t, 16 * 4>, 2> const_int_ = {};
   std::array<std::array<uint32_t, 16>, 2> const_bool_ = {};
-  uint32_t const_dirty_[2] = {7, 7};
-  std::unique_ptr<MTLD3D9BufferStorage> const_buffers_[2][3];
+  uint32_t const_dirty_[2] = {15, 15};
+  std::unique_ptr<MTLD3D9BufferStorage> const_buffers_[2][4];
+  SM30_RUNTIME_CONSTANTS runtime_constants_ = {};
+  std::array<std::array<float, 4>, caps::MaxClipPlanes> clip_planes_ = {};
 
   // pixel samplers 0-15, then vertex samplers D3DVERTEXTEXTURESAMPLER0-3 at 16-19
   std::array<BoundTexture, caps::MaxSamplersPS + caps::MaxSamplersVS> textures_;
