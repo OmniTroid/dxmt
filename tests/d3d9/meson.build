@@ -20,3 +20,8 @@ executable('d3d9_draw', ['d3d9_draw.cpp'],
   dependencies: [ lib_d3d9, lib_d3dcompiler_d3d9 ],
   link_args: [ '-mwindows' ],
 )
+
+executable('d3d9_states', ['d3d9_states.cpp'],
+  dependencies: [ lib_d3d9, lib_d3dcompiler_d3d9 ],
+  link_args: [ '-mwindows' ],
+)
