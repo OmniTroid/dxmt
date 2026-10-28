@@ -86,6 +86,46 @@ TESTS = [
      lambda: c(3)),
 ]
 
+# ps_1_x: no instruction length field, result shift in the destination, implicit v#/t# inputs and r0 output
+OP1 = dict(mov=1, add=2, sub=3, mul=5, texcoord=64, texkill=65, tex=66, texreg2gb=70, texm3x2pad=71, texm3x2tex=72,
+           cnd=80, def_=81, bem=89)
+BIAS, BX2, COMP = 2, 4, 6
+def ins1(op, *ops): return [OP1[op], *ops]
+def dst1(t, n, mask=0xF, shift=0, sat=False): return dst(t, n, mask) | ((shift & 0xF) << 24) | ((1 << 20) if sat else 0)
+def ps1(minor, body): return [0xFFFF0100 | minor, *body, 0x0000FFFF]
+PHASE = 0x0000FFFD
+CLAMP = lambda v: [max(-1.0, min(1.0, x)) for x in v]
+TC0 = [0.25, 0.5, 0.75, 1.0]
+TEXEL = lambda x, y: [0.1 + 0.4 * (x + 2 * y) + 0.1 * k for k in range(4)]
+
+TESTS += [
+    ('ps11_tex', 'ps', ps1(1, [*ins1('tex', dst(ADDR, 0)), *ins1('mov', dst(TEMP, 0), src(ADDR, 0))]), lambda: TEXEL(0, 1)),
+    ('ps11_texcoord', 'ps', ps1(1, [*ins1('texcoord', dst(ADDR, 0)), *ins1('mov', dst(TEMP, 0), src(ADDR, 0))]), lambda: TC0),
+    ('ps11_const_clamp', 'ps', ps1(1, [*ins1('mov', dst(TEMP, 0), src(CONST, 1))]), lambda: CLAMP(c(1))),
+    ('ps11_def_clamp', 'ps', ps1(1, [*ins1('def_', dst(CONST, 4), f(2), f(-3), f(0.5), f(1)), *ins1('mov', dst(TEMP, 0), src(CONST, 4))]),
+     lambda: [1, -1, 0.5, 1]),
+    ('ps11_shift_x2', 'ps', ps1(1, [*ins1('mul', dst1(TEMP, 0, shift=1), src(CONST, 0), src(CONST, 0))]),
+     lambda: [2 * x * x for x in c(0)]),
+    ('ps11_shift_d2_sat', 'ps', ps1(1, [*ins1('add', dst1(TEMP, 0, shift=-1 & 0xF, sat=True), src(CONST, 0), src(CONST, 0, mod=BX2))]),
+     lambda: [max(0.0, min(1.0, (x + 2 * x - 1) / 2)) for x in c(0)]),
+    ('ps11_bias_comp', 'ps', ps1(1, [*ins1('sub', dst(TEMP, 0), src(CONST, 0, mod=BIAS), src(CONST, 0, mod=COMP))]),
+     lambda: [(x - 0.5) - (1 - x) for x in c(0)]),
+    ('ps11_cnd', 'ps', ps1(1, [*ins1('mov', dst(TEMP, 0), src(CONST, 0)), *ins1('cnd', dst(TEMP, 0), src(TEMP, 0, REP(3)), src(CONST, 1), src(CONST, 2))]),
+     lambda: CLAMP(c(1))),
+    ('ps12_texreg2gb', 'ps', ps1(2, [*ins1('texcoord', dst(ADDR, 0)), *ins1('texreg2gb', dst(ADDR, 1), src(ADDR, 0)),
+                                     *ins1('mov', dst(TEMP, 0), src(ADDR, 1))]), lambda: TEXEL(1, 1)),
+    ('ps11_texm3x2', 'ps', ps1(1, [*ins1('texcoord', dst(ADDR, 0)), *ins1('texm3x2pad', dst(ADDR, 1), src(ADDR, 0)),
+                                   *ins1('texm3x2tex', dst(ADDR, 2), src(ADDR, 0)), *ins1('mov', dst(TEMP, 0), src(ADDR, 2))]),
+     lambda: TEXEL(0, 0)),
+    ('ps11_texkill_keep', 'ps', ps1(1, [*ins1('texkill', dst(ADDR, 0)), *ins1('mov', dst(TEMP, 0), src(CONST, 0))]), lambda: c(0)),
+    ('ps14_texld', 'ps', ps1(4, [*ins1('tex', dst(TEMP, 0), src(ADDR, 0))]), lambda: TEXEL(0, 1)),
+    ('ps14_texcrd', 'ps', ps1(4, [*ins1('texcoord', dst(TEMP, 0, 0x7), src(ADDR, 0)), *ins1('mov', dst(TEMP, 0, 0x8), src(CONST, 0))]),
+     lambda: TC0[:3] + [c(0)[3]]),
+    ('ps14_phase_bem', 'ps', ps1(4, [*ins1('bem', dst(TEMP, 1, 0x3), src(CONST, 0), src(CONST, 1)), PHASE,
+                                     *ins1('mov', dst(TEMP, 0), src(CONST, 2)), *ins1('mov', dst(TEMP, 0, 0x3), src(TEMP, 1))]),
+     lambda: c(0)[:2] + CLAMP(c(2))[2:]),
+]
+
 passed = failed = 0
 for name, stage, tokens, expected in TESTS:
     base = f'{WORK}/{name}'
