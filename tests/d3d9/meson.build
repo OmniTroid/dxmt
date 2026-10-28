@@ -30,3 +30,8 @@ executable('d3d9_fixed_function', ['d3d9_fixed_function.cpp'],
   dependencies: [ lib_d3d9, lib_d3dcompiler_d3d9 ],
   link_args: [ '-mwindows' ],
 )
+
+executable('d3d9_present', ['d3d9_present.cpp'],
+  dependencies: [ lib_d3d9 ],
+  link_args: [ '-mwindows' ],
+)
