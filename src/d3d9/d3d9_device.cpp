@@ -46,6 +46,8 @@ MTLD3D9Device::MTLD3D9Device(
 }
 
 MTLD3D9Device::~MTLD3D9Device() {
+  if (cursor_)
+    DestroyCursor(cursor_);
   ClearBindings();
   render_targets_ = {};
   depth_stencil_ = nullptr;
@@ -327,16 +329,57 @@ MTLD3D9Device::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS *pParameters)
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetCursorProperties(UINT XHotSpot, UINT YHotSpot, IDirect3DSurface9 *pCursorBitmap) {
-  WARN_ONCE("IDirect3DDevice9::SetCursorProperties: not implemented");
+  auto lock = Lock();
+  if (!pCursorBitmap)
+    return D3DERR_INVALIDCALL;
+  D3DSURFACE_DESC desc;
+  pCursorBitmap->GetDesc(&desc);
+  if (desc.Format != D3DFMT_A8R8G8B8 || XHotSpot >= desc.Width || YHotSpot >= desc.Height)
+    return D3DERR_INVALIDCALL;
+  D3DLOCKED_RECT lr;
+  if (FAILED(pCursorBitmap->LockRect(&lr, nullptr, D3DLOCK_READONLY)))
+    return D3DERR_INVALIDCALL;
+  std::vector<DWORD> pixels(desc.Width * desc.Height);
+  for (UINT y = 0; y < desc.Height; y++)
+    std::memcpy(&pixels[y * desc.Width], (char *)lr.pBits + y * lr.Pitch, desc.Width * 4);
+  pCursorBitmap->UnlockRect();
+
+  std::vector<BYTE> mask((desc.Width + 15) / 16 * 2 * desc.Height, 0);
+  ICONINFO info = {};
+  info.fIcon = FALSE;
+  info.xHotspot = XHotSpot;
+  info.yHotspot = YHotSpot;
+  info.hbmMask = CreateBitmap(desc.Width, desc.Height, 1, 1, mask.data());
+  info.hbmColor = CreateBitmap(desc.Width, desc.Height, 1, 32, pixels.data());
+  HCURSOR cursor = CreateIconIndirect(&info);
+  DeleteObject(info.hbmMask);
+  DeleteObject(info.hbmColor);
+  if (!cursor)
+    return D3DERR_INVALIDCALL;
+  if (cursor_)
+    DestroyCursor(cursor_);
+  cursor_ = cursor;
+  if (cursor_visible_)
+    SetCursor(cursor_);
   return D3D_OK;
 }
 
 void STDMETHODCALLTYPE
-MTLD3D9Device::SetCursorPosition(int X, int Y, DWORD Flags) {}
+MTLD3D9Device::SetCursorPosition(int X, int Y, DWORD Flags) {
+  POINT pt;
+  // moving the system cursor to where it already is would still fight the user's input
+  if (GetCursorPos(&pt) && (pt.x != X || pt.y != Y))
+    SetCursorPos(X, Y);
+}
 
 BOOL STDMETHODCALLTYPE
 MTLD3D9Device::ShowCursor(BOOL bShow) {
-  return FALSE;
+  auto lock = Lock();
+  BOOL previous = cursor_visible_;
+  cursor_visible_ = bShow;
+  if (cursor_)
+    SetCursor(bShow ? cursor_ : nullptr);
+  return previous;
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -700,10 +743,9 @@ MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSu
     return D3DERR_INVALIDCALL;
   if (sd.Width != dd.Width || sd.Height != dd.Height || sd.Format != dd.Format)
     return D3DERR_INVALIDCALL;
-  if (sd.MultiSampleType != D3DMULTISAMPLE_NONE) {
-    ERR_ONCE("IDirect3DDevice9::GetRenderTargetData: multisampled source is not implemented");
+  // documented to fail for multisampled render targets; apps resolve with StretchRect first
+  if (sd.MultiSampleType != D3DMULTISAMPLE_NONE)
     return D3DERR_INVALIDCALL;
-  }
 
   CopyTextureToBuffer(
       src->texture(), src->level(), src->slice(), RectToBox(nullptr, sd), dst->EnsureShadow(), dst->layout()

@@ -22,93 +22,9 @@
 namespace dxmt {
 
 HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *parameters, IDirect3DSwapChain9 **swapchain) {
-  ERR_ONCE("MTLD3D9Device::CreateAdditionalSwapChain: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetFrontBufferData(UINT swapchain_idx, IDirect3DSurface9 *dst_surface) {
-  ERR_ONCE("MTLD3D9Device::GetFrontBufferData: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetClipStatus(const D3DCLIPSTATUS9 *clip_status) {
-  ERR_ONCE("MTLD3D9Device::SetClipStatus: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetClipStatus(D3DCLIPSTATUS9 *clip_status) {
-  ERR_ONCE("MTLD3D9Device::GetClipStatus: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::ValidateDevice(DWORD *pass_count) {
-  ERR_ONCE("MTLD3D9Device::ValidateDevice: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetPaletteEntries(UINT palette_idx, const PALETTEENTRY *entries) {
-  ERR_ONCE("MTLD3D9Device::SetPaletteEntries: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetPaletteEntries(UINT palette_idx, PALETTEENTRY *entries) {
-  ERR_ONCE("MTLD3D9Device::GetPaletteEntries: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetCurrentTexturePalette(UINT palette_idx) {
-  ERR_ONCE("MTLD3D9Device::SetCurrentTexturePalette: not implemented");
-  return D3D_OK;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::GetCurrentTexturePalette(UINT *palette_idx) {
-  ERR_ONCE("MTLD3D9Device::GetCurrentTexturePalette: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::SetNPatchMode(float segment_count) {
-  ERR_ONCE("MTLD3D9Device::SetNPatchMode: not implemented");
-  return D3D_OK;
-}
-
-float STDMETHODCALLTYPE
-MTLD3D9Device::GetNPatchMode() {
-  ERR_ONCE("MTLD3D9Device::GetNPatchMode: not implemented");
-  return 0;
-}
-
-HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ProcessVertices(UINT src_start_idx, UINT dst_idx, UINT vertex_count, IDirect3DVertexBuffer9 *dst_buffer, IDirect3DVertexDeclaration9 *declaration, DWORD flags) {
   ERR_ONCE("MTLD3D9Device::ProcessVertices: not implemented");
   return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::DrawRectPatch(UINT handle, const float *segment_count, const D3DRECTPATCH_INFO *patch_info) {
-  ERR_ONCE("MTLD3D9Device::DrawRectPatch: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::DrawTriPatch(UINT handle, const float *segment_count, const D3DTRIPATCH_INFO *patch_info) {
-  ERR_ONCE("MTLD3D9Device::DrawTriPatch: not implemented");
-  return D3DERR_INVALIDCALL;
-}
-
-HRESULT STDMETHODCALLTYPE
-MTLD3D9Device::DeletePatch(UINT handle) {
-  ERR_ONCE("MTLD3D9Device::DeletePatch: not implemented");
-  return D3D_OK;
 }
 
 HRESULT STDMETHODCALLTYPE

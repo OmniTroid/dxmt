@@ -349,6 +349,12 @@ private:
   std::unordered_map<Sha1Digest, std::unique_ptr<MTLD3D9ShaderCode>> ff_shaders_;
   Com<MTLD3D9StateBlock, false> recording_;
   Rc<Texture> resolve_temp_;
+  D3DCLIPSTATUS9 clip_status_ = {};
+  std::unordered_map<UINT, std::array<PALETTEENTRY, 256>> palettes_;
+  UINT current_palette_ = 0xFFFF;
+  float npatch_segments_ = 0.0f;
+  HCURSOR cursor_ = nullptr;
+  BOOL cursor_visible_ = FALSE;
   std::unique_ptr<MTLD3D9BufferStorage> ff_constants_;
   UINT ff_constants_offset_ = 0;
 

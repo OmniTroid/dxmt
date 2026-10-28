@@ -213,6 +213,8 @@ MTLD3D9SwapChain::Present(
   double vsync_duration = interval / refresh_rate_;
 
   parent_->EndRenderPass();
+  if (keep_front_)
+    CaptureFront();
   auto &queue = parent_->queue();
   auto chunk = queue.CurrentChunk();
   chunk->signal_frame_latency_fence_ = queue.CurrentFrameSeq();
@@ -228,10 +230,68 @@ MTLD3D9SwapChain::Present(
   return D3D_OK;
 }
 
+HRESULT
+MTLD3D9SwapChain::CaptureFront() {
+  auto &bb = backbuffers_[0]->Desc();
+  if (!front_ || front_->width() != bb.Width || front_->height() != bb.Height) {
+    D3DSURFACE_DESC desc = bb;
+    desc.MultiSampleType = D3DMULTISAMPLE_NONE;
+    desc.MultiSampleQuality = 0;
+    HRESULT hr = CreateD3D9SurfaceTexture(parent_, desc, front_);
+    if (FAILED(hr))
+      return hr;
+  }
+  parent_->EndRenderPass();
+  if (bb.MultiSampleType != D3DMULTISAMPLE_NONE) {
+    parent_->Emit([src = backbuffers_[0]->texture(), src_view = backbuffers_[0]->viewKey(),
+                   dst = front_](ArgumentEncodingContext &enc) mutable {
+      auto view = dst->fullView;
+      enc.resolveTexture(std::move(src), src_view, std::move(dst), view);
+    });
+    return D3D_OK;
+  }
+  parent_->EmitBlit([src = backbuffers_[0]->texture(), dst = front_, width = bb.Width,
+                     height = bb.Height](ArgumentEncodingContext &enc) {
+    auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_texture>();
+    cmd.type = WMTBlitCommandCopyFromTextureToTexture;
+    cmd.src = enc.access(src, 0, 0, ResourceAccess::Read);
+    cmd.src_slice = 0;
+    cmd.src_level = 0;
+    cmd.src_origin = {0, 0, 0};
+    cmd.src_size = {width, height, 1};
+    cmd.dst = enc.access(dst, 0, 0, ResourceAccess::Write);
+    cmd.dst_slice = 0;
+    cmd.dst_level = 0;
+    cmd.dst_origin = {0, 0, 0};
+  });
+  return D3D_OK;
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
-  ERR_ONCE("IDirect3DSwapChain9::GetFrontBufferData: not implemented");
-  return D3DERR_INVALIDCALL;
+  auto lock = parent_->Lock();
+  auto dst = static_cast<MTLD3D9Surface *>(pDestSurface);
+  if (!dst || backbuffers_.empty())
+    return D3DERR_INVALIDCALL;
+  auto &dd = dst->Desc();
+  auto &bb = backbuffers_[0]->Desc();
+  if (dd.Pool != D3DPOOL_SYSTEMMEM || dd.Format != D3DFMT_A8R8G8B8 || dd.Width < bb.Width || dd.Height < bb.Height ||
+      dst->IsLocked())
+    return D3DERR_INVALIDCALL;
+  if (bb.Format == D3DFMT_A2R10G10B10) {
+    WARN_ONCE("IDirect3DSwapChain9::GetFrontBufferData: 10-bit back buffers are not converted");
+    return D3DERR_INVALIDCALL;
+  }
+  // Before the first call nothing was captured, so the back buffer stands in for the last presented frame.
+  if (!keep_front_) {
+    keep_front_ = true;
+    HRESULT hr = CaptureFront();
+    if (FAILED(hr))
+      return hr;
+  }
+  D3DBOX box = {0, 0, bb.Width, bb.Height, 0, 1};
+  parent_->CopyTextureToBuffer(front_, 0, 0, box, dst->EnsureShadow(), dst->layout());
+  return D3D_OK;
 }
 
 HRESULT STDMETHODCALLTYPE

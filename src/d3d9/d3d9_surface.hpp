@@ -101,6 +101,12 @@ private:
   D3D9_FORMAT_LAYOUT layout_ = {0, 1};
   Rc<StagingResource> shadow_;
   bool locked_ = false;
+  HDC dc_ = nullptr;
+  HBITMAP dib_ = nullptr;
+  HGDIOBJ previous_bitmap_ = nullptr;
+  void *dib_bits_ = nullptr;
+  UINT dib_pitch_ = 0;
+  D3DLOCKED_RECT dc_lock_ = {};
   DWORD lock_flags_ = 0;
   RECT lock_rect_ = {};
 };

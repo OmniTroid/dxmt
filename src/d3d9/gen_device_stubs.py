@@ -6,7 +6,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HEADER = ROOT / 'include/native/directx/d3d9.h'
-SOURCES = [ROOT / 'src/d3d9/d3d9_device.cpp', ROOT / 'src/d3d9/d3d9_device_draw.cpp', ROOT / 'src/d3d9/d3d9_device_ff.cpp']
+SOURCES = [ROOT / 'src/d3d9/d3d9_device.cpp', ROOT / 'src/d3d9/d3d9_device_draw.cpp', ROOT / 'src/d3d9/d3d9_device_ff.cpp',
+           ROOT / 'src/d3d9/d3d9_device_misc.cpp']
 OUT = ROOT / 'src/d3d9/d3d9_device_unimpl.cpp'
 CLASS = 'MTLD3D9Device'
 

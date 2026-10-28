@@ -69,6 +69,7 @@ private:
   HRESULT CreateBackBuffers();
   void ApplyLayerProps();
   UINT SyncInterval() const;
+  HRESULT CaptureFront();
 
   MTLD3D9Device *parent_;
   D3DPRESENT_PARAMETERS params_;
@@ -83,6 +84,9 @@ private:
   D3DGAMMARAMP gamma_ramp_;
   DXMTGammaRamp gamma_lut_;
   bool gamma_enabled_ = false;
+  // a copy of each presented frame, kept once GetFrontBufferData has been called
+  Rc<Texture> front_;
+  bool keep_front_ = false;
 };
 
 } // namespace dxmt
