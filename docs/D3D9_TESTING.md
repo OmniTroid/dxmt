@@ -56,6 +56,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - D3D9 `def` constants are read with swizzles and negation, which DXBC immediates never have; the immediate loader must apply both.
 - New Wine unix calls are indexed by position in `__wine_unix_call_funcs`; count entries by commas, not lines (`MTLTexture_getBytes` hid at 145).
 - Changes to shared converter code must leave D3D11 output untouched: compile the shaders in `toolchains/dxbc-check` with `origin/main`'s airconv and this tree's, and `cmp` the `.metallib`s. Delete outputs between runs so a failed conversion can't compare stale files.
+- Texture view key 0 is not a view; `ArgumentEncodingContext::access` asserts on it. Use `texture->fullView` for a whole texture.
 - New compilation argument types need a case in `sm50_compilation_argument32_convert` or 32-bit apps silently drop them.
 
 **Writing test shaders with Wine's d3dcompiler (vkd3d)**
