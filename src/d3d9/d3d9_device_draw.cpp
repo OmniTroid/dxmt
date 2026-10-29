@@ -508,10 +508,13 @@ MTLD3D9Device::GetSampler(uint32_t Index) {
   return sampler;
 }
 
+// Apps may corrupt the vtable of a texture they bind (Wine's test_get_set_texture), so the type is read without a
+// virtual call. The three texture classes only differ in their interface, which adds nothing but a vtable pointer.
 template <typename Fn>
 static void
 WithTexture(IDirect3DBaseTexture9 *pTexture, Fn &&fn) {
-  switch (pTexture->GetType()) {
+  auto *base = static_cast<MTLD3D9TextureBase<IDirect3DTexture9> *>(static_cast<IDirect3DTexture9 *>(pTexture));
+  switch (base->Desc().Type) {
   case D3DRTYPE_TEXTURE:
     return fn(static_cast<MTLD3D9Texture *>(pTexture));
   case D3DRTYPE_CUBETEXTURE:
@@ -1339,7 +1342,7 @@ RecordRegisters(
     MTLD3D9StateBlock *Block, void (MTLD3D9StateBlock::*Record)(bool, UINT, const T *, UINT), bool Pixel, UINT Start,
     const T *pData, UINT Count, UINT Max
 ) {
-  if (!pData || Start + Count > Max)
+  if (!pData || Start > Max || Count > Max - Start)
     return D3DERR_INVALIDCALL;
   (Block->*Record)(Pixel, Start, pData, Count);
   return D3D_OK;
@@ -1348,7 +1351,7 @@ RecordRegisters(
 template <typename T, size_t N>
 static HRESULT
 SetRegisters(std::array<T, N> &regs, UINT Start, const void *pData, UINT Count, UINT Components, UINT Max) {
-  if (!pData || Start + Count > Max)
+  if (!pData || Start > Max || Count > Max - Start)
     return D3DERR_INVALIDCALL;
   std::memcpy(regs.data() + Start * Components, pData, Count * Components * sizeof(T));
   return D3D_OK;
@@ -1357,7 +1360,7 @@ SetRegisters(std::array<T, N> &regs, UINT Start, const void *pData, UINT Count, 
 template <typename T, size_t N>
 static HRESULT
 GetRegisters(const std::array<T, N> &regs, UINT Start, void *pData, UINT Count, UINT Components, UINT Max) {
-  if (!pData || Start + Count > Max)
+  if (!pData || Start > Max || Count > Max - Start)
     return D3DERR_INVALIDCALL;
   std::memcpy(pData, regs.data() + Start * Components, Count * Components * sizeof(T));
   return D3D_OK;
@@ -1393,7 +1396,7 @@ MTLD3D9Device::GetVertexShaderConstantI(UINT StartRegister, int *pConstantData, 
 
 static HRESULT
 SetBools(std::array<uint32_t, 16> &regs, UINT Start, const BOOL *pData, UINT Count) {
-  if (!pData || Start + Count > caps::MaxOtherConstants)
+  if (!pData || Start > caps::MaxOtherConstants || Count > caps::MaxOtherConstants - Start)
     return D3DERR_INVALIDCALL;
   for (UINT i = 0; i < Count; i++)
     regs[Start + i] = pData[i] ? 1 : 0;
@@ -1402,7 +1405,7 @@ SetBools(std::array<uint32_t, 16> &regs, UINT Start, const BOOL *pData, UINT Cou
 
 static HRESULT
 GetBools(const std::array<uint32_t, 16> &regs, UINT Start, BOOL *pData, UINT Count) {
-  if (!pData || Start + Count > caps::MaxOtherConstants)
+  if (!pData || Start > caps::MaxOtherConstants || Count > caps::MaxOtherConstants - Start)
     return D3DERR_INVALIDCALL;
   for (UINT i = 0; i < Count; i++)
     pData[i] = regs[Start + i];
