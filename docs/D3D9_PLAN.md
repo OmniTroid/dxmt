@@ -97,11 +97,12 @@ New VS/PS variant structs, each with an `IOHelper` prologue/epilogue:
 
 ## Status
 
-All eight phases are implemented and covered by `tests/d3d9` and `tests/airconv_d3d9`. Not implemented, by choice:
+All eight phases are implemented and covered by `tests/d3d9` and `tests/airconv_d3d9`. Wine's conformance suites run to the end; failures left (2026-10-29): visual 62, device 256, d3d9ex 56, stateblock 0 (`tests/d3d9/winetest.sh`). Not implemented:
 
 - `ProcessVertices` with a vertex shader (fixed-function only).
-- Shared resources (`pSharedHandle`) and `D3DFMT_A1`, so `ComposeRects` fails.
-- Not yet run against a real game; `d3d9_fullscreen` needs an unlocked screen (`D3D9_TEST_FULLSCREEN=1`).
+- Shared resources (`pSharedHandle` other than D3D9Ex user memory) and `D3DFMT_A1`, so `ComposeRects` fails.
+- YUY2/UYVY outside scratch memory (no GPU format or conversion).
+- Not yet run against a real game.
 
 ## Testing
 - `tests/d3d9/`: sample apps like `tests/dx11` (clear, triangle, FF lights, SM3 shading, UP draws, fans, point sprites, lock/discard).
