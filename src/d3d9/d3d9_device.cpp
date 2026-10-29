@@ -979,6 +979,42 @@ MTLD3D9Device::UpdateSurface(
   return D3D_OK;
 }
 
+// DXTn surfaces are filled with solid blocks written through the CPU shadow, in whole blocks only
+HRESULT
+MTLD3D9Device::FillBlocks(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color) {
+  auto &desc = pSurface->Desc();
+  D3DBOX box = RectToBox(pRect, desc);
+  auto edge = [](UINT v, UINT size) { return !(v & 3) || v == size; };
+  if (!BoxInside(box, desc) || (box.Left & 3) || (box.Top & 3) || !edge(box.Right, desc.Width) ||
+      !edge(box.Bottom, desc.Height))
+    return D3DERR_INVALIDCALL;
+
+  uint8_t a = Color >> 24, r = Color >> 16, g = Color >> 8, b = Color;
+  uint16_t rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+  uint8_t color[8] = {(uint8_t)rgb565, (uint8_t)(rgb565 >> 8), (uint8_t)rgb565, (uint8_t)(rgb565 >> 8)};
+  uint8_t block[16] = {};
+  uint32_t size = desc.Format == D3DFMT_DXT1 ? 8 : 16;
+  if (desc.Format == D3DFMT_DXT2 || desc.Format == D3DFMT_DXT3)
+    std::memset(block, (a >> 4) * 0x11, 8);
+  else if (desc.Format != D3DFMT_DXT1)
+    block[0] = block[1] = a;
+  std::memcpy(block + size - 8, color, 8);
+
+  auto shadow = pSurface->EnsureShadow();
+  void *data = nullptr;
+  HRESULT hr = MapStaging(shadow, false, true, false, &data);
+  if (FAILED(hr))
+    return hr;
+  auto dst = pSurface->Shadow();
+  for (UINT y = box.Top; y < box.Bottom; y += 4)
+    for (UINT x = box.Left; x < box.Right; x += 4)
+      std::memcpy((char *)data + dst.offset + (y / 4) * dst.pitch + (x / 4) * size, block, size);
+  shadow->unmap();
+  CopyBufferToTexture(dst, pSurface->layout(), pSurface->texture(), pSurface->level(), pSurface->slice(), box);
+  pSurface->MarkWritten();
+  return D3D_OK;
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLOR Color) {
   auto lock = Lock();
@@ -988,6 +1024,8 @@ MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLO
   // texture levels need D3DUSAGE_RENDERTARGET; offscreen plain surfaces don't
   if (IsTextureLevel(surface) && !(surface->Desc().Usage & D3DUSAGE_RENDERTARGET))
     return D3DERR_INVALIDCALL;
+  if (D3D9IsDXTn(surface->Desc().Format))
+    return FillBlocks(surface, pRect, Color);
   if (!(surface->texture()->usage() & WMTTextureUsageRenderTarget)) {
     ERR_ONCE("IDirect3DDevice9::ColorFill: non-renderable format ", surface->Desc().Format);
     return D3DERR_INVALIDCALL;

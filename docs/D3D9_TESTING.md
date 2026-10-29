@@ -49,6 +49,7 @@ Leftover artifacts have produced wrong conclusions more than any other trap. Bef
 - `winetest.sh` cached its filtered exe at one path for every suite; after switching suites, a "single test" run ran the whole device suite, display mode changes included. Each suite now has its own exe.
 - A watchdog compared against the old log's mtime before the run rewrote it and reported a stall that wasn't one.
 - Running one of our test exes directly after a rebuild tests the DLLs from the last install; run `tests/d3d9/install.sh` first (`run.sh` and `winetest.sh` do).
+- A failed `ninja` leaves the previous exe in place, and quiet build commands (`>/dev/null`) hide the error; a test edit then "passed" without being compiled. Check the build succeeded (or the exe's mtime) before reading results.
 - Prefix DLL copies and airconv outputs, below.
 
 **Wine runtime**

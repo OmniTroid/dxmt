@@ -71,6 +71,20 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   device->GetPaletteEntries(3, got_palette);
   device->GetCurrentTexturePalette(&current);
   check("palette round trip", current == 3 && got_palette[7].peGreen == 2);
+  IDirect3DSurface9 *dxt = nullptr;
+  device->CreateOffscreenPlainSurface(8, 8, D3DFMT_DXT1, D3DPOOL_DEFAULT, &dxt, nullptr);
+  RECT block = {4, 0, 8, 4}, partial = {2, 0, 4, 4};
+  check("DXT1 fill of a partial block fails", dxt && device->ColorFill(dxt, &partial, 0xFFFF0000) == D3DERR_INVALIDCALL);
+  D3DLOCKED_RECT dxt_lr = {};
+  if (dxt && device->ColorFill(dxt, &block, 0xFFFF0000) == D3D_OK && SUCCEEDED(dxt->LockRect(&dxt_lr, nullptr, D3DLOCK_READONLY))) {
+    const WORD *words = reinterpret_cast<const WORD *>((const char *)dxt_lr.pBits + 8);
+    check("DXT1 fill writes solid red blocks", words[0] == 0xF800 && words[1] == 0xF800 && words[2] == 0 && words[3] == 0);
+    dxt->UnlockRect();
+  } else {
+    check("DXT1 fill writes solid red blocks", false);
+  }
+  if (dxt)
+    dxt->Release();
   device->SetNPatchMode(2.5f);
   check("N-patch mode round trip", device->GetNPatchMode() == 2.5f);
 

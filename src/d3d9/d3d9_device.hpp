@@ -316,7 +316,7 @@ private:
   MTLD3D9ShaderCode *FixedFunctionPS(float *Constants);
   WMT::RenderPipelineState GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Function VS, WMT::Function PS);
   WMT::DepthStencilState GetDepthStencilState();
-  Rc<Sampler> GetSampler(uint32_t Index);
+  Rc<Sampler> GetSampler(uint32_t Index, DWORD Lod);
   void ReleaseTextureBinding(BoundTexture &Binding);
   HRESULT DrawWithIndices(
       D3DPRIMITIVETYPE PrimitiveType, INT BaseVertexIndex, UINT StartIndex, UINT PrimitiveCount, Rc<Buffer> IndexBuffer,
@@ -339,6 +339,7 @@ private:
 
   Com<MTLD3D9> parent_;
   MTLD3D9Adapter *adapter_;
+  HRESULT FillBlocks(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color);
   bool ValidMultisampleQuality(D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD Quality);
   D3DDEVICE_CREATION_PARAMETERS creation_params_;
   bool extended_;

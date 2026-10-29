@@ -310,7 +310,10 @@ DWORD STDMETHODCALLTYPE
 MTLD3D9TextureBase<Base>::SetLOD(DWORD LODNew) {
   if (desc_.Pool != D3DPOOL_MANAGED)
     return 0;
-  return std::exchange(lod_, std::min<DWORD>(LODNew, desc_.Levels - 1));
+  DWORD lod = std::min<DWORD>(LODNew, desc_.Levels - 1);
+  if (lod != lod_)
+    sample_view_valid_[0] = sample_view_valid_[1] = false;
+  return std::exchange(lod_, lod);
 }
 
 template <typename Base>
@@ -499,8 +502,9 @@ MTLD3D9TextureBase<Base>::SampleView(bool Srgb) {
   sample_views_[Srgb] = texture_->createView({
       .format = format,
       .type = texture_->textureType(),
-      .firstMiplevel = 0,
-      .miplevelCount = texture_->miplevelCount(),
+      // SetLOD makes a managed texture's level LOD its most detailed one
+      .firstMiplevel = lod_,
+      .miplevelCount = texture_->miplevelCount() - lod_,
       .firstArraySlice = 0,
       .arraySize = texture_->arrayLength(),
   });

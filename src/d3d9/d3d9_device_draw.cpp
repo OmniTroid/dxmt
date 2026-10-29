@@ -472,7 +472,7 @@ MTLD3D9Device::GetDepthStencilState() {
 }
 
 Rc<Sampler>
-MTLD3D9Device::GetSampler(uint32_t Index) {
+MTLD3D9Device::GetSampler(uint32_t Index, DWORD Lod) {
   auto &ss = sampler_states_[Index];
   WMTSamplerInfo info = {};
   auto filter = [](DWORD f) {
@@ -492,7 +492,8 @@ MTLD3D9Device::GetSampler(uint32_t Index) {
                       : (border & 0xFFFFFF) == 0xFFFFFF ? WMTSamplerBorderColorOpaqueWhite
                                                         : WMTSamplerBorderColorOpaqueBlack;
   info.compare_function = WMTCompareFunctionNever;
-  info.lod_min_clamp = (float)ss[D3DSAMP_MAXMIPLEVEL];
+  // the bound view starts at the texture's LOD, and MAXMIPLEVEL only limits further when mipmapping
+  info.lod_min_clamp = (float)(ss[D3DSAMP_MAXMIPLEVEL] > Lod ? ss[D3DSAMP_MAXMIPLEVEL] - Lod : 0);
   info.lod_max_clamp = 1000.0f;
   bool anisotropic = ss[D3DSAMP_MINFILTER] == D3DTEXF_ANISOTROPIC || ss[D3DSAMP_MAGFILTER] == D3DTEXF_ANISOTROPIC;
   info.max_anisotroy = anisotropic ? std::clamp<DWORD>(ss[D3DSAMP_MAXANISOTROPY], 1, 16) : 1;
@@ -612,15 +613,18 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const flo
       uint32_t index = Pixel ? slot : caps::MaxSamplersPS + slot;
       Rc<Texture> texture;
       TextureViewKey view;
+      DWORD lod = 0;
       if (auto bound = textures_[index].texture) {
         bool srgb = sampler_states_[index][D3DSAMP_SRGBTEXTURE];
         WithTexture(bound, [&](auto *t) {
           texture = t->texture();
-          if (texture.ptr())
+          if (texture.ptr()) {
             view = t->SampleView(srgb);
+            lod = t->GetLOD();
+          }
         });
       }
-      Emit([texture = std::move(texture), view, sampler = GetSampler(index), slot,
+      Emit([texture = std::move(texture), view, sampler = GetSampler(index, lod), slot,
             Pixel](ArgumentEncodingContext &enc) mutable {
         if (Pixel) {
           enc.bindTexture<PipelineStage::Pixel>(slot, std::move(texture), view);
