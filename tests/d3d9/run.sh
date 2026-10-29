@@ -13,16 +13,7 @@ mkdir -p "$work/logs" "$runtime"
 rsync -a --delete --exclude '*-windows/d3d9.dll' --exclude '*-windows/d3d11.dll' --exclude '*-windows/d3d10core.dll' \
   --exclude '*-windows/dxgi.dll' --exclude '*-windows/winemetal.dll' --exclude 'x86_64-unix/winemetal.so' \
   "$wine_install/" "$runtime/"
-install_if_changed() { cmp -s "$1" "$2" || cp "$1" "$2"; }
-
-for arch in x86_64 i386; do
-  build="$root/build"
-  [ $arch = i386 ] && build="$root/build32"
-  for dll in d3d9/d3d9 d3d11/d3d11 d3d10/d3d10core dxgi/dxgi winemetal/winemetal; do
-    install_if_changed "$build/src/$dll.dll" "$runtime/lib/wine/$arch-windows/$(basename "$dll").dll"
-  done
-done
-install_if_changed "$root/build/src/winemetal/unix/winemetal.so" "$runtime/lib/wine/x86_64-unix/winemetal.so"
+"$(dirname "$0")/install.sh"
 
 export WINEPREFIX="$work/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" DXMT_LOG_PATH="$work/logs"
 "$runtime/bin/wine" wineboot -i > /dev/null 2>&1

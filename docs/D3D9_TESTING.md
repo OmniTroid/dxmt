@@ -22,11 +22,13 @@ tests/d3d9/run.sh toolchains/wine-cx/install
 
 Syncs the Wine install to `toolchains/test/wine`, installs this tree's DLLs for both architectures, creates a fresh prefix and runs every `tests/d3d9` test. Each test prints `PASS`/`FAIL` lines and exits with its failure count. `D3D9_TEST_FULLSCREEN=1` adds `d3d9_fullscreen`, which takes over the display.
 
-Wine's own d3d9 conformance tests run against DXMT in the prefix `run.sh` leaves behind (`stateblock`, `visual`, `device`, `d3d9ex`); they found behavior our tests missed:
+Wine's own d3d9 conformance tests (`stateblock`, `visual`, `device`, `d3d9ex`) run against DXMT in the prefix `run.sh` leaves behind; they found behavior our tests missed. Name test functions to run only those, the way you would with any test framework:
 
 ```sh
-WINEPREFIX=$PWD/toolchains/test/pfx toolchains/test/wine/bin/wine toolchains/wine-cx/build/dlls/d3d9/tests/x86_64-windows/d3d9_test.exe stateblock
+tests/d3d9/winetest.sh toolchains/wine-cx/build ~/code/wine/wine visual test_fog cnd_test
 ```
+
+It installs freshly built DLLs first (`tests/d3d9/install.sh`), so rebuild and rerun takes seconds; `--list` prints the suite's functions, and no names runs the whole suite (about 20 minutes for `visual`). One of our own tests runs alone with `WINEPREFIX=$PWD/toolchains/test/pfx toolchains/test/wine/bin/wine build/tests/d3d9/d3d9_ps1.exe`.
 
 The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU and compare it with a Python reference; see the README there.
 
@@ -74,6 +76,11 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - Each Wine process costs seconds to start; compile many shaders with one `hlslc.exe -b jobs.txt` call, as `sm3_tests.py` does.
 - When a sabotage doesn't make a check fail, first confirm the broken DLL is the one running (a temporary `fprintf(stderr, ...)` in the code path) before concluding the check is weak.
 - `D3DDisassemble` works on SM1-3 bytecode: `hlslc.exe -d file.bin`.
+
+**Reading Wine's tests**
+
+- State leaks between loop iterations: `test_fog` only calls `SetVertexShader(NULL)` in its FFP mode, so its POSITIONT draws ran with the last mode's shader bound. Windows skips vertex processing for POSITIONT whatever shader is set; check what a failing iteration inherits before suspecting the feature it names.
+- Count failures from Wine's summary line (`N failures`); `winetest.sh`'s per-function split moves when function boundaries in `visual.c` don't match the running build.
 
 **Test code**
 
