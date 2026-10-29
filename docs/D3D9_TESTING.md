@@ -49,6 +49,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - A crashing test opens winedbg's crash dialog and the run hangs; `run.sh` sets `HKCU\Software\Wine\WineDbg\ShowCrashDialog=0` so the crash is printed and the run continues.
 - While the macOS screen is locked, Wine's first window (explorer.exe's desktop) can take minutes or never appear, so the first test sits idle; runs at night took up to 43 minutes. `run.sh` warns when the screen is locked and gives each test 180 s before reporting `TIMEOUT`. `wineserver -w` after setup also removed a smaller stall. Time each test before guessing: a pipe-based runner spread one stall over several tests, and recopying the runtime looked guilty but wasn't.
 - Wine's visual suite aborted at `test_desktop_window` (a device on `GetDesktopWindow()`, which has no macdrv view) in every run before this was fixed, so the 22 tests after it never ran and every failure count was low. Check that `winetest-visual.out` ends with Wine's summary line, not an assertion. The first fix then deadlocked the next test: CrossOver's macdrv `get_win_data` creates a client surface before looking the window up, so DXMT never asks it about the desktop window or a NULL one. A stalled run sits at 0% CPU; `sample <pid> 1` shows the stuck stacks.
+- Runs stall occasionally (deadlocks, a locked screen). Check a running test about once a minute: a log that stops growing while the test process sits at 0% CPU is a stall, not slow progress. `sample <pid> 1` shows the stacks; then stop it with `wineserver -k`. `winetest.sh` does this itself when its log is idle for `STALL` seconds (default 180), saving the stacks next to the log as `.stall.txt`. Display-mode tests (`test_reset_fullscreen`, `test_wndproc`) change the real display and have stalled inside macOS's mode switch.
 - `wineserver -k` only stops the server for the current `WINEPREFIX`; set it explicitly so other Wine sessions are untouched.
 - Test executables need `-static` or they fail on missing `libstdc++-6.dll`/`libgcc_s_*.dll` (exit code 53).
 
@@ -80,7 +81,10 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 **Reading Wine's tests**
 
 - State leaks between loop iterations: `test_fog` only calls `SetVertexShader(NULL)` in its FFP mode, so its POSITIONT draws ran with the last mode's shader bound. Windows skips vertex processing for POSITIONT whatever shader is set; check what a failing iteration inherits before suspecting the feature it names.
-- Count failures from Wine's summary line (`N failures`); `winetest.sh`'s per-function split moves when function boundaries in `visual.c` don't match the running build.
+- Wine's summary total includes "Test succeeded inside todo block": checks marked `todo_wine` because wined3d gets them wrong, which DXMT passes. `winetest.sh` reports real failures and those passes separately; checks DXMT fails inside a todo stay silent ("Test marked todo").
+- Like `visual`, the `device` suite never ran to the end: a process crash (wrong `SetPrivateData(D3DSPD_IUNKNOWN)` pointer handling, then an over-release in `test_refcount`) silently ended it a dozen tests in. After any fix, check the log ends with the summary line.
+- `test_wndproc` and friends test fullscreen focus loss (device subclasses the focus window, minimizes and restores the mode on deactivation, `TestCooperativeLevel` returns `D3DERR_DEVICENOTRESET`). DXMT doesn't hook the window procedure, and the test deadlocks in a mode change; skip it with `-test_wndproc`.
+- Tests that create fullscreen devices (`test_occlusion_query`) misbehave while the screen is locked; recheck them unlocked before debugging.
 
 **Test code**
 

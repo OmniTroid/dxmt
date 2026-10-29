@@ -21,16 +21,25 @@ static int winetest_only(const char *name)
 {
     const char *list = getenv("WINETEST_ONLY");
     size_t len = strlen(name);
+    int included = 0, includes = 0;
     if (!list || !*list) return 1;
     while (*list)
     {
         const char *end = strchr(list, ',');
         size_t n = end ? (size_t)(end - list) : strlen(list);
-        if (n == len && !strncmp(list, name, n)) return 1;
+        if (*list == '-')
+        {
+            if (n - 1 == len && !strncmp(list + 1, name, n - 1)) return 0;
+        }
+        else
+        {
+            ++includes;
+            if (n == len && !strncmp(list, name, n)) included = 1;
+        }
         if (!end) break;
         list = end + 1;
     }
-    return 0;
+    return included || !includes;
 }
 
 '''
