@@ -211,6 +211,13 @@ ToPrimitive(D3DPRIMITIVETYPE type, UINT count, WMTPrimitiveType &prim, WMTPrimit
   }
 }
 
+// Metal restarts 16-bit strips at index 0xFFFF and D3D9 doesn't, so such strips are drawn with 32-bit indices
+static bool
+NeedsWideStripIndices(D3DPRIMITIVETYPE Type, D3DFORMAT Format, const uint16_t *pIndices, UINT Count) {
+  return (Type == D3DPT_TRIANGLESTRIP || Type == D3DPT_LINESTRIP) && Format == D3DFMT_INDEX16 &&
+         std::find(pIndices, pIndices + Count, 0xFFFF) != pIndices + Count;
+}
+
 UINT
 VertexCount(D3DPRIMITIVETYPE type, UINT count) {
   WMTPrimitiveType prim;
@@ -1131,6 +1138,22 @@ MTLD3D9Device::DrawIndexedPrimitive(
         D3DPT_TRIANGLELIST, BaseVertexIndex, 0, PrimitiveCount, buffer, offset, D3DFMT_INDEX32, true
     );
   }
+  if (format == D3DFMT_INDEX16 && (PrimitiveType == D3DPT_TRIANGLESTRIP || PrimitiveType == D3DPT_LINESTRIP)) {
+    void *data = nullptr;
+    index_buffer_->storage().Lock(0, 0, &data, D3DLOCK_READONLY);
+    auto indices = (const uint16_t *)data + StartIndex;
+    UINT count = VertexCount(PrimitiveType, PrimitiveCount);
+    std::vector<uint32_t> wide;
+    if (NeedsWideStripIndices(PrimitiveType, format, indices, count))
+      wide.assign(indices, indices + count);
+    index_buffer_->storage().Unlock();
+    if (!wide.empty()) {
+      Rc<Buffer> buffer;
+      UINT offset;
+      UploadToRing(up_indices_, up_index_offset_, wide.data(), wide.size() * 4, 4, buffer, offset);
+      return DrawWithIndices(PrimitiveType, BaseVertexIndex, 0, PrimitiveCount, buffer, offset, D3DFMT_INDEX32, true);
+    }
+  }
   return DrawWithIndices(
       PrimitiveType, BaseVertexIndex, StartIndex, PrimitiveCount, index_buffer_->storage().buffer(), 0, format, true
   );
@@ -1198,6 +1221,10 @@ MTLD3D9Device::DrawIndexedPrimitiveUP(
     });
     UploadToRing(up_indices_, up_index_offset_, list.data(), list.size() * 4, 4, buffer, offset);
     hr = DrawWithIndices(D3DPT_TRIANGLELIST, 0, 0, PrimitiveCount, buffer, offset, D3DFMT_INDEX32);
+  } else if (NeedsWideStripIndices(PrimitiveType, IndexDataFormat, (const uint16_t *)pIndexData, indices)) {
+    std::vector<uint32_t> wide((const uint16_t *)pIndexData, (const uint16_t *)pIndexData + indices);
+    UploadToRing(up_indices_, up_index_offset_, wide.data(), wide.size() * 4, 4, buffer, offset);
+    hr = DrawWithIndices(PrimitiveType, 0, 0, PrimitiveCount, buffer, offset, D3DFMT_INDEX32);
   } else {
     UploadToRing(up_indices_, up_index_offset_, pIndexData, indices * index_size, 4, buffer, offset);
     hr = DrawWithIndices(PrimitiveType, 0, 0, PrimitiveCount, buffer, offset, IndexDataFormat);

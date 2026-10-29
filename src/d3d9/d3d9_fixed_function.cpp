@@ -208,7 +208,10 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
 
   if (S.pretransformed) {
     w.op(Opcode::Mad, {r(0, 0x7), in(0), c(ff::VSViewportScale), c(ff::VSViewportOffset)});
-    w.op(Opcode::Rcp, {r(0, 0x8), in(0, kWWWW)});
+    // an RHW of 0 counts as 1, as in wined3d (Wine's visual test_table_fog_zw)
+    w.op(Opcode::Sge, {r(1, 0x8), Src(RegisterType::Input, 0, kWWWW, SrcModifier::AbsNeg), Helper(kXXXX)});
+    w.op(Opcode::Add, {r(1, 0x8), t(1, kWWWW), in(0, kWWWW)});
+    w.op(Opcode::Rcp, {r(0, 0x8), t(1, kWWWW)});
     w.op(Opcode::Mul, {out(0, 0x7), t(0), t(0, kWWWW)});
     w.op(Opcode::Mov, {out(0, 0x8), t(0, kWWWW)});
   } else if (blend) {
@@ -419,7 +422,8 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
         w.op(Opcode::Rsq, {r(F, 0x1), t(F, kXXXX)});
         w.op(Opcode::Rcp, {r(F, 0x1), t(F, kXXXX)});
       } else {
-        w.op(Opcode::Mov, {r(F, 0x1), t(P, kZZZZ)});
+        // vertex fog takes the eye distance as |z| (Wine's visual test_negative_fixedfunction_fog)
+        w.op(Opcode::Mov, {r(F, 0x1), Src(RegisterType::Temp, P, kZZZZ, SrcModifier::Abs)});
       }
       if (S.fog_mode == D3DFOG_LINEAR) {
         w.op(Opcode::Add, {r(F, 0x1), c(ff::VSFog, kYYYY), t(F, kXXXX, SrcModifier::Neg)});
