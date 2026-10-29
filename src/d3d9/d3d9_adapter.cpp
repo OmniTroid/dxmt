@@ -402,6 +402,9 @@ HRESULT
 MTLD3D9Adapter::CheckDeviceFormatConversion(D3DDEVTYPE DevType, D3DFORMAT SourceFormat, D3DFORMAT TargetFormat) {
   if (DevType != D3DDEVTYPE_HAL)
     return D3DERR_NOTAVAILABLE;
+  // Windows accepts any format converted to itself, unknown ones included
+  if (SourceFormat == TargetFormat)
+    return D3D_OK;
 
   D3D9_FORMAT_DESC src, dst;
   if (!D3D9QueryFormat(SourceFormat, src) || !D3D9QueryFormat(TargetFormat, dst))
