@@ -340,7 +340,8 @@ MTLD3D9TextureBase<Base>::GenerateMipSubLevels() {
   parent_->EmitBlit([texture = texture_](ArgumentEncodingContext &enc) {
     auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_generate_mipmaps>();
     cmd.type = WMTBlitCommandGenerateMipmaps;
-    cmd.texture = enc.access(texture, 0, 0, ResourceAccess::ReadWrite);
+    // every level and face is written, and each has its own fence tracker
+    cmd.texture = enc.access(texture, texture->fullView, ResourceAccess::ReadWrite).texture;
   });
 }
 

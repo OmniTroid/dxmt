@@ -25,6 +25,7 @@ What DXMT's D3D9 work has learned about Metal, from Apple's headers and from exp
 - `MTLTextureSwizzle` values are Zero 0, One 1, Red 2, Green 3, Blue 4, Alpha 5 (`MTLTexture.h`). DXMT packs a view swizzle into `WMTPixelFormat` bits 12-23 with `ENCODE_FORMAT_SWIZZLE(base, r, g, b, a)`; its result is an int, so parenthesize it inside a cast.
 - Sampling a depth texture through a plain `texture2d<float>` view returns the depth in red (experiment, INTZ).
 - DXMT: view key 0 is not a view; use `texture->fullView`.
+- DXMT: textures that aren't shader-read-only have a fence tracker per level and slice, so `enc.access(texture, level, slice, ...)` orders only that subresource. Whole-texture operations (generateMipmaps) need `enc.access(texture, texture->fullView, ...)`.
 
 ## Pipelines and rasterization
 
