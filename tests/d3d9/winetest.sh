@@ -54,7 +54,7 @@ pid=$!
 stalled=0
 for ((i = 0; i < ${TIMEOUT:-1800}; i++)); do
   kill -0 $pid 2>/dev/null || break
-  if ((i >= 5 && $(date +%s) - $(stat -f %m "$out") > ${STALL:-180})); then
+  if ((i >= 5 && $(date +%s) - $(stat -f %m "$out") > ${STALL:-60})); then
     sample $pid 1 -f "$out.stall.txt" > /dev/null 2>&1
     stalled=1
     break
