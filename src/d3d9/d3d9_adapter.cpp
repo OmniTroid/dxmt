@@ -271,6 +271,9 @@ MTLD3D9Adapter::CheckDeviceFormat(
 ) {
   if (AdapterFormat == D3DFMT_UNKNOWN)
     return D3DERR_INVALIDCALL;
+  // the pseudo format apps probe for NVIDIA's alpha to coverage switch
+  if (CheckFormat == (D3DFORMAT)MAKEFOURCC('A', 'T', 'O', 'C'))
+    return DevType == D3DDEVTYPE_HAL && RType == D3DRTYPE_SURFACE ? D3D_OK : D3DERR_NOTAVAILABLE;
   // plain surfaces are written with sRGB only as render targets; textures answer either way
   if ((Usage & D3DUSAGE_QUERY_SRGBWRITE) && RType == D3DRTYPE_SURFACE && !(Usage & D3DUSAGE_RENDERTARGET))
     return D3DERR_NOTAVAILABLE;

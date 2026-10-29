@@ -421,9 +421,14 @@ MTLD3D9Device::GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Functio
       info.raster_sample_count = ds->texture()->sampleCount();
   }
 
+  // NVIDIA's switch: D3DRS_ADAPTIVETESS_Y = 'ATOC' with alpha testing on turns on alpha to coverage
+  info.alpha_to_coverage_enabled = render_states_[D3DRS_ADAPTIVETESS_Y] == MAKEFOURCC('A', 'T', 'O', 'C') &&
+                                   render_states_[D3DRS_ALPHATESTENABLE] && info.raster_sample_count > 1;
+
   Sha1HashState h;
   h.update(VS.handle);
   h.update(PS.handle);
+  h.update(info.alpha_to_coverage_enabled);
   h.update(info.colors);
   h.update(info.depth_pixel_format);
   h.update(info.stencil_pixel_format);
@@ -889,11 +894,14 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
   ps_data.next = &ps_d3d9;
   ps_data.type = SM50_SHADER_PSO_PIXEL_SHADER;
   ps_data.sample_mask = 0xffffffff;
+  if (render_targets_[0] && render_targets_[0]->Desc().MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES)
+    ps_data.sample_mask = render_states_[D3DRS_MULTISAMPLEMASK];
   for (uint32_t i = 0; i < caps::MaxSimultaneousRenderTargets; i++)
     if (render_targets_[i])
       ps_data.pixel_formats[i] = RenderTargetFormat(render_targets_[i].ptr());
   auto ps_key = Sha1HashState()
                     .update(ps_data.pixel_formats)
+                    .update(ps_data.sample_mask)
                     .update(ps_d3d9.alpha_func)
                     .update(ps_d3d9.fog_mode)
                     .update(ps_d3d9.flags)
