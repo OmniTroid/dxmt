@@ -858,6 +858,15 @@ MTLD3D9Device::StretchRect(
     return D3DERR_INVALIDCALL;
   if (IsTextureLevel(dst) && !(dd.Usage & D3DUSAGE_RENDERTARGET))
     return D3DERR_INVALIDCALL;
+  if (Filter != D3DTEXF_NONE && Filter != D3DTEXF_POINT && Filter != D3DTEXF_LINEAR)
+    return D3DERR_INVALIDCALL;
+  // an offscreen plain destination only takes an unscaled copy of another offscreen plain surface
+  auto offscreen = [](MTLD3D9Surface *s) {
+    return !IsTextureLevel(s) && !(s->Desc().Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL));
+  };
+  if (offscreen(dst) && (!offscreen(src) || sbox.Right - sbox.Left != dbox.Right - dbox.Left ||
+                         sbox.Bottom - sbox.Top != dbox.Bottom - dbox.Top))
+    return D3DERR_INVALIDCALL;
   dst->MarkWritten();
   bool depth = (sd.Usage | dd.Usage) & D3DUSAGE_DEPTHSTENCIL;
   // depth copies are whole-surface only
