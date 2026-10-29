@@ -215,6 +215,8 @@ D3D9GetFormatLayout(WMT::Device Device, D3DFORMAT Format, D3D9_FORMAT_LAYOUT &La
     return false;
   if (metal.Flag & MTL_DXGI_FORMAT_BC)
     Layout = {metal.BlockSize, 4};
+  else if ((desc.Flags & D3D9_FORMAT_DEPTH) && !metal.BytesPerTexel)
+    Layout = {4, 1, true};
   else
     Layout = {metal.BytesPerTexel, 1};
   return Layout.BlockBytes != 0;

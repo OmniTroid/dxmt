@@ -63,6 +63,8 @@ UINT D3D9GetFormatBitsPerPixel(D3DFORMAT Format);
 struct D3D9_FORMAT_LAYOUT {
   uint32_t BlockBytes;
   uint32_t BlockSize;
+  // lockable memory only; the GPU texture's layout differs (emulated D24)
+  bool CpuOnly = false;
 
   uint32_t
   Pitch(uint32_t Width) const {

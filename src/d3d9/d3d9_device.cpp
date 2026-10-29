@@ -282,6 +282,8 @@ MTLD3D9Device::CopyTextureToBuffer(
     const Rc<Texture> &Src, uint32_t Level, uint32_t Slice, const D3DBOX &Box, const D3D9Shadow &Dst,
     const D3D9_FORMAT_LAYOUT &Layout
 ) {
+  if (Layout.CpuOnly)
+    return;
   Dst.resource->useCopyDestination(queue().CurrentSeqId());
   uint64_t offset = Dst.offset + BoxOffset(Box, Layout, Dst.pitch);
   EmitBlit([=, staging = Dst.resource](ArgumentEncodingContext &enc) {
@@ -306,6 +308,8 @@ MTLD3D9Device::CopyBufferToTexture(
     const D3D9Shadow &Src, const D3D9_FORMAT_LAYOUT &Layout, const Rc<Texture> &Dst, uint32_t Level,
     uint32_t Slice, const D3DBOX &Box, uint32_t DstX, uint32_t DstY
 ) {
+  if (Layout.CpuOnly)
+    return;
   Src.resource->useCopySource(queue().CurrentSeqId());
   uint64_t offset = Src.offset + BoxOffset(Box, Layout, Src.pitch);
   uint32_t x = DstX == ~0u ? Box.Left : DstX;

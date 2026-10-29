@@ -229,7 +229,8 @@ MTLD3D9TextureBase<Base>::MTLD3D9TextureBase(
     parent_(pDevice),
     desc_(Desc),
     texture_(std::move(Storage)) {
-  bool lockable = Desc.Usage & D3DUSAGE_DYNAMIC;
+  // DEFAULT pool ATI2N textures lock like dynamic ones (Wine's test_resource_access)
+  bool lockable = (Desc.Usage & D3DUSAGE_DYNAMIC) || Desc.Format == (D3DFORMAT)MAKEFOURCC('A', 'T', 'I', '2');
   if (Desc.Type == D3DRTYPE_VOLUMETEXTURE) {
     for (uint32_t level = 0; level < Desc.Levels; level++) {
       D3DVOLUME_DESC vd = {
