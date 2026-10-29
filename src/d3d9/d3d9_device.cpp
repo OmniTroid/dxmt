@@ -1333,7 +1333,7 @@ CreateD3D9Device(
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) {
-  InitReturnPtr(ppQuery);
+  // an unsupported type leaves *ppQuery untouched
   if (!MTLD3D9Query::Supported(Type))
     return D3DERR_NOTAVAILABLE;
   if (!ppQuery)

@@ -339,10 +339,7 @@ MTLD3D9Device::MultiplyTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *p
   auto lock = Lock();
   if (!pMatrix || (UINT)State >= transforms_.size())
     return D3DERR_INVALIDCALL;
-  if (recording_) {
-    recording_->SetTransform(State, Multiply(*pMatrix, transforms_[State]));
-    return D3D_OK;
-  }
+  // applies to the device even while a state block records (Wine's test_multiply_transform)
   transforms_[State] = Multiply(*pMatrix, transforms_[State]);
   return D3D_OK;
 }
