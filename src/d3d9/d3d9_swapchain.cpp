@@ -41,13 +41,12 @@ MTLD3D9SwapChain::MTLD3D9SwapChain(MTLD3D9Device *pDevice, const D3DPRESENT_PARA
     window_(Params.hDeviceWindow),
     monitor_(wsi::getWindowMonitor(Params.hDeviceWindow)) {
   native_view_ = WMT::CreateMetalViewFromHWND((intptr_t)window_, parent_->GetMTLDevice(), layer_weak_);
-  if (!native_view_) {
-    ERR("D3D9: failed to create a Metal view; Wine is missing the exports DXMT needs.");
-    return;
+  if (native_view_) {
+    uint8_t samples = params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1;
+    presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, samples);
+  } else {
+    WARN("D3D9: no Metal view for window ", (void *)window_, " (desktop or foreign window); presents are dropped");
   }
-
-  uint8_t samples = params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1;
-  presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, samples);
 
   wsi::WsiMode mode;
   if (wsi::getCurrentDisplayMode(monitor_, &mode) && mode.refreshRate.numerator && mode.refreshRate.denominator)
@@ -92,7 +91,8 @@ MTLD3D9SwapChain::AttachWindow(HWND Window) {
     fullscreen_ = false;
   }
   parent_->WaitUntilGPUIdle();
-  WMT::ReleaseMetalView(native_view_);
+  if (native_view_)
+    WMT::ReleaseMetalView(native_view_);
   native_view_ = view;
   layer_weak_ = layer;
   window_ = Window;
@@ -119,9 +119,6 @@ MTLD3D9SwapChain::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT
 MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
-  if (!presenter_)
-    return D3DERR_NOTAVAILABLE;
-
   D3DPRESENT_PARAMETERS params = *pParams;
   if (!params.hDeviceWindow)
     params.hDeviceWindow = window_;
@@ -248,7 +245,7 @@ void
 MTLD3D9SwapChain::ApplyLayerProps() {
   WMTPixelFormat format = D3D9GetPixelFormat(parent_->GetMTLDevice(), params_.BackBufferFormat);
   uint8_t samples = params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1;
-  if (presenter_->changeLayerProperties(
+  if (presenter_ && presenter_->changeLayerProperties(
           (WMTPixelFormat)ORIGINAL_FORMAT(format), WMTColorSpaceSRGB, params_.BackBufferWidth,
           params_.BackBufferHeight, samples
       ))
@@ -276,13 +273,17 @@ MTLD3D9SwapChain::Present(
     const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion,
     DWORD dwFlags
 ) {
-  if (!presenter_ || backbuffers_.empty())
+  if (backbuffers_.empty())
     return D3DERR_INVALIDCALL;
 
   HWND target = hDestWindowOverride ? hDestWindowOverride : window_;
   Rc<Presenter> presenter = target == window_ ? presenter_ : OverridePresenter(target);
-  if (!presenter)
-    return D3DERR_INVALIDCALL;
+  if (!presenter) {
+    if (target != window_)
+      return D3DERR_INVALIDCALL;
+    parent_->FlushCommands();
+    return D3D_OK;
+  }
 
   if (wsi::isMinimized(target)) {
     parent_->FlushCommands();

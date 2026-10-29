@@ -1706,6 +1706,12 @@ _CreateMetalViewFromHWND(void *obj) {
   if (pfn_get_win_data && pfn_release_win_data && pfn_macdrv_view_create_metal_view &&
       pfn_macdrv_view_get_metal_layer) {
     struct macdrv_win_data *win_data = pfn_get_win_data((HWND)params->hwnd);
+    /* windows of other processes, and the desktop window, have none */
+    if (!win_data || !win_data->client_cocoa_view) {
+      if (win_data)
+        pfn_release_win_data(win_data);
+      return STATUS_SUCCESS;
+    }
     macdrv_metal_view view =
         pfn_macdrv_view_create_metal_view(win_data->client_cocoa_view, (macdrv_metal_device)params->device);
     params->ret_view = (obj_handle_t)view;

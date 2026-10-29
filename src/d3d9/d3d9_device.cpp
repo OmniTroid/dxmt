@@ -63,8 +63,8 @@ MTLD3D9Device::Initialize(D3DPRESENT_PARAMETERS *pParams, D3DDISPLAYMODEEX *pFul
 
   if (!pParams->hDeviceWindow)
     pParams->hDeviceWindow = creation_params_.hFocusWindow;
-  if (!pParams->hDeviceWindow) {
-    ERR("D3D9: CreateDevice without a device or focus window");
+  if (!pParams->hDeviceWindow && !pParams->Windowed) {
+    ERR("D3D9: fullscreen CreateDevice without a device or focus window");
     return D3DERR_INVALIDCALL;
   }
 
