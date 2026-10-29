@@ -94,11 +94,9 @@ MTLD3D9SwapChain::AttachWindow(HWND Window) {
   WMT::Object view = CreateViewForWindow(Window, parent_->GetMTLDevice(), layer);
   if (!view)
     return D3DERR_NOTAVAILABLE;
-  if (fullscreen_) {
-    wsi::restoreDisplayMode(monitor_);
-    wsi::leaveFullscreenMode(window_, &window_state_, true);
-    fullscreen_ = false;
-  }
+  // the previous window keeps its fullscreen size and style (Wine's test_device_window_reset)
+  mode_changed_ = mode_changed_ || fullscreen_;
+  fullscreen_ = false;
   parent_->WaitUntilGPUIdle();
   if (native_view_)
     WMT::ReleaseMetalView(native_view_);
@@ -229,10 +227,22 @@ MTLD3D9SwapChain::Activate(bool Active) {
 HRESULT
 MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
   if (Params.Windowed) {
-    if (!fullscreen_)
+    if (!fullscreen_) {
+      if (std::exchange(mode_changed_, false))
+        wsi::restoreDisplayMode(monitor_);
       return D3D_OK;
+    }
     wsi::restoreDisplayMode(monitor_);
-    wsi::leaveFullscreenMode(window_, &window_state_, true);
+    // a window that was hidden when it went fullscreen stays visible and topmost, except on D3D9Ex
+    // (Wine's test_window_style in both suites)
+    bool keep = !parent_->IsExtended() && !(window_state_.style & WS_VISIBLE) &&
+                !(parent_->BehaviorFlags() & D3DCREATE_NOWINDOWCHANGES);
+    // D3D9Ex keeps the fullscreen size (Wine's d3d9ex test_window_style)
+    wsi::leaveFullscreenMode(window_, &window_state_, !parent_->IsExtended());
+    if (keep) {
+      SetWindowLongW(window_, GWL_STYLE, GetWindowLongW(window_, GWL_STYLE) | WS_VISIBLE);
+      SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
     fullscreen_ = false;
   } else {
     monitor_ = wsi::getWindowMonitor(window_);
@@ -247,6 +257,7 @@ MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
     if (fullscreen_ && !(parent_->BehaviorFlags() & D3DCREATE_NOWINDOWCHANGES))
       wsi::updateFullscreenWindow(monitor_, window_, true);
     fullscreen_ = true;
+    mode_changed_ = false;
   }
   wsi::WsiMode current;
   if (wsi::getCurrentDisplayMode(monitor_, &current) && current.refreshRate.numerator && current.refreshRate.denominator)

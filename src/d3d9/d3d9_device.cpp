@@ -369,8 +369,11 @@ MTLD3D9Device::TestCooperativeLevel() {
 
 UINT STDMETHODCALLTYPE
 MTLD3D9Device::GetAvailableTextureMem() {
-  uint64_t bytes = GetMTLDevice().recommendedMaxWorkingSetSize();
-  bytes = std::min<uint64_t>(bytes, 0xFFE00000ull);
+  // what the GPU's working set has left, so creating resources lowers it, except on D3D9Ex where video memory is
+  // virtualized (Wine's test_vidmem_accounting in both suites)
+  uint64_t total = std::min<uint64_t>(GetMTLDevice().recommendedMaxWorkingSetSize(), 0xFFE00000ull);
+  uint64_t used = extended_ ? 0 : GetMTLDevice().currentAllocatedSize();
+  uint64_t bytes = total > used ? total - used : 0;
   return (UINT)(bytes & ~0xFFFFFull);
 }
 
@@ -590,6 +593,9 @@ MTLD3D9Device::CreateTexture(
     HANDLE *pSharedHandle
 ) {
   auto lock = Lock();
+  // shared resources are a D3D9Ex feature; Windows XP answers E_NOTIMPL (Wine's test_shared_handle)
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   InitReturnPtr(ppTexture);
   // D3D9Ex: a single-level system memory texture on app memory
   bool user_memory = pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM && Levels == 1;
@@ -615,6 +621,8 @@ MTLD3D9Device::CreateCubeTexture(
     HANDLE *pSharedHandle
 ) {
   auto lock = Lock();
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   InitReturnPtr(ppCubeTexture);
   if (pSharedHandle)
     return D3DERR_INVALIDCALL;
@@ -628,6 +636,8 @@ MTLD3D9Device::CreateVolumeTexture(
     IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *pSharedHandle
 ) {
   auto lock = Lock();
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   InitReturnPtr(ppVolumeTexture);
   if (pSharedHandle)
     return D3DERR_INVALIDCALL;
@@ -647,6 +657,8 @@ MTLD3D9Device::CreateVertexBuffer(
     UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9 **ppVertexBuffer, HANDLE *pSharedHandle
 ) {
   auto lock = Lock();
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   InitReturnPtr(ppVertexBuffer);
   if (pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM)
     return D3DERR_NOTAVAILABLE;
@@ -666,6 +678,8 @@ MTLD3D9Device::CreateIndexBuffer(
     HANDLE *pSharedHandle
 ) {
   auto lock = Lock();
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   InitReturnPtr(ppIndexBuffer);
   if (pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM)
     return D3DERR_NOTAVAILABLE;
@@ -780,6 +794,8 @@ MTLD3D9Device::CreateRenderTargetEx(
     BOOL Lockable, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
   auto lock = Lock();
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   InitReturnPtr(ppSurface);
   // only the D3D9Ex restriction flags are usages here (Wine's d3d9ex test_resource_access)
   if (Usage & ~kExSurfaceUsages)
@@ -823,6 +839,8 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
     BOOL Discard, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
   auto lock = Lock();
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   // an invalid usage leaves *ppSurface untouched, other failures clear it (Wine's d3d9ex
   // test_create_depth_stencil_surface_ex and test_format_unknown); only the D3D9Ex restriction flags are usages here
   if (Usage & ~kExSurfaceUsages)
@@ -864,6 +882,8 @@ MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
     DWORD Usage
 ) {
   auto lock = Lock();
+  if (pSharedHandle && !extended_)
+    return E_NOTIMPL;
   InitReturnPtr(ppSurface);
   bool user_memory = pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM;
   if (pSharedHandle && !user_memory) {

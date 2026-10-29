@@ -108,6 +108,8 @@ private:
   Rc<Texture> composed_;
   Rc<Texture> front_8bit_;
   bool fullscreen_ = false;
+  // the display mode a fullscreen chain set before moving to another window
+  bool mode_changed_ = false;
   std::unordered_map<HWND, OverrideTarget> overrides_;
   wsi::DXMTWindowState window_state_;
   bool keep_front_ = false;
