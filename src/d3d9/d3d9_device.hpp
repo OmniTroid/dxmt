@@ -284,7 +284,7 @@ private:
   };
 
   bool BeginRenderPass();
-  void UpdateRuntimeConstants();
+  void UpdateRuntimeConstants(bool Pretransformed);
   uint64_t PreAllocateArgumentBuffer(size_t Size, size_t Alignment);
   // only DrawIndexedPrimitive instances (D3DSTREAMSOURCE_INDEXEDDATA on stream 0)
   bool PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, uint32_t &InstanceCount);

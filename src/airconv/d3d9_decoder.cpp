@@ -1210,11 +1210,13 @@ private:
         SrcOperand coord = src(p);
         return store(ps1_sample(m, coord));
       }
-      // D3DTTFF_PROJECTED divides by the component the one-hot selector picks; dot(tc - 1, sel) + 1 is 1 without one
+      // D3DTTFF_PROJECTED divides by the component the one-hot selector picks, and by 1 without one:
+      // dot(tc, sel) + 1 - dot(sel, 1), exact either way
       uint32_t w = scratch(), coord = scratch();
-      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(w), texcoord(m), imm_f(-1.0f)});
-      emit(InstDotProduct{ic(), temp_dst(w, 0x1), temp_src(w), runtime(kRuntimeProjection + m), 4});
+      emit(InstDotProduct{ic(), temp_dst(w, 0x1), runtime(kRuntimeProjection + m), imm_f(-1.0f), 4});
       emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(w, 0x1), temp_src(w, replicate(0)), imm_f(1.0f)});
+      emit(InstDotProduct{ic(), temp_dst(w, 0x2), texcoord(m), runtime(kRuntimeProjection + m), 4});
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(w, 0x1), temp_src(w, replicate(0)), temp_src(w, replicate(1))});
       emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Div, temp_dst(coord), texcoord(m), temp_src(w, replicate(0))});
       return store(ps1_sample(m, temp_src(coord)));
     }

@@ -632,7 +632,7 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const flo
 }
 
 void
-MTLD3D9Device::UpdateRuntimeConstants() {
+MTLD3D9Device::UpdateRuntimeConstants(bool Pretransformed) {
   auto f = [&](D3DRENDERSTATETYPE state) { return std::bit_cast<float>(render_states_[state]); };
   SM30_RUNTIME_CONSTANTS c = {};
   c.alpha_ref = (render_states_[D3DRS_ALPHAREF] & 0xFF) / 255.0f;
@@ -656,9 +656,11 @@ MTLD3D9Device::UpdateRuntimeConstants() {
       c.bump_env[i][k] = std::bit_cast<float>(tss[D3DTSS_BUMPENVMAT00 + k]);
     c.bump_luminance[i][0] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLSCALE]);
     c.bump_luminance[i][1] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLOFFSET]);
-    // the fixed-function vertex pipeline moves a COUNT2 or COUNT3 divisor into w
-    if (tss[D3DTSS_TEXTURETRANSFORMFLAGS] & D3DTTFF_PROJECTED)
-      c.projection[i][3] = 1.0f;
+    // vertex processing moves a COUNT2 or COUNT3 divisor into w; pretransformed coordinates keep it in place
+    DWORD flags = tss[D3DTSS_TEXTURETRANSFORMFLAGS];
+    DWORD count = flags & ~D3DTTFF_PROJECTED;
+    if (flags & D3DTTFF_PROJECTED)
+      c.projection[i][Pretransformed && count >= 2 && count <= 3 ? count - 1 : 3] = 1.0f;
   }
   if (std::memcmp(&c, &runtime_constants_, sizeof(c))) {
     runtime_constants_ = c;
@@ -704,7 +706,13 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
       });
   std::array<float, ff::VSConstantCount * 4> ff_vs_constants = {};
   std::array<float, ff::PSConstantCount * 4> ff_ps_constants = {};
-  MTLD3D9ShaderCode *vs_code = vertex_shader_ ? vertex_shader_->code() : FixedFunctionVS(ff_vs_constants.data());
+  // POSITIONT skips vertex processing even with a vertex shader set
+  bool positiont = std::any_of(
+      vertex_declaration_->elements().begin(), vertex_declaration_->elements().end(),
+      [](auto &e) { return e.Usage == D3DDECLUSAGE_POSITIONT; }
+  );
+  MTLD3D9VertexShader *vertex_shader = positiont ? nullptr : vertex_shader_.ptr();
+  MTLD3D9ShaderCode *vs_code = vertex_shader ? vertex_shader->code() : FixedFunctionVS(ff_vs_constants.data());
   MTLD3D9ShaderCode *ps_code = pixel_shader_ ? pixel_shader_->code() : FixedFunctionPS(ff_ps_constants.data());
   if (!vs_code || !ps_code)
     return false;
@@ -737,7 +745,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
   }
 
   auto metal_version = (SM50_SHADER_METAL_VERSION)GetDXMTDevice().metalVersion();
-  UpdateRuntimeConstants();
+  UpdateRuntimeConstants(positiont);
   bool points = Topology == WMTPrimitiveTopologyClassPoint;
 
   SM30_SHADER_D3D9_DATA vs_d3d9 = {};
@@ -766,6 +774,10 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
       ps_d3d9.fog_mode = SM30_FOG_VERTEX;
       break;
     }
+    // table fog reads w unless the projection is orthogonal, even with a vertex shader
+    auto &proj = transforms_[D3DTS_PROJECTION];
+    if (ps_d3d9.fog_mode != SM30_FOG_VERTEX && (proj._14 != 0 || proj._24 != 0 || proj._34 != 0 || proj._44 != 1))
+      ps_d3d9.flags |= SM30_SHADER_FLAG_FOG_W;
   }
   if (render_states_[D3DRS_SHADEMODE] == D3DSHADE_FLAT)
     ps_d3d9.flags |= SM30_SHADER_FLAG_FLAT_SHADING;
@@ -901,10 +913,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
                                                                        : WMTCullModeNone;
     // pretransformed vertices aren't clipped against the depth range without z-buffering
     bool z_buffered = depth_stencil_ && render_states_[D3DRS_ZENABLE] != D3DZB_FALSE;
-    bool pretransformed = !vertex_shader_ && std::any_of(
-        vertex_declaration_->elements().begin(), vertex_declaration_->elements().end(),
-        [](auto &e) { return e.Usage == D3DDECLUSAGE_POSITIONT; }
-    );
+    bool pretransformed = positiont;
     raster.depth_clip_mode = z_buffered || !pretransformed ? WMTDepthClipModeClip : WMTDepthClipModeClamp;
     raster.winding = WMTWindingClockwise;
     raster.depth_bias = 0.0f;
@@ -977,7 +986,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
     });
   }
 
-  BindStageResources(false, vs_code, vertex_shader_ ? nullptr : ff_vs_constants.data(), ff::VSConstantCount);
+  BindStageResources(false, vs_code, vertex_shader ? nullptr : ff_vs_constants.data(), ff::VSConstantCount);
   BindStageResources(true, ps_code, pixel_shader_ ? nullptr : ff_ps_constants.data(), ff::PSConstantCount);
   return true;
 }

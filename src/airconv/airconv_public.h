@@ -274,6 +274,8 @@ enum SM30_SHADER_FLAG {
   SM30_SHADER_FLAG_VS_OUTPUTS = 1 << 3,
   /* pixel shader writes its depth plus depth_bias, unless it writes depth itself */
   SM30_SHADER_FLAG_DEPTH_BIAS = 1 << 4,
+  /* table fog uses w (perspective projections) instead of z */
+  SM30_SHADER_FLAG_FOG_W = 1 << 5,
 };
 
 /*

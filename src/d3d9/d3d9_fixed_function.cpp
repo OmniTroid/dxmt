@@ -275,7 +275,7 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
       if (!blend)
         for (uint32_t i = 0; i < 3; i++)
           w.op(Opcode::Dp3, {r(12, 1 << i), nrm, c(ff::VSWorldView + i)});
-      w.op(Opcode::Nrm, {r(N, 0x7), t(12)});
+      w.op(S.normalize_normals ? Opcode::Nrm : Opcode::Mov, {r(N, 0x7), t(12)});
     } else {
       w.op(Opcode::Mov, {r(N), Helper(kXXXX)});
     }
@@ -363,7 +363,7 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
           w.op(Opcode::Mov, {r(Coord, 1u << size), Helper(kYYYY)});
         if (size < 3)
           w.op(Opcode::Mov, {r(Coord, (0xFu << (size + 1)) & 0xF), Helper(kXXXX)});
-      } else {
+      } else if (!S.pretransformed) {
         if (size < 4)
           w.op(Opcode::Mov, {r(Coord, (0xFu << size) & 0xF), Helper(kXXXX)});
         if (tc.projected && size < 4)

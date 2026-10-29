@@ -371,6 +371,12 @@ struct Driver {
       auto f = temp_dst(e, 0x1);
       SrcOperand fx = temp_src(e, rep(0));
       SrcOperand z = pixel_z;
+      if (variant.flags & SM30_SHADER_FLAG_FOG_W) {
+        // [[position]].w holds 1 / w
+        SrcOperand rw = SrcOperandInput{._ = {rep(3), false, false, OperandDataType::Float}, .regid = reg::PSInputVPos};
+        cur->instructions.push_back(InstFloatUnaryOp{kNoSat, FloatUnaryOp::Rcp, temp_dst(e + 3, 0x1), rw});
+        z = temp_src(e + 3, rep(0));
+      }
       auto &ins = cur->instructions;
       switch (variant.fog_mode) {
       case SM30_FOG_VERTEX:

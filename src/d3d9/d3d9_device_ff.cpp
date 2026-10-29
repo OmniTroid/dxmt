@@ -154,6 +154,7 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   s.lighting = render_states_[D3DRS_LIGHTING];
   s.specular_lighting = render_states_[D3DRS_SPECULARENABLE];
   s.local_viewer = render_states_[D3DRS_LOCALVIEWER];
+  s.normalize_normals = render_states_[D3DRS_NORMALIZENORMALS];
   auto source = [&](D3DRENDERSTATETYPE State) {
     auto value = (D3DMATERIALCOLORSOURCE)render_states_[State];
     if (!render_states_[D3DRS_COLORVERTEX] || (value == D3DMCS_COLOR1 && !s.diffuse) ||

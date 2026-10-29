@@ -91,6 +91,7 @@ struct D3D9FFVertexState {
   bool lighting;
   bool specular_lighting;
   bool local_viewer;
+  bool normalize_normals;
   uint32_t light_count;
   D3DLIGHTTYPE light_types[ff::MaxLights];
   D3DMATERIALCOLORSOURCE diffuse_source;
