@@ -30,7 +30,8 @@ MTLD3D9Surface::MTLD3D9Surface(
     MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, Rc<Texture> &&pTexture, IUnknown *pContainer,
     bool Lockable, uint32_t Level, uint32_t Slice
 ) :
-    MTLD3D9Resource(pDevice),
+    // a texture keeps the priority, not its levels
+    MTLD3D9Resource(pDevice, D3DPOOL_DEFAULT),
     parent_(pDevice),
     desc_(Desc),
     texture_(std::move(pTexture)),

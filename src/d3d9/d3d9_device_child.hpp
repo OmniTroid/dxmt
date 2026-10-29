@@ -121,10 +121,15 @@ private:
 
 template <typename... Base> class MTLD3D9Resource : public MTLD3D9PrivateDataObject<Base...> {
 public:
-  using MTLD3D9PrivateDataObject<Base...>::MTLD3D9PrivateDataObject;
+  // only managed resources keep a priority (Wine's test_resource_priority)
+  MTLD3D9Resource(IDirect3DDevice9Ex *pDevice, D3DPOOL Pool) :
+      MTLD3D9PrivateDataObject<Base...>(pDevice),
+      keeps_priority_(Pool == D3DPOOL_MANAGED) {}
 
   DWORD STDMETHODCALLTYPE
   SetPriority(DWORD PriorityNew) override {
+    if (!keeps_priority_)
+      return 0;
     return std::exchange(priority_, PriorityNew);
   }
 
@@ -138,6 +143,7 @@ public:
 
 private:
   DWORD priority_ = 0;
+  bool keeps_priority_;
 };
 
 } // namespace dxmt

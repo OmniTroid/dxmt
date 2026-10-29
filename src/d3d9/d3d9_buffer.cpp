@@ -86,7 +86,7 @@ MTLD3D9BufferStorage::Unlock() {
 }
 
 MTLD3D9VertexBuffer::MTLD3D9VertexBuffer(MTLD3D9Device *pDevice, const D3DVERTEXBUFFER_DESC &Desc) :
-    MTLD3D9Resource(pDevice),
+    MTLD3D9Resource(pDevice, Desc.Pool),
     desc_(Desc),
     storage_(pDevice, Desc.Size, Desc.Usage) {}
 
@@ -128,7 +128,7 @@ MTLD3D9VertexBuffer::GetDesc(D3DVERTEXBUFFER_DESC *pDesc) {
 }
 
 MTLD3D9IndexBuffer::MTLD3D9IndexBuffer(MTLD3D9Device *pDevice, const D3DINDEXBUFFER_DESC &Desc) :
-    MTLD3D9Resource(pDevice),
+    MTLD3D9Resource(pDevice, Desc.Pool),
     desc_(Desc),
     storage_(pDevice, Desc.Size, Desc.Usage) {}
 

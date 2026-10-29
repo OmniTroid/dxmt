@@ -220,7 +220,7 @@ template <typename Base>
 MTLD3D9TextureBase<Base>::MTLD3D9TextureBase(
     MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC &Desc, Rc<Texture> &&Storage
 ) :
-    MTLD3D9Resource<Base>(pDevice),
+    MTLD3D9Resource<Base>(pDevice, Desc.Pool),
     parent_(pDevice),
     desc_(Desc),
     texture_(std::move(Storage)) {

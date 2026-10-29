@@ -252,6 +252,11 @@ HRESULT
 MTLD3D9Adapter::CheckDeviceFormat(
     D3DDEVTYPE DevType, D3DFORMAT AdapterFormat, DWORD Usage, D3DRESOURCETYPE RType, D3DFORMAT CheckFormat
 ) {
+  if (AdapterFormat == D3DFMT_UNKNOWN)
+    return D3DERR_INVALIDCALL;
+  // plain surfaces are written with sRGB only as render targets; textures answer either way
+  if ((Usage & D3DUSAGE_QUERY_SRGBWRITE) && RType == D3DRTYPE_SURFACE && !(Usage & D3DUSAGE_RENDERTARGET))
+    return D3DERR_NOTAVAILABLE;
   if (DevType != D3DDEVTYPE_HAL)
     return D3DERR_NOTAVAILABLE;
 
