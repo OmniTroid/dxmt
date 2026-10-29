@@ -151,6 +151,25 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     chain->Release();
   }
 
+  // a 10-bit back buffer's front buffer still reads back as A8R8G8B8
+  D3DPRESENT_PARAMETERS pp10 = pp2;
+  pp10.BackBufferFormat = D3DFMT_A2R10G10B10;
+  IDirect3DSwapChain9 *chain10 = nullptr;
+  if (SUCCEEDED(device->CreateAdditionalSwapChain(&pp10, &chain10))) {
+    IDirect3DSurface9 *bb10 = nullptr, *front10 = nullptr;
+    chain10->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &bb10);
+    device->ColorFill(bb10, nullptr, 0xFF00FF00);
+    chain10->Present(nullptr, nullptr, nullptr, nullptr, 0);
+    device->CreateOffscreenPlainSurface(32, 32, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &front10, nullptr);
+    check("10-bit front buffer", chain10->GetFrontBufferData(front10) == D3D_OK &&
+                                     (read(front10, 3, 3) & 0xFFFFFF) == 0x00FF00);
+    front10->Release();
+    bb10->Release();
+    chain10->Release();
+  } else {
+    check("10-bit swap chain", false);
+  }
+
   // ProcessVertices transforms to screen space and lights on the CPU
   struct In {
     float x, y, z, nx, ny, nz;

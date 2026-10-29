@@ -410,10 +410,6 @@ MTLD3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
   if (dd.Pool != D3DPOOL_SYSTEMMEM || dd.Format != D3DFMT_A8R8G8B8 || dd.Width < bb.Width || dd.Height < bb.Height ||
       dst->IsLocked())
     return D3DERR_INVALIDCALL;
-  if (bb.Format == D3DFMT_A2R10G10B10) {
-    WARN_ONCE("IDirect3DSwapChain9::GetFrontBufferData: 10-bit back buffers are not converted");
-    return D3DERR_INVALIDCALL;
-  }
   // Before the first call nothing was captured, so the back buffer stands in for the last presented frame.
   if (!keep_front_) {
     keep_front_ = true;
@@ -421,8 +417,27 @@ MTLD3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
     if (FAILED(hr))
       return hr;
   }
+  Rc<Texture> source = front_;
+  if (bb.Format != D3DFMT_X8R8G8B8 && bb.Format != D3DFMT_A8R8G8B8) {
+    // the destination is always A8R8G8B8, so other back buffer formats are converted by drawing
+    if (!front_8bit_ || front_8bit_->width() != bb.Width || front_8bit_->height() != bb.Height) {
+      D3DSURFACE_DESC desc = bb;
+      desc.Format = D3DFMT_A8R8G8B8;
+      desc.MultiSampleType = D3DMULTISAMPLE_NONE;
+      desc.MultiSampleQuality = 0;
+      HRESULT hr = CreateD3D9SurfaceTexture(parent_, desc, front_8bit_);
+      if (FAILED(hr))
+        return hr;
+    }
+    parent_->EndRenderPass();
+    parent_->Emit([src = front_, dst = front_8bit_, width = bb.Width, height = bb.Height](ArgumentEncodingContext &enc) {
+      float rect[4] = {0, 0, (float)width, (float)height};
+      enc.blit_color_cmd.blit(src, src->fullView, rect, dst, dst->fullView, {0, 0, width, height}, false);
+    });
+    source = front_8bit_;
+  }
   D3DBOX box = {0, 0, bb.Width, bb.Height, 0, 1};
-  parent_->CopyTextureToBuffer(front_, 0, 0, box, dst->EnsureShadow(), dst->layout());
+  parent_->CopyTextureToBuffer(source, 0, 0, box, dst->EnsureShadow(), dst->layout());
   return D3D_OK;
 }
 

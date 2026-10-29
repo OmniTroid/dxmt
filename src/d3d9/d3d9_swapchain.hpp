@@ -99,6 +99,7 @@ private:
   // a copy of each presented frame, kept once GetFrontBufferData has been called
   Rc<Texture> front_;
   Rc<Texture> composed_;
+  Rc<Texture> front_8bit_;
   bool fullscreen_ = false;
   std::unordered_map<HWND, OverrideTarget> overrides_;
   wsi::DXMTWindowState window_state_;
