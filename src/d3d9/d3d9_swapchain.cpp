@@ -29,6 +29,15 @@
 
 namespace dxmt {
 
+// CrossOver's macdrv get_win_data creates a client surface first, and for windows without macdrv data (the
+// desktop window, no window) its cleanup left a win32u lock held and the next device creation deadlocked.
+static WMT::Object
+CreateViewForWindow(HWND Window, WMT::Device Device, WMT::MetalLayer &Layer) {
+  if (!Window || Window == GetDesktopWindow())
+    return {};
+  return WMT::CreateMetalViewFromHWND((intptr_t)Window, Device, Layer);
+}
+
 static bool
 IsSupportedBackBufferFormat(D3DFORMAT Format) {
   return Format == D3DFMT_X8R8G8B8 || Format == D3DFMT_A8R8G8B8 || Format == D3DFMT_A2R10G10B10;
@@ -40,7 +49,7 @@ MTLD3D9SwapChain::MTLD3D9SwapChain(MTLD3D9Device *pDevice, const D3DPRESENT_PARA
     params_(Params),
     window_(Params.hDeviceWindow),
     monitor_(wsi::getWindowMonitor(Params.hDeviceWindow)) {
-  native_view_ = WMT::CreateMetalViewFromHWND((intptr_t)window_, parent_->GetMTLDevice(), layer_weak_);
+  native_view_ = CreateViewForWindow(window_, parent_->GetMTLDevice(), layer_weak_);
   if (native_view_) {
     uint8_t samples = params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1;
     presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, samples);
@@ -82,7 +91,7 @@ MTLD3D9SwapChain::AttachWindow(HWND Window) {
   if (!wsi::isWindow(Window))
     return D3DERR_INVALIDCALL;
   WMT::MetalLayer layer;
-  WMT::Object view = WMT::CreateMetalViewFromHWND((intptr_t)Window, parent_->GetMTLDevice(), layer);
+  WMT::Object view = CreateViewForWindow(Window, parent_->GetMTLDevice(), layer);
   if (!view)
     return D3DERR_NOTAVAILABLE;
   if (fullscreen_) {
@@ -224,7 +233,7 @@ MTLD3D9SwapChain::OverridePresenter(HWND Window) {
     return nullptr;
   auto &target = overrides_[Window];
   if (!target.presenter) {
-    target.view = WMT::CreateMetalViewFromHWND((intptr_t)Window, parent_->GetMTLDevice(), target.layer);
+    target.view = CreateViewForWindow(Window, parent_->GetMTLDevice(), target.layer);
     if (!target.view) {
       overrides_.erase(Window);
       return nullptr;
