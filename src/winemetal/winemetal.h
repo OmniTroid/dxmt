@@ -676,6 +676,9 @@ struct WMTDepthAttachmentInfo {
   uint16_t slice;
   uint32_t depth_plane;
   float clear_depth;
+  obj_handle_t resolve_texture;
+  uint16_t resolve_level;
+  uint16_t resolve_slice;
 };
 
 struct WMTStencilAttachmentInfo {

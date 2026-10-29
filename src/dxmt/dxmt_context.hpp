@@ -243,6 +243,7 @@ struct ClearEncoderData : EncoderData {
 struct ResolveEncoderData : EncoderData {
   TextureViewRef src;
   TextureViewRef dst;
+  bool depth;
 };
 
 class Presenter;

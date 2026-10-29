@@ -443,6 +443,12 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
     descriptor.depthAttachment.texture = (id<MTLTexture>)info->depth.texture;
     descriptor.depthAttachment.loadAction = (MTLLoadAction)info->depth.load_action;
     descriptor.depthAttachment.storeAction = (MTLStoreAction)info->depth.store_action;
+    if (info->depth.resolve_texture) {
+      descriptor.depthAttachment.resolveTexture = (id<MTLTexture>)info->depth.resolve_texture;
+      descriptor.depthAttachment.resolveLevel = info->depth.resolve_level;
+      descriptor.depthAttachment.resolveSlice = info->depth.resolve_slice;
+      descriptor.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+    }
   }
 
   if (info->stencil.texture) {

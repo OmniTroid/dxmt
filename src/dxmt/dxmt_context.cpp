@@ -524,6 +524,7 @@ ArgumentEncodingContext::resolveTexture(
   encoder_info->fence_update = {encoder_info->id};
   encoder_current = encoder_info;
 
+  encoder_info->depth = DepthStencilPlanarFlags(src->pixelFormat()) & 1;
   encoder_info->src = access(src, src_view, ResourceAccess::Read);
   encoder_info->dst = access(dst, dst_view, ResourceAccess::Write);
 
@@ -1152,10 +1153,18 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       {
         WMTRenderPassInfo info;
         WMT::InitializeRenderPassInfo(info);
-        info.colors[0].texture = data->src.texture();
-        info.colors[0].load_action = WMTLoadActionLoad;
-        info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
-        info.colors[0].resolve_texture = data->dst.texture();
+        if (data->depth) {
+          info.depth.texture = data->src.texture();
+          info.depth.load_action = WMTLoadActionLoad;
+          info.depth.store_action = WMTStoreActionStoreAndMultisampleResolve;
+          info.depth.resolve_texture = data->dst.texture();
+          info.colors[0].store_action = WMTStoreActionDontCare;
+        } else {
+          info.colors[0].texture = data->src.texture();
+          info.colors[0].load_action = WMTLoadActionLoad;
+          info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
+          info.colors[0].resolve_texture = data->dst.texture();
+        }
 
         auto encoder = cmdbuf.renderCommandEncoder(info);
         encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
