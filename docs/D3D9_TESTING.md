@@ -46,6 +46,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - A newly added builtin DLL (like `winemetal.dll`) is only found once `wineboot -u` or a new prefix registers it.
 - A crashing test opens winedbg's crash dialog and the run hangs; `run.sh` sets `HKCU\Software\Wine\WineDbg\ShowCrashDialog=0` so the crash is printed and the run continues.
 - While the macOS screen is locked, Wine's first window (explorer.exe's desktop) can take minutes or never appear, so the first test sits idle; runs at night took up to 43 minutes. `run.sh` warns when the screen is locked and gives each test 180 s before reporting `TIMEOUT`. `wineserver -w` after setup also removed a smaller stall. Time each test before guessing: a pipe-based runner spread one stall over several tests, and recopying the runtime looked guilty but wasn't.
+- Wine's visual suite aborted at `test_desktop_window` (a device on `GetDesktopWindow()`, which has no macdrv view) in every run before this was fixed, so the 22 tests after it never ran and every failure count was low. Check that `winetest-visual.out` ends with Wine's summary line, not an assertion.
 - `wineserver -k` only stops the server for the current `WINEPREFIX`; set it explicitly so other Wine sessions are untouched.
 - Test executables need `-static` or they fail on missing `libstdc++-6.dll`/`libgcc_s_*.dll` (exit code 53).
 

@@ -12,7 +12,7 @@ export WINEPREFIX="$work/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
 
 "$work/wine/bin/wine" "$build/dlls/d3d9/tests/x86_64-windows/d3d9_test.exe" "$suite" > "$out" 2>&1 &
 pid=$!
-for ((i = 0; i < 900; i++)); do
+for ((i = 0; i < ${TIMEOUT:-1800}; i++)); do
   kill -0 $pid 2>/dev/null || break
   sleep 1
 done

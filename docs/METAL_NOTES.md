@@ -32,6 +32,8 @@ What DXMT's D3D9 work has learned about Metal, from Apple's headers and from exp
 - Pixel centers are at +0.5; D3D9's are on integers, so the D3D9 viewport origin moves by +0.5.
 - `depthClipMode` Clamp keeps geometry outside the depth range; D3D9 wants that only for pretransformed vertices without z-buffering.
 - Multisampled render passes need pipelines with a matching `rasterSampleCount`, including internal blits.
+- Constant depth bias is in units of the minimum resolvable depth difference, which for float depth formats is 2^(e - 23) with e the exponent of the primitive's largest depth (the D3D10+ rule; Wine's test_depthbias fails with a fixed 2^24). Every D3D9 depth format but D16 is stored as float, so D3DRS_DEPTHBIAS is added to clip-space z in the vertex shader instead.
+- Load actions only touch the render area (`renderTargetWidth`/`Height`), so a clear folded into a pass whose color target is smaller than the depth buffer leaves the rest uncleared. DXMT merges a clear into the following pass only when the pass covers the whole cleared texture.
 
 ## Building against a newer SDK
 
