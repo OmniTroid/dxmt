@@ -274,7 +274,7 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
     if (S.normal) {
       if (!blend)
         for (uint32_t i = 0; i < 3; i++)
-          w.op(Opcode::Dp3, {r(12, 1 << i), nrm, c(ff::VSWorldView + i)});
+          w.op(Opcode::Dp3, {r(12, 1 << i), nrm, c(ff::VSNormalMatrix + i)});
       w.op(S.normalize_normals ? Opcode::Nrm : Opcode::Mov, {r(N, 0x7), t(12)});
     } else {
       w.op(Opcode::Mov, {r(N), Helper(kXXXX)});
