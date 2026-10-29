@@ -252,6 +252,21 @@ private:
     return sh_.bbs.back().get();
   }
 
+  // the runtime refuses shaders using constants their version doesn't have, def'd ones included (Wine's
+  // test_unsupported_shaders; Wine's own d3d9 does too)
+  bool
+  check_constant(RegisterType type, uint32_t n) {
+    uint32_t limit;
+    if (type == RegisterType::Const)
+      limit = !ps_ ? 256 : ver_.major < 2 ? 8 : ver_.major < 3 ? 32 : 224;
+    else
+      limit = !ps_ || ver_.major >= 3 || (ver_.major == 2 && ver_.minor) ? 16 : 0;
+    if (n < limit)
+      return true;
+    fail("d3d9: constant register " + std::to_string(n) + " is out of range for the shader version");
+    return false;
+  }
+
   void
   fail(std::string message) {
     if (!error_)
@@ -329,6 +344,8 @@ private:
       c.read_type = OperandDataType::Integer;
       return SrcOperandTemp{._ = c, .regid = reg::A0, .phase = kNoPhase};
     case RegisterType::Const: {
+      if (!relative)
+        check_constant(RegisterType::Const, n);
       if (relative) {
         cb_used_ |= 1 << cb::Float;
         return SrcOperandConstantBuffer{
@@ -359,6 +376,7 @@ private:
       return SrcOperandConstantBuffer{._ = c, .rangeid = cb::Float, .rangeindex = cb::Float, .regindex = n};
     }
     case RegisterType::ConstInt: {
+      check_constant(RegisterType::ConstInt, n);
       c.read_type = OperandDataType::Integer;
       if (auto it = defs_i_.find(n); it != defs_i_.end()) {
         SrcOperandImmediate32 imm{._ = c};
@@ -369,6 +387,7 @@ private:
       return SrcOperandConstantBuffer{._ = c, .rangeid = cb::Int, .rangeindex = cb::Int, .regindex = n};
     }
     case RegisterType::ConstBool: {
+      check_constant(RegisterType::ConstBool, n);
       c.read_type = OperandDataType::Integer;
       if (auto it = defs_b_.find(n); it != defs_b_.end())
         return with_swizzle(imm_u(it->second ? ~0u : 0u), c.swizzle);
@@ -1501,16 +1520,19 @@ private:
     case Opcode::Def: {
       std::array<uint32_t, 4> v;
       std::memcpy(v.data(), p + 1, 16);
+      check_constant(RegisterType::Const, register_number(p[0]));
       defs_f_[register_number(p[0])] = v;
       break;
     }
     case Opcode::DefI: {
       std::array<uint32_t, 4> v;
       std::memcpy(v.data(), p + 1, 16);
+      check_constant(RegisterType::ConstInt, register_number(p[0]));
       defs_i_[register_number(p[0])] = v;
       break;
     }
     case Opcode::DefB:
+      check_constant(RegisterType::ConstBool, register_number(p[0]));
       defs_b_[register_number(p[0])] = p[1] != 0;
       break;
     case Opcode::Tex:

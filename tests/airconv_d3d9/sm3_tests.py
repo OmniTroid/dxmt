@@ -52,7 +52,7 @@ TESTS = [
 ]
 
 LOOP_BODY = 'float4 s = 0; [loop] for (int k = 0; k < 4; k++) s += c[k]; return s;'
-HEADER = 'float4 c[32] : register(c0);\nbool b[4] : register(b0);\nsampler2D s0 : register(s0);\n'
+HEADER = 'float4 c[8] : register(c0);\nbool b[4] : register(b0);\nsampler2D s0 : register(s0);\n'
 
 def body(expr):
     return LOOP_BODY if expr == 'L' else f'return {expr};'

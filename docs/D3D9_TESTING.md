@@ -87,6 +87,7 @@ Leftover artifacts have produced wrong conclusions more than any other trap. Bef
 - Each Wine process costs seconds to start; compile many shaders with one `hlslc.exe -b jobs.txt` call, as `sm3_tests.py` does.
 - When a sabotage doesn't make a check fail, first confirm the broken DLL is the one running (a temporary `fprintf(stderr, ...)` in the code path) before concluding the check is weak.
 - `D3DDisassemble` works on SM1-3 bytecode: `hlslc.exe -d file.bin`.
+- It places literals in the first free constants without checking the version's limit: with `float4 c[32]` declared, ps_2_0 got `def c32`, which Windows, Wine and DXMT refuse. Keep test headers well below each limit (they declare `c[8]`).
 
 **Reading Wine's tests**
 
