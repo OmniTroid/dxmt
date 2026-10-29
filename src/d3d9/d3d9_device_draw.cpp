@@ -842,7 +842,6 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
     case D3DFMT_L16:
     case D3DFMT_R16F:
     case D3DFMT_R32F:
-    case MAKEFOURCC('A', 'T', 'I', '1'):
     case MAKEFOURCC('D', 'F', '1', '6'):
     case MAKEFOURCC('D', 'F', '2', '4'):
     case MAKEFOURCC('I', 'N', 'T', 'Z'):

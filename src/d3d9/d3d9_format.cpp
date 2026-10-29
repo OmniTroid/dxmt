@@ -120,10 +120,12 @@ D3D9QueryFormat(D3DFORMAT Format, D3D9_FORMAT_DESC &Desc) {
     Desc = {DXGI_FORMAT_BC3_UNORM, WMTPixelFormatInvalid, D3D9_FORMAT_BC};
     return true;
   case D3D9FMT_ATI1:
-    Desc = {DXGI_FORMAT_BC4_UNORM, WMTPixelFormatInvalid, D3D9_FORMAT_BC};
+    // AMD replicates the one channel, which FETCH4 leaves as is (Wine's visual test_fetch4)
+    Desc = {DXGI_FORMAT_BC4_UNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 2, 2, 2)), D3D9_FORMAT_BC};
     return true;
   case D3D9FMT_ATI2:
-    Desc = {DXGI_FORMAT_BC5_UNORM, WMTPixelFormatInvalid, D3D9_FORMAT_BC};
+    // D3D9 reads the first BC5 channel as green and the second as red, with blue 1 (Wine's visual test_3dc_formats)
+    Desc = {DXGI_FORMAT_BC5_UNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 3, 2, 1, 1)), D3D9_FORMAT_BC};
     return true;
   case D3DFMT_D16_LOCKABLE:
     Desc = {DXGI_FORMAT_D16_UNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 0, 0, 1)), D3D9_FORMAT_DEPTH | D3D9_FORMAT_LOCKABLE};
