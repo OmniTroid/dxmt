@@ -394,6 +394,12 @@ struct Driver {
             temp_src(reg::OutPos), runtime_src(3 + i), 4
         });
       }
+      if (variant.flags & SM30_SHADER_FLAG_DEPTH_BIAS) {
+        cur->instructions.push_back(InstFloatMAD{
+            kNoSat, temp_dst(reg::OutPos, 0x4), runtime_src(offsetof(SM30_RUNTIME_CONSTANTS, depth_bias) / 16, rep(0)),
+            temp_src(reg::OutPos, rep(3)), temp_src(reg::OutPos, rep(2))
+        });
+      }
       if (variant.flags & SM30_SHADER_FLAG_POINT_SIZE) {
         SrcOperand size = data.writes_psize ? temp_src(reg::OutPSize, rep(0)) : runtime_src(0, rep(1));
         cur->instructions.push_back(InstFloatBinaryOp{kNoSat, FloatBinaryOp::Max, temp_dst(e, 0x1), size, runtime_src(0, rep(2))});

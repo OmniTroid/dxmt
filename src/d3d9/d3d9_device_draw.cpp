@@ -647,6 +647,8 @@ MTLD3D9Device::UpdateRuntimeConstants() {
   c.fog_density = f(D3DRS_FOGDENSITY);
   c.fog_scale = c.fog_end != c.fog_start ? 1.0f / (c.fog_end - c.fog_start) : 0.0f;
   std::memcpy(c.clip_planes, clip_planes_.data(), sizeof(c.clip_planes));
+  auto [min_z, max_z] = EffectiveDepthRange();
+  c.depth_bias[0] = f(D3DRS_DEPTHBIAS) / (max_z - min_z);
   for (uint32_t i = 0; i < 8; i++) {
     auto &tss = texture_stage_states_[i];
     for (uint32_t k = 0; k < 4; k++)
@@ -743,6 +745,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
   vs_d3d9.type = SM30_SHADER_D3D9;
   vs_d3d9.clip_plane_mask = render_states_[D3DRS_CLIPPLANEENABLE] & 0x3F;
   vs_d3d9.flags = points ? SM30_SHADER_FLAG_POINT_SIZE : 0;
+  // Metal scales constant bias by a resolution that depends on each primitive's depth for float formats
+  if (depth_stencil_ && render_states_[D3DRS_DEPTHBIAS])
+    vs_d3d9.flags |= SM30_SHADER_FLAG_DEPTH_BIAS;
 
   SM30_SHADER_D3D9_DATA ps_d3d9 = {};
   ps_d3d9.type = SM30_SHADER_D3D9;
@@ -903,14 +908,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
     );
     raster.depth_clip_mode = z_buffered || !pretransformed ? WMTDepthClipModeClip : WMTDepthClipModeClamp;
     raster.winding = WMTWindingClockwise;
-    float bias_units = 1 << 24;
-    if (depth_stencil_) {
-      auto format = depth_stencil_->Desc().Format;
-      bias_units = format == D3DFMT_D16 || format == D3DFMT_D16_LOCKABLE ? 65536.0f
-                   : format == D3DFMT_D32F_LOCKABLE || format == D3DFMT_D24FS8 ? 8388608.0f
-                                                                              : 16777216.0f;
-    }
-    raster.depth_bias = std::bit_cast<float>(render_states_[D3DRS_DEPTHBIAS]) * bias_units;
+    raster.depth_bias = 0.0f;
     raster.scole_scale = std::bit_cast<float>(render_states_[D3DRS_SLOPESCALEDEPTHBIAS]);
     raster.depth_bias_clamp = 0.0f;
     Emit([raster](ArgumentEncodingContext &enc) {
