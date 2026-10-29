@@ -37,7 +37,7 @@ constexpr uint32_t VSMaterialSpecular = 12;
 constexpr uint32_t VSMaterialEmissive = 13;
 constexpr uint32_t VSAmbient = 14;
 // c15 and c19 are defined by the shader
-constexpr uint32_t VSMaterialPower = 16;
+constexpr uint32_t VSMaterialPower = 16; // power, tween factor
 constexpr uint32_t VSFog = 17; // start, end, density, 1 / (end - start)
 // per light: position or negated direction, spot direction, diffuse, specular, ambient,
 // attenuation (a0, a1, a2, range), spot (cos theta/2, cos phi/2, 1 / difference, falloff)
@@ -60,6 +60,7 @@ constexpr uint32_t MaxLights = 8;
 constexpr uint8_t TexGenNormal = 8;
 constexpr uint8_t TexGenPosition = 9;
 constexpr uint8_t TexGenReflection = 10;
+constexpr uint8_t TexGenSphereMap = 11;
 constexpr uint8_t TexNone = 0xFF;
 
 constexpr DWORD FogNone = 0xFF;
@@ -92,6 +93,7 @@ struct D3D9FFVertexState {
   DWORD fog_mode; // D3DFOGMODE computed per vertex, D3DFOG_NONE for specular alpha, ff::FogNone without vertex fog
   bool range_fog;
   uint32_t blend_weights; // D3DRS_VERTEXBLEND weights read from BLENDWEIGHT; blends weights + 1 matrices
+  bool tween;             // D3DVBF_TWEENING between POSITION0/1 and NORMAL0/1
 };
 
 struct D3D9FFStage {

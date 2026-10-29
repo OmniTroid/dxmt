@@ -145,6 +145,12 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   bool blend = S.blend_weights && !S.pretransformed;
   if (blend)
     w.dcl(Usage::BlendWeight, 0, Dst(RegisterType::Input, 12));
+  bool tween = S.tween && !S.pretransformed;
+  if (tween) {
+    w.dcl(Usage::Position, 1, Dst(RegisterType::Input, 13));
+    if (S.normal)
+      w.dcl(Usage::Normal, 1, Dst(RegisterType::Input, 14));
+  }
   w.dcl(Usage::Position, 0, out(0));
   w.dcl(Usage::Color, 0, out(1));
   w.dcl(Usage::Color, 1, out(2));
@@ -156,6 +162,17 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   w.def_helper();
   w.op(Opcode::Def, {Dst(RegisterType::Const, kHelper2), std::bit_cast<DWORD>(1e-6f), std::bit_cast<DWORD>(-1.0f),
                      std::bit_cast<DWORD>(1.442695f), std::bit_cast<DWORD>(0.0f)});
+
+  // r29 and r30 hold the tweened position and normal
+  DWORD pos = tween ? t(29) : in(0), nrm = tween && S.normal ? t(30) : in(1);
+  if (tween) {
+    w.op(Opcode::Add, {r(29), in(13), Src(RegisterType::Input, 0, kXYZW, SrcModifier::Neg)});
+    w.op(Opcode::Mad, {r(29), t(29), c(ff::VSMaterialPower, kYYYY), in(0)});
+    if (S.normal) {
+      w.op(Opcode::Add, {r(30), in(14), Src(RegisterType::Input, 1, kXYZW, SrcModifier::Neg)});
+      w.op(Opcode::Mad, {r(30), t(30), c(ff::VSMaterialPower, kYYYY), in(1)});
+    }
+  }
 
   if (S.pretransformed) {
     w.op(Opcode::Mad, {r(0, 0x7), in(0), c(ff::VSViewportScale), c(ff::VSViewportOffset)});
@@ -173,11 +190,11 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
       if (i < S.blend_weights)
         w.op(Opcode::Add, {r(25, 0x1), t(25, kXXXX), Src(RegisterType::Input, 12, (i * 0x55) & 0xFF, SrcModifier::Neg)});
       for (uint32_t k = 0; k < 3; k++)
-        w.op(Opcode::Dp4, {r(26, 1u << k), in(0), c(base + k)});
+        w.op(Opcode::Dp4, {r(26, 1u << k), pos, c(base + k)});
       w.op(Opcode::Mad, {r(P, 0x7), t(26), weight, t(P)});
       if (S.normal) {
         for (uint32_t k = 0; k < 3; k++)
-          w.op(Opcode::Dp3, {r(26, 1u << k), in(1), c(base + k)});
+          w.op(Opcode::Dp3, {r(26, 1u << k), nrm, c(base + k)});
         w.op(Opcode::Mad, {r(12, 0x7), t(26), weight, t(12)});
       }
     }
@@ -186,18 +203,19 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
       w.op(Opcode::Dp4, {out(0, 1 << i), t(P), c(ff::VSProjection + i)});
   } else {
     for (uint32_t i = 0; i < 4; i++)
-      w.op(Opcode::Dp4, {out(0, 1 << i), in(0), c(ff::VSWorldViewProj + i)});
+      w.op(Opcode::Dp4, {out(0, 1 << i), pos, c(ff::VSWorldViewProj + i)});
   }
 
   bool lit = S.lighting && !S.pretransformed;
   bool needs_normal = (lit && S.normal) || std::any_of(std::begin(S.texcoords), std::end(S.texcoords), [](auto &tc) {
-                        return tc.source == ff::TexGenNormal || tc.source == ff::TexGenReflection;
+                        return tc.source == ff::TexGenNormal || tc.source == ff::TexGenReflection ||
+                               tc.source == ff::TexGenSphereMap;
                       });
   bool needs_position = !S.pretransformed;
   if (needs_position) {
     if (!blend) {
       for (uint32_t i = 0; i < 3; i++)
-        w.op(Opcode::Dp4, {r(P, 1 << i), in(0), c(ff::VSWorldView + i)});
+        w.op(Opcode::Dp4, {r(P, 1 << i), pos, c(ff::VSWorldView + i)});
       w.op(Opcode::Mov, {r(P, 0x8), Helper(kYYYY)});
     }
     if (S.local_viewer) {
@@ -211,7 +229,7 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
     if (S.normal) {
       if (!blend)
         for (uint32_t i = 0; i < 3; i++)
-          w.op(Opcode::Dp3, {r(12, 1 << i), in(1), c(ff::VSWorldView + i)});
+          w.op(Opcode::Dp3, {r(12, 1 << i), nrm, c(ff::VSWorldView + i)});
       w.op(Opcode::Nrm, {r(N, 0x7), t(12)});
     } else {
       w.op(Opcode::Mov, {r(N), Helper(kXXXX)});
@@ -312,6 +330,17 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
       w.op(Opcode::Add, {r(23, 0x1), t(23, kXXXX), t(23, kXXXX)});
       w.op(Opcode::Mad, {r(Coord, 0x7), t(N, kXYZW, SrcModifier::Neg), t(23, kXXXX), t(22)});
       w.op(Opcode::Mov, {r(Coord, 0x8), Helper(kYYYY)});
+      if (tc.source == ff::TexGenSphereMap) {
+        // u = Rx / m + 0.5, v = -Ry / m + 0.5, m = 2 |R - (0, 0, 1)| with the camera looking down +z
+        w.op(Opcode::Mov, {r(27), t(Coord)});
+        w.op(Opcode::Add, {r(27, 0x4), t(27, kZZZZ), Src(RegisterType::Const, kHelperConst, kYYYY, SrcModifier::Neg)});
+        w.op(Opcode::Dp3, {r(28, 0x1), t(27), t(27)});
+        w.op(Opcode::Rsq, {r(28, 0x1), t(28, kXXXX)});
+        w.op(Opcode::Mul, {r(28, 0x1), t(28, kXXXX), Helper(kZZZZ)});
+        w.op(Opcode::Mad, {r(Coord, 0x1), t(Coord, kXXXX), t(28, kXXXX), Helper(kZZZZ)});
+        w.op(Opcode::Mad, {r(Coord, 0x2), t(Coord, kYYYY, SrcModifier::Neg), t(28, kXXXX), Helper(kZZZZ)});
+        w.op(Opcode::Mov, {r(Coord, 0x4), Helper(kXXXX)});
+      }
     }
     uint32_t coord = Coord;
     if (tc.count) {

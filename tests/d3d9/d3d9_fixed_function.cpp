@@ -4,6 +4,14 @@
 #include <cstdio>
 #include <cstring>
 
+// type-punning through a pointer cast is undefined, and the optimizer did drop the float stores
+static DWORD
+f2dw(float f) {
+  DWORD d;
+  memcpy(&d, &f, sizeof(d));
+  return d;
+}
+
 static int failures = 0;
 static IDirect3DDevice9 *device;
 static IDirect3DSurface9 *rt, *readback;
@@ -389,14 +397,68 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   device->SetTransform(D3DTS_WORLDMATRIX(0), &identity);
   device->SetTransform(D3DTS_WORLDMATRIX(1), &identity);
 
+  // tweening interpolates POSITION0 and POSITION1 by the tween factor
+  D3DVERTEXELEMENT9 tween_elements[] = {
+      {0, 0, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_POSITION, 0},
+      {0, 12, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_POSITION, 1},
+      {0, 24, D3DDECLTYPE_D3DCOLOR, 0, D3DDECLUSAGE_COLOR, 0},
+      D3DDECL_END(),
+  };
+  IDirect3DVertexDeclaration9 *tween_decl = nullptr;
+  device->CreateVertexDeclaration(tween_elements, &tween_decl);
+  struct TweenVertex {
+    float x0, y0, z0, x1, y1, z1;
+    DWORD color;
+  } tween[4];
+  float corners[4][2] = {{-0.2f, -0.2f}, {-0.2f, 0.2f}, {0.2f, -0.2f}, {0.2f, 0.2f}};
+  for (int i = 0; i < 4; i++)
+    tween[i] = {corners[i][0] - 0.5f, corners[i][1], 0.5f, corners[i][0] + 0.5f, corners[i][1], 0.5f, 0xFFFFFFFF};
+  device->SetVertexDeclaration(tween_decl);
+  device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_TWEENING);
+  float factors[3] = {0, 1, 0.5f};
+  int columns[3] = {16, 48, 32};
+  const char *names[3] = {"tween factor 0", "tween factor 1", "tween factor 0.5"};
+  for (int i = 0; i < 3; i++) {
+    device->SetRenderState(D3DRS_TWEENFACTOR, f2dw(factors[i]));
+    clear();
+    device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, tween, sizeof(TweenVertex));
+    expect(names[i], columns[i], 32, 0xFFFFFFFF);
+  }
+  device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
+  tween_decl->Release();
+
+  // sphere mapping: a normal facing the eye reflects to the map's center, one tilted toward +x to u = 0.8
+  const DWORD sphere_texels[3] = {0xFFFF0000, 0xFF00FF00, 0xFF0000FF};
+  IDirect3DTexture9 *sphere = nullptr;
+  device->CreateTexture(3, 1, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &sphere, nullptr);
+  sphere->LockRect(0, &lr, nullptr, 0);
+  memcpy(lr.pBits, sphere_texels, sizeof(sphere_texels));
+  sphere->UnlockRect(0);
+  device->SetTexture(0, sphere);
+  device->SetSamplerState(0, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP);
+  stage(0, D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTA_CURRENT, D3DTOP_SELECTARG1, D3DTA_TEXTURE);
+  device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, D3DTSS_TCI_SPHEREMAP);
+  device->SetRenderState(D3DRS_LOCALVIEWER, FALSE);
+  clear();
+  lit_quad(0, 0, -1);
+  expect("sphere map center", 32, 32, 0xFF00FF00);
+  clear();
+  lit_quad(0.6f, 0, -0.8f);
+  expect("sphere map tilted normal", 32, 32, 0xFF0000FF);
+  device->SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+  device->SetRenderState(D3DRS_LOCALVIEWER, TRUE);
+  device->SetTexture(0, nullptr);
+  sphere->Release();
+  default_stages();
+
   // vertex fog from view-space depth, and from specular alpha for pretransformed vertices
   float fog_start = 0, fog_end = 1;
   device->SetRenderState(D3DRS_FOGENABLE, TRUE);
   device->SetRenderState(D3DRS_FOGCOLOR, 0xFF0000FF);
   device->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
   device->SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR);
-  device->SetRenderState(D3DRS_FOGSTART, *(DWORD *)&fog_start);
-  device->SetRenderState(D3DRS_FOGEND, *(DWORD *)&fog_end);
+  device->SetRenderState(D3DRS_FOGSTART, f2dw(fog_start));
+  device->SetRenderState(D3DRS_FOGEND, f2dw(fog_end));
   ColorVertex fogged[4] = {
       {-1, -1, 0.25f, 0xFFFF0000}, {-1, 1, 0.25f, 0xFFFF0000}, {1, -1, 0.25f, 0xFFFF0000}, {1, 1, 0.25f, 0xFFFF0000}
   };

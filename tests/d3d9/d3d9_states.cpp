@@ -4,6 +4,14 @@
 #include <cstdio>
 #include <cstring>
 
+// type-punning through a pointer cast is undefined, and the optimizer did drop the float stores
+static DWORD
+f2dw(float f) {
+  DWORD d;
+  memcpy(&d, &f, sizeof(d));
+  return d;
+}
+
 static int failures = 0;
 static IDirect3DDevice9 *device;
 static IDirect3DSurface9 *rt, *readback;
@@ -145,14 +153,14 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   device->SetRenderState(D3DRS_FOGENABLE, TRUE);
   device->SetRenderState(D3DRS_FOGCOLOR, 0xFF0000FF);
   device->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_LINEAR);
-  device->SetRenderState(D3DRS_FOGSTART, *(DWORD *)&start);
-  device->SetRenderState(D3DRS_FOGEND, *(DWORD *)&end);
+  device->SetRenderState(D3DRS_FOGSTART, f2dw(start));
+  device->SetRenderState(D3DRS_FOGEND, f2dw(end));
   clear(0xFF000000);
   draw_quad(-1, -1, 1, 1, 0.25f, 0xFFFF0000);
   // f = (end - z) / (end - start) = 0.75
   expect("linear table fog", 32, 32, 0xFFBF0040);
   device->SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_EXP);
-  device->SetRenderState(D3DRS_FOGDENSITY, *(DWORD *)&density);
+  device->SetRenderState(D3DRS_FOGDENSITY, f2dw(density));
   draw_quad(-1, -1, 1, 1, 0.5f, 0xFFFF0000);
   // f = exp(-2 * 0.5) = 0.368
   expect("exp table fog", 32, 32, 0xFF5E00A1);
@@ -177,7 +185,7 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   expect("half-pixel offset leaves column 0", 0, 32, 0xFF000000);
 
   float size = 8.0f;
-  device->SetRenderState(D3DRS_POINTSIZE, *(DWORD *)&size);
+  device->SetRenderState(D3DRS_POINTSIZE, f2dw(size));
   clear(0xFF000000);
   Vertex point = {0, 0, 0, 0xFFFFFF00};
   device->DrawPrimitiveUP(D3DPT_POINTLIST, 1, &point, sizeof(Vertex));

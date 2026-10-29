@@ -136,9 +136,7 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
     }
   }
   DWORD blend = render_states_[D3DRS_VERTEXBLEND];
-  if (blend == D3DVBF_TWEENING) {
-    WARN_ONCE("D3D9: fixed-function tweening is not implemented");
-  }
+  s.tween = blend == D3DVBF_TWEENING;
   if (render_states_[D3DRS_INDEXEDVERTEXBLENDENABLE]) {
     WARN_ONCE("D3D9: indexed vertex blending is not implemented");
   }
@@ -184,6 +182,7 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   StoreColor(C + 4 * ff::VSMaterialEmissive, material_.Emissive);
   StoreColor(C + 4 * ff::VSAmbient, (D3DCOLOR)render_states_[D3DRS_AMBIENT]);
   C[4 * ff::VSMaterialPower] = material_.Power;
+  C[4 * ff::VSMaterialPower + 1] = std::bit_cast<float>(render_states_[D3DRS_TWEENFACTOR]);
 
   for (auto &[light, enabled] : lights_) {
     if (!enabled || s.light_count == ff::MaxLights)
@@ -231,8 +230,10 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
     case D3DTSS_TCI_CAMERASPACEREFLECTIONVECTOR:
       tc.source = ff::TexGenReflection;
       break;
+    case D3DTSS_TCI_SPHEREMAP:
+      tc.source = ff::TexGenSphereMap;
+      break;
     default:
-      WARN_ONCE("D3D9: sphere-map texture coordinate generation is not implemented");
       tc.source = ff::TexNone;
       break;
     }

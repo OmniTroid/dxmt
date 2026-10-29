@@ -67,6 +67,10 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - When a sabotage doesn't make a check fail, first confirm the broken DLL is the one running (a temporary `fprintf(stderr, ...)` in the code path) before concluding the check is weak.
 - `D3DDisassemble` works on SM1-3 bytecode: `hlslc.exe -d file.bin`.
 
+**Test code**
+
+- Pass floats to `SetRenderState` through `memcpy` (`f2dw`), never `*(DWORD *)&f`: with optimization the stores were dropped and the device received stack garbage, which looked like a broken tweening implementation.
+
 **Shell**
 
 - In zsh, `${PIPESTATUS[0]}` is empty; check `$?` without a pipe.
