@@ -311,6 +311,7 @@ private:
   };
 
   bool BeginRenderPass();
+  MTLD3D9Surface *PassDepthStencil();
   void UpdateRuntimeConstants(bool Pretransformed);
   uint64_t PreAllocateArgumentBuffer(size_t Size, size_t Alignment);
   // only DrawIndexedPrimitive instances (D3DSTREAMSOURCE_INDEXEDDATA on stream 0)

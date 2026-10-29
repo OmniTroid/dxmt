@@ -286,6 +286,17 @@ MTLD3D9Device::RenderTargetView(MTLD3D9Surface *pSurface) {
   });
 }
 
+// a depth buffer smaller than the render target is left out, as Windows draws the whole target with it bound
+// (Wine's test_occlusion_query)
+MTLD3D9Surface *
+MTLD3D9Device::PassDepthStencil() {
+  auto ds = depth_stencil_.ptr();
+  auto rt = render_targets_[0].ptr();
+  if (ds && rt && rt->texture() && (ds->Desc().Width < rt->Desc().Width || ds->Desc().Height < rt->Desc().Height))
+    return nullptr;
+  return ds;
+}
+
 bool
 MTLD3D9Device::BeginRenderPass() {
   if (pass_active_)
@@ -314,7 +325,7 @@ MTLD3D9Device::BeginRenderPass() {
     }
   }
   Target depth;
-  if (auto ds = depth_stencil_.ptr()) {
+  if (auto ds = PassDepthStencil()) {
     depth = {ds->texture(), ds->viewKey(), ds->texture()->pixelFormat()};
     if (!width) {
       width = ds->Desc().Width;
@@ -410,7 +421,7 @@ MTLD3D9Device::GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Functio
       color.alpha_blend_operation = op_alpha;
     }
   }
-  if (auto ds = depth_stencil_.ptr()) {
+  if (auto ds = PassDepthStencil()) {
     auto format = ds->texture()->pixelFormat();
     uint32_t planar = DepthStencilPlanarFlags(format);
     if (planar & 1)
@@ -449,8 +460,9 @@ MTLD3D9Device::GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Functio
 WMT::DepthStencilState
 MTLD3D9Device::GetDepthStencilState() {
   auto &rs = render_states_;
-  bool has_depth = depth_stencil_ && (DepthStencilPlanarFlags(depth_stencil_->texture()->pixelFormat()) & 1);
-  bool has_stencil = depth_stencil_ && (DepthStencilPlanarFlags(depth_stencil_->texture()->pixelFormat()) & 2);
+  auto ds = PassDepthStencil();
+  bool has_depth = ds && (DepthStencilPlanarFlags(ds->texture()->pixelFormat()) & 1);
+  bool has_stencil = ds && (DepthStencilPlanarFlags(ds->texture()->pixelFormat()) & 2);
 
   WMTDepthStencilInfo info = {};
   bool depth = has_depth && rs[D3DRS_ZENABLE] != D3DZB_FALSE;
@@ -861,7 +873,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
       ps_d3d9.unbound_samplers |= 1u << i;
   ps_d3d9.flags |= SM30_SHADER_FLAG_VS_OUTPUTS;
   // D3D9 biases after clipping, and Metal's own bias scales with each primitive's depth for float formats
-  if (depth_stencil_ && render_states_[D3DRS_DEPTHBIAS])
+  if (PassDepthStencil() && render_states_[D3DRS_DEPTHBIAS])
     ps_d3d9.flags |= SM30_SHADER_FLAG_DEPTH_BIAS;
   std::copy(vs_code->outputs().begin(), vs_code->outputs().end(), ps_d3d9.vs_outputs);
   if (ps_code->bytecode()[0] < 0xFFFF0200) {

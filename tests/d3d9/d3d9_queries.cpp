@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <d3d9.h>
 #include <cstdio>
+#include <initializer_list>
 
 static int failures = 0;
 static IDirect3DDevice9 *device;
@@ -133,6 +134,45 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   samples = 0;
   check("occlusion begun outside a scene", wait(outside, samples) == S_OK && samples == 64 * 64);
   outside->Release();
+
+  // counts add up over many draws, across a flush, and past 32 bits (Wine's test_occlusion_query)
+  {
+    IDirect3DSurface9 *old_rt = nullptr, *big = nullptr;
+    device->GetRenderTarget(0, &old_rt);
+    device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    for (UINT size : {1024u, 8192u}) {
+      device->CreateRenderTarget(size, size, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE, &big, nullptr);
+      device->SetRenderTarget(0, big);
+      UINT draws = size == 1024 ? 10 : 65;
+      IDirect3DQuery9 *many = nullptr, *flush = nullptr;
+      device->CreateQuery(D3DQUERYTYPE_OCCLUSION, &many);
+      device->CreateQuery(D3DQUERYTYPE_EVENT, &flush);
+      many->Issue(D3DISSUE_BEGIN);
+      device->BeginScene();
+      for (UINT i = 0; i < draws; i++) {
+        quad(0, 0, (float)size, (float)size, 0.5f);
+        if (i == draws / 2) {
+          flush->Issue(D3DISSUE_END);
+          BOOL done = FALSE;
+          wait(flush, done);
+        }
+      }
+      device->EndScene();
+      many->Issue(D3DISSUE_END);
+      UINT64 count = 0;
+      HRESULT hr = wait(many, count);
+      char name[128];
+      snprintf(name, sizeof(name), "occlusion over %u draws of %ux%u (got %llu)", draws, size, size,
+               (unsigned long long)count);
+      check(name, hr == S_OK && count == (UINT64)draws * size * size);
+      many->Release();
+      flush->Release();
+      device->SetRenderTarget(0, old_rt);
+      big->Release();
+    }
+    old_rt->Release();
+    device->SetRenderState(D3DRS_ZENABLE, TRUE);
+  }
   device->BeginScene();
 
   quad(0, 0, 64, 64, 0.1f);
