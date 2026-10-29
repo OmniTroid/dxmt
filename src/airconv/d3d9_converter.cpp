@@ -438,9 +438,37 @@ struct Driver {
   run(const char *name) {
     bool pixel = data.version.pixel;
     uint32_t vertex_idx = 0, base_vertex_idx = 0, instance_idx = 0, base_instance_idx = 0, clip_distance_idx = ~0u;
+    // ProcessVertices: the output registers go to a buffer and nothing is rasterized
+    SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA *vertex_so = nullptr;
+    if (!pixel)
+      args_get_data<SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT, SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA>(
+          args, &vertex_so
+      );
     if (pixel) {
       definePixelInputs();
       definePixelOutputs();
+    } else if (vertex_so) {
+      defineVertexInputs();
+      auto bv = func_signature.DefineInput(InputBaseVertex{});
+      auto vid = func_signature.DefineInput(InputVertexID{});
+      auto so_table = func_signature.DefineInput(ArgumentBindingBuffer{
+          .buffer_size = {},
+          .location_index = SM50_BINDING_INDEX_STREAM_OUTPUT0,
+          .array_size = 0,
+          .memory_access = MemoryAccess::read,
+          .address_space = AddressSpace::constant,
+          .type = MSLUint{},
+          .arg_name = "stream_outputs",
+          .raster_order_group = {}
+      });
+      max_output_register = std::max(max_output_register, reg::VSOutCount);
+      vertex_idx = vid;
+      base_vertex_idx = bv;
+      instance_idx = func_signature.DefineInput(InputInstanceID{});
+      base_instance_idx = func_signature.DefineInput(InputBaseInstance{});
+      epilogue.Add([=](llvm::Value *ret, IOHelper &io) -> llvm::Expected<llvm::Value *> {
+        return io.PopulateOutputStreamOutput(ret, vertex_so, bv, vid, so_table);
+      });
     } else {
       defineVertexInputs();
       defineVertexOutputs();
@@ -453,7 +481,7 @@ struct Driver {
     }
 
     auto binding_map = setup_binding_table2(&shader->shader_info, func_signature, module);
-    auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, false);
+    auto [function, function_metadata] = func_signature.CreateFunction(name, context, module, 0, vertex_so != nullptr);
 
     auto entry_bb = llvm::BasicBlock::Create(context, "entry", function);
     auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
