@@ -239,6 +239,15 @@ public:
 
   void EndRenderPass();
 
+  // Like wined3d, a depth range narrower than 0.001 (MinZ == MaxZ is common) is widened to 0.001.
+  std::pair<float, float>
+  EffectiveDepthRange() const {
+    float min_z = viewport_.MinZ, max_z = viewport_.MaxZ;
+    if (max_z - min_z < 0.001f)
+      max_z = min_z + 0.001f;
+    return {min_z, max_z};
+  }
+
   bool
   IsRecordingStateBlock() const {
     return recording_ != nullptr;
@@ -349,6 +358,7 @@ private:
   std::unordered_map<Sha1Digest, std::unique_ptr<MTLD3D9ShaderCode>> ff_shaders_;
   Com<MTLD3D9StateBlock, false> recording_;
   Rc<Texture> resolve_temp_;
+  uint32_t shadow_samplers_ = 0;
   D3DCLIPSTATUS9 clip_status_ = {};
   std::unordered_map<UINT, std::array<PALETTEENTRY, 256>> palettes_;
   UINT current_palette_ = 0xFFFF;

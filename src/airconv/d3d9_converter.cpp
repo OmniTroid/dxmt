@@ -531,7 +531,9 @@ struct Driver {
 } // namespace
 
 std::unique_ptr<SM50ShaderInternal>
-create_shader(const uint32_t *tokens, size_t count, uint32_t ps1_texture_types, std::string &error, BindingSlotMasks &masks) {
+create_shader(
+    const uint32_t *tokens, size_t count, const DecodeOptions &options, std::string &error, BindingSlotMasks &masks
+) {
   d3d9bc::Version version;
   if (!count || !d3d9bc::read_version(tokens[0], version)) {
     error = "Invalid D3D9 shader bytecode";
@@ -540,7 +542,7 @@ create_shader(const uint32_t *tokens, size_t count, uint32_t ps1_texture_types, 
   auto shader = std::make_unique<SM50ShaderInternal>();
   shader->shader_type = version.pixel ? microsoft::D3D10_SB_PIXEL_SHADER : microsoft::D3D10_SB_VERTEX_SHADER;
   shader->d3d9 = std::make_shared<ShaderData>();
-  if (auto err = decode_shader(tokens, count, *shader, *shader->d3d9, ps1_texture_types)) {
+  if (auto err = decode_shader(tokens, count, *shader, *shader->d3d9, options)) {
     error = *err;
     return nullptr;
   }
@@ -563,11 +565,15 @@ convert_shader(
 ) {
   auto &data = *pShader->d3d9;
   SM30_SHADER_D3D9_DATA *d3d9 = nullptr;
-  if (!data.ps1_tokens.empty() && args_get_data<SM30_SHADER_D3D9, SM30_SHADER_D3D9_DATA>(pArgs, &d3d9) &&
-      d3d9->ps1_texture_types != data.ps1_texture_types) {
+  DecodeOptions options;
+  if (!data.pixel_tokens.empty() && args_get_data<SM30_SHADER_D3D9, SM30_SHADER_D3D9_DATA>(pArgs, &d3d9)) {
+    options.ps1_texture_types = data.version.major == 1 ? d3d9->ps1_texture_types : 0;
+    options.shadow_samplers = d3d9->shadow_samplers;
+  }
+  if (!data.pixel_tokens.empty() && options != data.options) {
     std::string error;
     BindingSlotMasks masks;
-    auto variant = create_shader(data.ps1_tokens.data(), data.ps1_tokens.size(), d3d9->ps1_texture_types, error, masks);
+    auto variant = create_shader(data.pixel_tokens.data(), data.pixel_tokens.size(), options, error, masks);
     if (!variant)
       return llvm::make_error<dxmt::UnsupportedFeature>(error);
     Driver driver(variant.get(), context, module, pArgs);
@@ -598,7 +604,7 @@ SM30Initialize(
   }
   std::string error;
   BindingSlotMasks masks;
-  auto shader = d3d9::create_shader((const uint32_t *)pBytecode, BytecodeSize / 4, 0, error, masks);
+  auto shader = d3d9::create_shader((const uint32_t *)pBytecode, BytecodeSize / 4, {}, error, masks);
   if (!shader) {
     errorOut << error;
     SM50_RETURN_ERROR(errorObj, ppError, 1);

@@ -99,6 +99,15 @@ struct IOElement {
   }
 };
 
+// Variant inputs that change how a pixel shader decodes, from SM30_SHADER_D3D9_DATA.
+struct DecodeOptions {
+  uint32_t ps1_texture_types = 0;
+  uint32_t shadow_samplers = 0;
+
+  bool
+  operator==(const DecodeOptions &) const = default;
+};
+
 struct ShaderData {
   d3d9bc::Version version;
   std::vector<IOElement> inputs;
@@ -113,9 +122,9 @@ struct ShaderData {
   uint32_t fog_output_reg = ~0u;
   bool uses_vpos = false;
   bool uses_vface = false;
-  // ps_1_x is decoded again per sampler type combination, so it keeps its tokens
-  std::vector<uint32_t> ps1_tokens;
-  uint32_t ps1_texture_types = 0;
+  // pixel shaders are decoded again per DecodeOptions, so they keep their tokens
+  std::vector<uint32_t> pixel_tokens;
+  DecodeOptions options;
 };
 
 llvm::Error convert_shader(

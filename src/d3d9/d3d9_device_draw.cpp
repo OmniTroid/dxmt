@@ -462,6 +462,8 @@ Rc<Sampler>
 MTLD3D9Device::GetSampler(uint32_t Index) {
   auto &ss = sampler_states_[Index];
   WMTSamplerInfo info = {};
+  if (Index < 32 && (shadow_samplers_ & (1u << Index)))
+    info.compare_function = WMTCompareFunctionLessEqual;
   auto filter = [](DWORD f) {
     return f == D3DTEXF_POINT || f == D3DTEXF_NONE ? WMTSamplerMinMagFilterNearest : WMTSamplerMinMagFilterLinear;
   };
@@ -746,6 +748,23 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
     ps_d3d9.flags |= SM30_SHADER_FLAG_FLAT_SHADING;
   if (points && render_states_[D3DRS_POINTSPRITEENABLE])
     ps_d3d9.flags |= SM30_SHADER_FLAG_POINT_SPRITE;
+  // native depth formats (not INTZ and friends) sample as a depth comparison
+  shadow_samplers_ = 0;
+  for (uint32_t i = 0; i < caps::MaxSamplersPS; i++) {
+    auto texture = textures_[i].texture;
+    if (!texture || texture->GetType() == D3DRTYPE_VOLUMETEXTURE)
+      continue;
+    D3DSURFACE_DESC desc = {};
+    if (texture->GetType() == D3DRTYPE_TEXTURE)
+      static_cast<IDirect3DTexture9 *>(texture)->GetLevelDesc(0, &desc);
+    else
+      static_cast<IDirect3DCubeTexture9 *>(texture)->GetLevelDesc(0, &desc);
+    D3D9_FORMAT_DESC format;
+    if (D3D9QueryFormat(desc.Format, format) && (format.Flags & D3D9_FORMAT_DEPTH) &&
+        !(format.Flags & D3D9_FORMAT_SAMPLEABLE_DEPTH))
+      shadow_samplers_ |= 1u << i;
+  }
+  ps_d3d9.shadow_samplers = shadow_samplers_;
   ps_d3d9.flags |= SM30_SHADER_FLAG_VS_OUTPUTS;
   std::copy(vs_code->outputs().begin(), vs_code->outputs().end(), ps_d3d9.vs_outputs);
   if (ps_code->bytecode()[0] < 0xFFFF0200) {
@@ -788,6 +807,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
                     .update(ps_d3d9.flags)
                     .update(ps_d3d9.ps1_texture_types)
                     .update(ps_d3d9.vs_outputs)
+                    .update(ps_d3d9.shadow_samplers)
                     .final();
   auto ps = ps_code->GetFunction(
       GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version
@@ -822,7 +842,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
     raster.cull_mode = render_states_[D3DRS_CULLMODE] == D3DCULL_CW    ? WMTCullModeFront
                        : render_states_[D3DRS_CULLMODE] == D3DCULL_CCW ? WMTCullModeBack
                                                                        : WMTCullModeNone;
-    raster.depth_clip_mode = WMTDepthClipModeClip;
+    // without z-buffering D3D9 doesn't clip against the depth range
+    bool z_buffered = depth_stencil_ && render_states_[D3DRS_ZENABLE] != D3DZB_FALSE;
+    raster.depth_clip_mode = z_buffered ? WMTDepthClipModeClip : WMTDepthClipModeClamp;
     raster.winding = WMTWindingClockwise;
     float bias_units = 1 << 24;
     if (depth_stencil_) {
@@ -844,9 +866,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
 
   {
     // D3D9 puts pixel centers on integer coordinates, Metal at +0.5
+    auto [min_z, max_z] = EffectiveDepthRange();
     WMTViewport viewport = {
-        viewport_.X + 0.5, viewport_.Y + 0.5, (double)viewport_.Width,
-        (double)viewport_.Height, viewport_.MinZ, viewport_.MaxZ
+        viewport_.X + 0.5, viewport_.Y + 0.5, (double)viewport_.Width, (double)viewport_.Height, min_z, max_z
     };
     MTLD3D9Surface *target = render_targets_[0] ? render_targets_[0].ptr() : depth_stencil_.ptr();
     LONG width = target->Desc().Width, height = target->Desc().Height;

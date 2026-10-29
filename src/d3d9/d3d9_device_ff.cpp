@@ -175,15 +175,15 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   if (s.blend_weights || s.indexed)
     StoreColumns(C + 4 * ff::VSProjection, transforms_[D3DTS_PROJECTION], 4);
 
-  float depth = viewport_.MaxZ - viewport_.MinZ;
-  float depth_scale = depth != 0.0f ? 1.0f / depth : 1.0f;
+  auto [min_z, max_z] = EffectiveDepthRange();
+  float depth_scale = 1.0f / (max_z - min_z);
   float *scale = C + 4 * ff::VSViewportScale, *offset = C + 4 * ff::VSViewportOffset;
   scale[0] = 2.0f / viewport_.Width;
   scale[1] = -2.0f / viewport_.Height;
   scale[2] = depth_scale;
   offset[0] = -1.0f - 2.0f * viewport_.X / viewport_.Width;
   offset[1] = 1.0f + 2.0f * viewport_.Y / viewport_.Height;
-  offset[2] = -viewport_.MinZ * depth_scale;
+  offset[2] = -min_z * depth_scale;
 
   StoreColor(C + 4 * ff::VSMaterialDiffuse, material_.Diffuse);
   StoreColor(C + 4 * ff::VSMaterialAmbient, material_.Ambient);

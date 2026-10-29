@@ -153,7 +153,7 @@ struct IfContext {
 
 class Decoder {
 public:
-  Decoder(SM50ShaderInternal &shader, ShaderData &data, const Version &version, uint32_t ps1_texture_types) :
+  Decoder(SM50ShaderInternal &shader, ShaderData &data, const Version &version, const DecodeOptions &options) :
       sh_(shader),
       d_(data),
       info_(shader.shader_info),
@@ -161,7 +161,8 @@ public:
       ps_(version.pixel),
       ps1_(version.pixel && version.major == 1),
       ps14_(ps1_ && version.minor >= 4),
-      ps1_texture_types_(ps1_texture_types) {}
+      ps1_texture_types_(options.ps1_texture_types),
+      shadow_samplers_(options.shadow_samplers) {}
 
   std::optional<std::string>
   run(Reader &reader) {
@@ -963,6 +964,15 @@ private:
     SrcOperandSampler sampler{.range_id = s, .index = s, .gather_channel = 0};
 
     auto emit_sample = [&](DstOperand o, bool) {
+      if (shadow_samplers_ & (1u << s)) {
+        SrcOperand at = coord;
+        if ((inst.controls & 0x3) == kTexLdProject) {
+          uint32_t t = scratch();
+          emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Div, temp_dst(t), coord, component(coord, 3)});
+          at = temp_src(t);
+        }
+        return shadow_compare(s, at, o);
+      }
       switch (inst.opcode) {
       case Opcode::TexLdl:
         emit(InstSampleLOD{o, coord, resource, sampler, component(coord, 3), {0, 0, 0}, std::nullopt});
@@ -1007,6 +1017,7 @@ private:
                                                         : ResourceType::Texture2D;
       srv.structure_stride = -1;
       srv.sampled = true;
+      srv.compared = shadow_samplers_ & (1u << s);
       info_.srvMap[s] = srv;
       SamplerInfo sampler;
       sampler.range = srv.range;
@@ -1015,8 +1026,22 @@ private:
     return {.range_id = s, .index = s, .read_swizzle = swz};
   }
 
+  // D3D9 samples depth textures as a comparison of the coordinate's z with the stored depth, in every channel
+  void
+  shadow_compare(uint32_t stage, SrcOperand coord, DstOperand out) {
+    auto resource = use_sampler(stage, replicate(0));
+    SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
+    uint32_t r = scratch();
+    emit(InstSampleCompare{
+        temp_dst(r, 0x1), coord, resource, sampler, component(coord, 2), {0, 0, 0}, std::nullopt, std::nullopt, false
+    });
+    emit(InstMov{ic(), out, temp_src(r, replicate(0))});
+  }
+
   void
   ps1_sample(uint32_t stage, SrcOperand coord, DstOperand out) {
+    if (shadow_samplers_ & (1u << stage))
+      return shadow_compare(stage, coord, out);
     auto resource = use_sampler(stage, swizzle_identity);
     SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
     emit(InstSample{out, coord, resource, sampler, {0, 0, 0}, std::nullopt, std::nullopt});
@@ -1514,6 +1539,7 @@ private:
   bool ps1_;
   bool ps14_;
   uint32_t ps1_texture_types_;
+  uint32_t shadow_samplers_;
   uint32_t matrix_row_ = 0;
   uint32_t matrix_stages_[3] = {};
   BasicBlock *cur_ = nullptr;
@@ -1538,15 +1564,15 @@ private:
 
 std::optional<std::string>
 decode_shader(
-    const uint32_t *tokens, size_t count, SM50ShaderInternal &shader, ShaderData &data, uint32_t Ps1TextureTypes
+    const uint32_t *tokens, size_t count, SM50ShaderInternal &shader, ShaderData &data, const DecodeOptions &Options
 ) {
   Reader reader(tokens, count);
   data.version = reader.version();
-  if (data.version.pixel && data.version.major == 1) {
-    data.ps1_tokens.assign(tokens, tokens + count);
-    data.ps1_texture_types = Ps1TextureTypes;
+  if (data.version.pixel) {
+    data.pixel_tokens.assign(tokens, tokens + count);
+    data.options = Options;
   }
-  Decoder decoder(shader, data, data.version, Ps1TextureTypes);
+  Decoder decoder(shader, data, data.version, Options);
   return decoder.run(reader);
 }
 
