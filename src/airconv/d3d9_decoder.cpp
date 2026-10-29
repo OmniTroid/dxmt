@@ -22,6 +22,7 @@
 #include "adt.hpp"
 #include <algorithm>
 #include <bit>
+#include <cfloat>
 #include <cstring>
 #include <format>
 #include <stack>
@@ -762,6 +763,7 @@ private:
       case Opcode::Rsq:
         op = FloatUnaryOp::Rsq;
         common(a).abs = true;
+        common(a).neg = false;
         break;
       case Opcode::Exp:
       case Opcode::ExpP:
@@ -770,6 +772,16 @@ private:
       default:
         op = FloatUnaryOp::Log2;
         common(a).abs = true;
+        common(a).neg = false;
+        break;
+      }
+      if (op == FloatUnaryOp::Rsq) {
+        // rsq of 0 is FLT_MAX rather than infinity on D3D9 hardware (Wine's visual fp_special_test)
+        uint32_t t = scratch();
+        emit(InstFloatUnaryOp{ic(), op, temp_dst(t, 0x1), a});
+        sat_write([&](DstOperand o, bool s) {
+          emit(InstFloatBinaryOp{ic(s), FloatBinaryOp::Min, o, temp_src(t, replicate(0)), imm_f(FLT_MAX)});
+        });
         break;
       }
       sat_write([&](DstOperand o, bool s) { emit(InstFloatUnaryOp{ic(s), op, o, a}); });
@@ -869,6 +881,8 @@ private:
       uint32_t t = scratch();
       emit(InstDotProduct{ic(), temp_dst(t, 0x1), a, a, 3});
       emit(InstFloatUnaryOp{ic(), FloatUnaryOp::Rsq, temp_dst(t, 0x1), temp_src(t, replicate(0))});
+      // a zero vector normalizes to 0, not NaN
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Min, temp_dst(t, 0x1), temp_src(t, replicate(0)), imm_f(FLT_MAX)});
       sat_write([&](DstOperand o, bool s) {
         emit(InstFloatBinaryOp{ic(s), FloatBinaryOp::Mul, o, a, temp_src(t, replicate(0))});
       });
