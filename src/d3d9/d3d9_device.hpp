@@ -286,7 +286,8 @@ private:
   bool BeginRenderPass();
   void UpdateRuntimeConstants();
   uint64_t PreAllocateArgumentBuffer(size_t Size, size_t Alignment);
-  bool PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &InstanceCount);
+  // only DrawIndexedPrimitive instances (D3DSTREAMSOURCE_INDEXEDDATA on stream 0)
+  bool PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, uint32_t &InstanceCount);
   void BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const float *FFConstants, UINT FFConstantCount);
   MTLD3D9ShaderCode *FixedFunctionShader(std::vector<DWORD> &&Bytecode, bool Pixel);
   MTLD3D9ShaderCode *FixedFunctionVS(float *Constants);
@@ -297,7 +298,7 @@ private:
   void ReleaseTextureBinding(BoundTexture &Binding);
   HRESULT DrawWithIndices(
       D3DPRIMITIVETYPE PrimitiveType, INT BaseVertexIndex, UINT StartIndex, UINT PrimitiveCount, Rc<Buffer> IndexBuffer,
-      UINT IndexOffset, D3DFORMAT IndexFormat
+      UINT IndexOffset, D3DFORMAT IndexFormat, bool Instanced = false
   );
   HRESULT UploadToRing(
       std::unique_ptr<MTLD3D9BufferStorage> &Ring, UINT &RingOffset, const void *pData, UINT Size, UINT Alignment,

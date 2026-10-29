@@ -682,7 +682,7 @@ MTLD3D9Device::GetClipPlane(DWORD Index, float *pPlane) {
 }
 
 bool
-MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &InstanceCount) {
+MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, uint32_t &InstanceCount) {
   InstanceCount = 1;
   if (!vertex_declaration_) {
     ERR_ONCE("D3D9: draw without a vertex declaration");
@@ -699,7 +699,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
   if (!vs_code || !ps_code)
     return false;
 
-  if (streams_[0].frequency & D3DSTREAMSOURCE_INDEXEDDATA)
+  if (Instanced && (streams_[0].frequency & D3DSTREAMSOURCE_INDEXEDDATA))
     InstanceCount = std::max(1u, streams_[0].frequency & 0x3FFFFFFF);
 
   std::vector<SM50_IA_INPUT_ELEMENT> elements;
@@ -973,7 +973,7 @@ MTLD3D9Device::UploadToRing(
 HRESULT
 MTLD3D9Device::DrawWithIndices(
     D3DPRIMITIVETYPE PrimitiveType, INT BaseVertexIndex, UINT StartIndex, UINT PrimitiveCount, Rc<Buffer> IndexBuffer,
-    UINT IndexOffset, D3DFORMAT IndexFormat
+    UINT IndexOffset, D3DFORMAT IndexFormat, bool Instanced
 ) {
   WMTPrimitiveType prim;
   WMTPrimitiveTopologyClass topology;
@@ -981,7 +981,7 @@ MTLD3D9Device::DrawWithIndices(
   if (!ToPrimitive(PrimitiveType, PrimitiveCount, prim, topology, count))
     return D3DERR_INVALIDCALL;
   uint32_t instances;
-  if (!PrepareDraw(topology, instances))
+  if (!PrepareDraw(topology, Instanced, instances))
     return D3D_OK;
 
   UINT index_size = IndexFormat == D3DFMT_INDEX32 ? 4 : 2;
@@ -1025,7 +1025,7 @@ MTLD3D9Device::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, U
   if (!ToPrimitive(PrimitiveType, PrimitiveCount, prim, topology, count))
     return D3DERR_INVALIDCALL;
   uint32_t instances;
-  if (!PrepareDraw(topology, instances))
+  if (!PrepareDraw(topology, false, instances))
     return D3D_OK;
   Emit([prim, StartVertex, count, instances](ArgumentEncodingContext &enc) {
     enc.bumpVisibilityResultOffset();
@@ -1065,10 +1065,12 @@ MTLD3D9Device::DrawIndexedPrimitive(
     Rc<Buffer> buffer;
     UINT offset;
     UploadToRing(up_indices_, up_index_offset_, list.data(), list.size() * 4, 4, buffer, offset);
-    return DrawWithIndices(D3DPT_TRIANGLELIST, BaseVertexIndex, 0, PrimitiveCount, buffer, offset, D3DFMT_INDEX32);
+    return DrawWithIndices(
+        D3DPT_TRIANGLELIST, BaseVertexIndex, 0, PrimitiveCount, buffer, offset, D3DFMT_INDEX32, true
+    );
   }
   return DrawWithIndices(
-      PrimitiveType, BaseVertexIndex, StartIndex, PrimitiveCount, index_buffer_->storage().buffer(), 0, format
+      PrimitiveType, BaseVertexIndex, StartIndex, PrimitiveCount, index_buffer_->storage().buffer(), 0, format, true
   );
 }
 
