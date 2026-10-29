@@ -259,7 +259,9 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
     if (s.pretransformed && tc.source >= 8)
       tc.source = ff::TexNone;
     DWORD flags = tss[D3DTSS_TEXTURETRANSFORMFLAGS];
-    tc.count = s.pretransformed ? 0 : std::min<DWORD>(flags & ~D3DTTFF_PROJECTED, 4);
+    // only COUNT2 to COUNT4 transform; COUNT1 and out-of-range counts pass the coordinate through
+    DWORD count = flags & ~D3DTTFF_PROJECTED;
+    tc.count = s.pretransformed || count < 2 || count > 4 ? 0 : count;
     tc.projected = flags & D3DTTFF_PROJECTED;
     if (tc.count)
       StoreColumns(C + 4 * (ff::VSTextureMatrixBase + 4 * i), transforms_[D3DTS_TEXTURE0 + i], 4);

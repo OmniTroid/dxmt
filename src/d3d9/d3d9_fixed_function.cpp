@@ -191,8 +191,8 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
     w.op(Opcode::Def, {Dst(RegisterType::Const, kIndexScale), std::bit_cast<DWORD>(3.0f), std::bit_cast<DWORD>(765.0f),
                        std::bit_cast<DWORD>(0.0f), std::bit_cast<DWORD>(0.0f)});
 
-  // r29 and r30 hold the tweened position and normal
-  DWORD pos = tween ? t(29) : in(0), nrm = tween && S.normal ? t(30) : in(1);
+  // r29 and r30 hold the tweened position and normal; untransformed vertices ignore the input w and use 1
+  DWORD pos = S.pretransformed ? in(0) : t(29), nrm = tween && S.normal ? t(30) : in(1);
   if (tween) {
     w.op(Opcode::Add, {r(29), in(13), Src(RegisterType::Input, 0, kXYZW, SrcModifier::Neg)});
     w.op(Opcode::Mad, {r(29), t(29), c(ff::VSMaterialPower, kYYYY), in(0)});
@@ -200,7 +200,11 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
       w.op(Opcode::Add, {r(30), in(14), Src(RegisterType::Input, 1, kXYZW, SrcModifier::Neg)});
       w.op(Opcode::Mad, {r(30), t(30), c(ff::VSMaterialPower, kYYYY), in(1)});
     }
+  } else if (!S.pretransformed) {
+    w.op(Opcode::Mov, {r(29, 0x7), in(0)});
   }
+  if (!S.pretransformed)
+    w.op(Opcode::Mov, {r(29, 0x8), Helper(kYYYY)});
 
   if (S.pretransformed) {
     w.op(Opcode::Mad, {r(0, 0x7), in(0), c(ff::VSViewportScale), c(ff::VSViewportOffset)});
@@ -351,17 +355,26 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
     constexpr uint32_t Coord = 20, Result = 21;
     if (tc.source < 8) {
       w.op(Opcode::Mov, {r(Coord), in(4 + tc.source)});
-      // D3D pads a transformed coordinate with 1 after its last component and 0 after that
+      // D3D pads a transformed coordinate with 1 after its last component and 0 after that, an untransformed one
+      // with 0, and a projected untransformed one divides by its last component
+      uint32_t size = std::max<uint32_t>(S.texcoord_size[tc.source], 1);
       if (tc.count) {
-        uint32_t size = S.texcoord_size[tc.source];
         if (size < 4)
           w.op(Opcode::Mov, {r(Coord, 1u << size), Helper(kYYYY)});
         if (size < 3)
           w.op(Opcode::Mov, {r(Coord, (0xFu << (size + 1)) & 0xF), Helper(kXXXX)});
+      } else {
+        if (size < 4)
+          w.op(Opcode::Mov, {r(Coord, (0xFu << size) & 0xF), Helper(kXXXX)});
+        if (tc.projected && size < 4)
+          w.op(Opcode::Mov, {r(Coord, 0x8), t(Coord, ((size - 1) * 0x55) & 0xFF)});
       }
     } else if (tc.source == ff::TexGenNormal) {
       w.op(Opcode::Mov, {r(Coord), t(N)});
-      w.op(Opcode::Mov, {r(Coord, 0x8), Helper(kYYYY)});
+      if (tc.count)
+        w.op(Opcode::Mov, {r(Coord, 0x8), Helper(kYYYY)});
+      else
+        w.op(Opcode::Mov, {r(Coord, 0x8), tc.projected ? t(N, kZZZZ) : Helper(kXXXX)});
     } else if (tc.source == ff::TexGenPosition) {
       w.op(Opcode::Mov, {r(Coord), t(P)});
     } else {
@@ -385,8 +398,10 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
     }
     uint32_t coord = Coord;
     if (tc.count) {
-      for (uint32_t k = 0; k < 4; k++)
+      for (uint32_t k = 0; k < tc.count; k++)
         w.op(Opcode::Dp4, {r(Result, 1u << k), t(Coord), c(ff::VSTextureMatrixBase + 4 * i + k)});
+      if (tc.count < 4)
+        w.op(Opcode::Mov, {r(Result, (0xFu << tc.count) & 0xF), Helper(kXXXX)});
       coord = Result;
     }
     if (tc.projected && tc.count > 1 && tc.count < 4)

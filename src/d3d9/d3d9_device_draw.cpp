@@ -649,19 +649,16 @@ MTLD3D9Device::UpdateRuntimeConstants() {
   c.fog_density = f(D3DRS_FOGDENSITY);
   c.fog_scale = c.fog_end != c.fog_start ? 1.0f / (c.fog_end - c.fog_start) : 0.0f;
   std::memcpy(c.clip_planes, clip_planes_.data(), sizeof(c.clip_planes));
-  auto [min_z, max_z] = EffectiveDepthRange();
-  c.depth_bias[0] = f(D3DRS_DEPTHBIAS) / (max_z - min_z);
+  c.depth_bias[0] = f(D3DRS_DEPTHBIAS);
   for (uint32_t i = 0; i < 8; i++) {
     auto &tss = texture_stage_states_[i];
     for (uint32_t k = 0; k < 4; k++)
       c.bump_env[i][k] = std::bit_cast<float>(tss[D3DTSS_BUMPENVMAT00 + k]);
     c.bump_luminance[i][0] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLSCALE]);
     c.bump_luminance[i][1] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLOFFSET]);
-    DWORD flags = tss[D3DTSS_TEXTURETRANSFORMFLAGS];
-    if (flags & D3DTTFF_PROJECTED) {
-      DWORD count = flags & ~D3DTTFF_PROJECTED;
-      c.projection[i][count ? std::min<DWORD>(count, 4) - 1 : 3] = 1.0f;
-    }
+    // the fixed-function vertex pipeline moves a COUNT2 or COUNT3 divisor into w
+    if (tss[D3DTSS_TEXTURETRANSFORMFLAGS] & D3DTTFF_PROJECTED)
+      c.projection[i][3] = 1.0f;
   }
   if (std::memcmp(&c, &runtime_constants_, sizeof(c))) {
     runtime_constants_ = c;
@@ -747,9 +744,6 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
   vs_d3d9.type = SM30_SHADER_D3D9;
   vs_d3d9.clip_plane_mask = render_states_[D3DRS_CLIPPLANEENABLE] & 0x3F;
   vs_d3d9.flags = points ? SM30_SHADER_FLAG_POINT_SIZE : 0;
-  // Metal scales constant bias by a resolution that depends on each primitive's depth for float formats
-  if (depth_stencil_ && render_states_[D3DRS_DEPTHBIAS])
-    vs_d3d9.flags |= SM30_SHADER_FLAG_DEPTH_BIAS;
 
   SM30_SHADER_D3D9_DATA ps_d3d9 = {};
   ps_d3d9.type = SM30_SHADER_D3D9;
@@ -824,6 +818,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
     if (!textures_[i].texture && (ps_code->reflection().SamplerSlotMask & (1u << i)))
       ps_d3d9.unbound_samplers |= 1u << i;
   ps_d3d9.flags |= SM30_SHADER_FLAG_VS_OUTPUTS;
+  // D3D9 biases after clipping, and Metal's own bias scales with each primitive's depth for float formats
+  if (depth_stencil_ && render_states_[D3DRS_DEPTHBIAS])
+    ps_d3d9.flags |= SM30_SHADER_FLAG_DEPTH_BIAS;
   std::copy(vs_code->outputs().begin(), vs_code->outputs().end(), ps_d3d9.vs_outputs);
   if (ps_code->bytecode()[0] < 0xFFFF0200) {
     for (uint32_t i = 0; i < 8; i++) {
