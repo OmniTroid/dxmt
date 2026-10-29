@@ -203,6 +203,11 @@ D3D9GetFormatLayout(WMT::Device Device, D3DFORMAT Format, D3D9_FORMAT_LAYOUT &La
     Layout = {2, 1};
     return true;
   }
+  // D3DFMT_NULL has no storage, but locking a lockable one returns memory with a pitch
+  if (desc.Flags & D3D9_FORMAT_NULL_RT) {
+    Layout = {1, 1};
+    return true;
+  }
   if (desc.DXGIFormat == DXGI_FORMAT_UNKNOWN)
     return false;
   MTL_DXGI_FORMAT_DESC metal;

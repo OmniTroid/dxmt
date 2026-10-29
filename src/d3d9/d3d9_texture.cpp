@@ -664,7 +664,7 @@ CreateD3D9Texture(MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC &Desc, IDirect
   }
 
   Rc<Texture> storage;
-  if (desc.Pool != D3DPOOL_SYSTEMMEM && desc.Pool != D3DPOOL_SCRATCH) {
+  if (desc.Pool != D3DPOOL_SYSTEMMEM && desc.Pool != D3DPOOL_SCRATCH && !(format.Flags & D3D9_FORMAT_NULL_RT)) {
     HRESULT hr = CreateD3D9TextureStorage(pDevice, desc, storage_levels, 1, storage);
     if (FAILED(hr))
       return hr;
