@@ -60,3 +60,8 @@ executable('d3d9_misc', ['d3d9_misc.cpp'],
   dependencies: [ lib_d3d9 ],
   link_args: [ '-mwindows' ],
 )
+
+executable('d3d9_fullscreen', ['d3d9_fullscreen.cpp'],
+  dependencies: [ lib_d3d9 ],
+  link_args: [ '-mwindows' ],
+)

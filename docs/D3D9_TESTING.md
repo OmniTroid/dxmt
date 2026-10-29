@@ -20,7 +20,7 @@ LLVM 15 (x86_64) is built into `toolchains/llvm` as described in [DEVELOPMENT.md
 tests/d3d9/run.sh toolchains/wine-cx/install
 ```
 
-Copies the Wine install to `toolchains/test/wine`, installs this tree's DLLs for both architectures, creates a fresh prefix and runs every `tests/d3d9` test. Each test prints `PASS`/`FAIL` lines and exits with its failure count.
+Syncs the Wine install to `toolchains/test/wine`, installs this tree's DLLs for both architectures, creates a fresh prefix and runs every `tests/d3d9` test. Each test prints `PASS`/`FAIL` lines and exits with its failure count. `D3D9_TEST_FULLSCREEN=1` adds `d3d9_fullscreen`, which takes over the display.
 
 The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU and compare it with a Python reference; see the README there.
 
@@ -39,7 +39,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - First prefix creation shows a Mono/Gecko install dialog and blocks forever headless. Set `WINEDLLOVERRIDES="mscoree,mshtml="`.
 - A newly added builtin DLL (like `winemetal.dll`) is only found once `wineboot -u` or a new prefix registers it.
 - A crashing test opens winedbg's crash dialog and the run hangs; `run.sh` sets `HKCU\Software\Wine\WineDbg\ShowCrashDialog=0` so the crash is printed and the run continues.
-- Run `wineserver -w` after `wineboot` and any setup command before the first test. Without it the first test process sat idle in a wait for 50-600 s while prefix setup finished (two `services.exe` were running); with it the whole suite takes about 40 s instead of 6.5 minutes. Measure with per-test timestamps before guessing: a pipe-based runner spread the same stall over several tests.
+- While the macOS screen is locked, Wine's first window (explorer.exe's desktop) can take minutes or never appear, so the first test sits idle; runs at night took up to 43 minutes. `run.sh` warns when the screen is locked and gives each test 180 s before reporting `TIMEOUT`. `wineserver -w` after setup also removed a smaller stall. Time each test before guessing: a pipe-based runner spread one stall over several tests, and recopying the runtime looked guilty but wasn't.
 - `wineserver -k` only stops the server for the current `WINEPREFIX`; set it explicitly so other Wine sessions are untouched.
 - Test executables need `-static` or they fail on missing `libstdc++-6.dll`/`libgcc_s_*.dll` (exit code 53).
 

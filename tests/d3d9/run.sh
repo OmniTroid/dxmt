@@ -8,18 +8,21 @@ root="$(pwd)"
 work="$root/toolchains/test"
 runtime="$work/wine"
 
-rm -rf "$runtime" "$work/pfx"
-mkdir -p "$work/logs"
-cp -Rc "$wine_install" "$runtime"
+rm -rf "$work/pfx"
+mkdir -p "$work/logs" "$runtime"
+rsync -a --delete --exclude '*-windows/d3d9.dll' --exclude '*-windows/d3d11.dll' --exclude '*-windows/d3d10core.dll' \
+  --exclude '*-windows/dxgi.dll' --exclude '*-windows/winemetal.dll' --exclude 'x86_64-unix/winemetal.so' \
+  "$wine_install/" "$runtime/"
+install_if_changed() { cmp -s "$1" "$2" || cp "$1" "$2"; }
 
 for arch in x86_64 i386; do
   build="$root/build"
   [ $arch = i386 ] && build="$root/build32"
   for dll in d3d9/d3d9 d3d11/d3d11 d3d10/d3d10core dxgi/dxgi winemetal/winemetal; do
-    cp "$build/src/$dll.dll" "$runtime/lib/wine/$arch-windows/"
+    install_if_changed "$build/src/$dll.dll" "$runtime/lib/wine/$arch-windows/$(basename "$dll").dll"
   done
 done
-cp "$root/build/src/winemetal/unix/winemetal.so" "$runtime/lib/wine/x86_64-unix/"
+install_if_changed "$root/build/src/winemetal/unix/winemetal.so" "$runtime/lib/wine/x86_64-unix/winemetal.so"
 
 export WINEPREFIX="$work/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" DXMT_LOG_PATH="$work/logs"
 "$runtime/bin/wine" wineboot -i > /dev/null 2>&1
@@ -28,13 +31,44 @@ export WINEPREFIX="$work/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" 
 # a test started while prefix setup is still settling can stall for minutes
 "$runtime/bin/wineserver" -w
 
+# While the screen is locked, macOS delays Wine's first window for minutes or indefinitely.
+python3 -I -c '
+import ctypes, ctypes.util, sys
+cg = ctypes.CDLL(ctypes.util.find_library("CoreGraphics"))
+cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+cg.CGSessionCopyCurrentDictionary.restype = ctypes.c_void_p
+cf.CFDictionaryGetValue.restype = ctypes.c_void_p
+cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+session = cg.CGSessionCopyCurrentDictionary()
+key = cf.CFStringCreateWithCString(None, b"CGSSessionScreenIsLocked", 0x08000100)
+sys.exit(0 if session and cf.CFDictionaryGetValue(session, key) else 1)
+' && echo "warning: the screen is locked; tests may time out"
+
+timeout=180
 failed=0
 for build in build build32; do
   for exe in "$root/$build"/tests/d3d9/d3d9_*.exe; do
     name="$(basename "$exe" .exe)"
     [ "$name" = d3d9_clear ] && continue
+    # takes over the display
+    [ "$name" = d3d9_fullscreen ] && [ "${D3D9_TEST_FULLSCREEN:-0}" != 1 ] && continue
     out="$work/logs/$build-$name.out"
-    "$runtime/bin/wine" "$exe" > "$out" 2>&1
+    "$runtime/bin/wine" "$exe" > "$out" 2>&1 &
+    pid=$!
+    for ((i = 0; i < timeout; i++)); do
+      kill -0 $pid 2>/dev/null || break
+      sleep 1
+    done
+    if kill -0 $pid 2>/dev/null; then
+      "$runtime/bin/wineserver" -k
+      wait $pid 2>/dev/null
+      echo "$build/$name: TIMEOUT after ${timeout}s"
+      failed=1
+      continue
+    fi
+    wait $pid
     result="$(grep -E '^(FAIL|[0-9]+ failure)' "$out")"
     echo "$build/$name: ${result:-no output}"
     echo "$result" | grep -q '^0 failure' || failed=1
