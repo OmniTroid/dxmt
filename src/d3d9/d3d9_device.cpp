@@ -296,6 +296,8 @@ MTLD3D9Device::GetAvailableTextureMem() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::EvictManagedResources() {
+  auto lock = Lock();
+  managed_epoch_++;
   return D3D_OK;
 }
 

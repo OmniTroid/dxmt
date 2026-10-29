@@ -92,12 +92,19 @@ public:
 
   Rc<StagingResource> EnsureShadow();
 
+  // swap chain back buffers keep their own refcount; texture levels forward theirs to the texture
+  void
+  KeepOwnRefcount() {
+    forward_refs_ = false;
+  }
+
 private:
   MTLD3D9Device *parent_;
   D3DSURFACE_DESC desc_;
   Rc<Texture> texture_;
   TextureViewKey view_;
   IUnknown *container_;
+  bool forward_refs_ = true;
   bool lockable_;
   uint32_t level_;
   uint32_t slice_;

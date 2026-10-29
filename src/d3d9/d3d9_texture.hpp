@@ -157,6 +157,7 @@ protected:
   DWORD lod_ = 0;
   bool mips_dirty_ = false;
   bool dirty_ = true;
+  uint64_t managed_epoch_ = 0;
   D3DBOX dirty_box_ = {0, 0, ~0u, ~0u, 0, ~0u};
   D3DTEXTUREFILTERTYPE autogen_filter_ = D3DTEXF_LINEAR;
   TextureViewKey sample_views_[2] = {};

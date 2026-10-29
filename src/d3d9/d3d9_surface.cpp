@@ -79,14 +79,14 @@ MTLD3D9Surface::QueryInterface(REFIID riid, void **ppvObject) {
 // Surfaces owned by a swapchain or texture share the container's lifetime.
 ULONG STDMETHODCALLTYPE
 MTLD3D9Surface::AddRef() {
-  if (container_)
+  if (container_ && forward_refs_)
     return container_->AddRef();
   return MTLD3D9Resource::AddRef();
 }
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Surface::Release() {
-  if (container_)
+  if (container_ && forward_refs_)
     return container_->Release();
   return MTLD3D9Resource::Release();
 }
@@ -134,14 +134,18 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
     return D3DERR_INVALIDCALL;
 
   RECT rect = {0, 0, (LONG)desc_.Width, (LONG)desc_.Height};
+  // Windows XP accepts invalid rects and points at their corner, and some games (C&C3) rely on it; the whole
+  // surface counts as written then
+  RECT origin = rect;
   if (pRect) {
-    if (pRect->left < 0 || pRect->top < 0 || pRect->right > rect.right || pRect->bottom > rect.bottom ||
-        pRect->left >= pRect->right || pRect->top >= pRect->bottom)
-      return D3DERR_INVALIDCALL;
+    origin = *pRect;
+    bool valid = pRect->left >= 0 && pRect->top >= 0 && pRect->right <= rect.right && pRect->bottom <= rect.bottom &&
+                 pRect->left < pRect->right && pRect->top < pRect->bottom;
     uint32_t mask = layout_.BlockSize - 1;
-    if ((pRect->left & mask) || (pRect->top & mask))
+    if (valid && ((pRect->left & mask) || (pRect->top & mask)))
       return D3DERR_INVALIDCALL;
-    rect = *pRect;
+    if (valid)
+      rect = *pRect;
   }
 
   auto shadow = EnsureShadow();
@@ -158,8 +162,8 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
 
   uint32_t pitch = shadow->bytesPerRow;
   pLockedRect->Pitch = pitch;
-  pLockedRect->pBits = (char *)data + (rect.top / layout_.BlockSize) * pitch +
-                       (rect.left / layout_.BlockSize) * layout_.BlockBytes;
+  pLockedRect->pBits = (char *)data + (ptrdiff_t)(origin.top / (LONG)layout_.BlockSize) * pitch +
+                       (ptrdiff_t)(origin.left / (LONG)layout_.BlockSize) * layout_.BlockBytes;
   locked_ = true;
   lock_flags_ = Flags;
   lock_rect_ = rect;
@@ -186,8 +190,15 @@ MTLD3D9Surface::MarkWritten() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::UnlockRect() {
-  if (!locked_)
+  if (!locked_) {
+    // unlocking an unlocked 2D texture level succeeds, unlike other surfaces
+    IDirect3DTexture9 *texture = nullptr;
+    if (container_ && SUCCEEDED(container_->QueryInterface(__uuidof(IDirect3DTexture9), (void **)&texture))) {
+      texture->Release();
+      return D3D_OK;
+    }
     return D3DERR_INVALIDCALL;
+  }
   locked_ = false;
   if (!(lock_flags_ & D3DLOCK_READONLY))
     MarkWritten();

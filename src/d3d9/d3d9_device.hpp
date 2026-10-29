@@ -248,6 +248,12 @@ public:
     return {min_z, max_z};
   }
 
+  // bumped by EvictManagedResources; managed textures re-upload everything when it changes
+  uint64_t
+  ManagedEpoch() const {
+    return managed_epoch_;
+  }
+
   bool
   IsRecordingStateBlock() const {
     return recording_ != nullptr;
@@ -351,6 +357,7 @@ private:
   uint32_t const_dirty_[2] = {15, 15};
   std::unique_ptr<MTLD3D9BufferStorage> const_buffers_[2][4];
   SM30_RUNTIME_CONSTANTS runtime_constants_ = {};
+  uint64_t managed_epoch_ = 0;
   std::array<std::array<float, 4>, caps::MaxClipPlanes> clip_planes_ = {};
 
   // indexed by D3DTRANSFORMSTATETYPE; world matrices start at 256

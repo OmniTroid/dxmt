@@ -329,10 +329,28 @@ MTLD3D9TextureBase<Base>::MarkMipsDirty() {
 template <typename Base>
 void
 MTLD3D9TextureBase<Base>::FlushManaged() {
-  if (desc_.Pool != D3DPOOL_MANAGED || !dirty_ || !texture_)
-    return;
+  // Drawing from a SYSTEMMEM texture samples its current memory whatever was marked dirty; it gets GPU storage on
+  // first use and uploads whole, and its dirty region stays for UpdateTexture
+  bool sysmem = desc_.Pool == D3DPOOL_SYSTEMMEM;
+  if (sysmem) {
+    if (!texture_ && FAILED(CreateD3D9TextureStorage(parent_, desc_, desc_.Levels, 1, texture_)))
+      return;
+  } else {
+    if (desc_.Pool != D3DPOOL_MANAGED || !texture_)
+      return;
+    // an eviction drops the GPU copy, so everything uploads again, including NO_DIRTY_UPDATE writes
+    if (managed_epoch_ != parent_->ManagedEpoch()) {
+      managed_epoch_ = parent_->ManagedEpoch();
+      AddDirtyRegion({0, 0, ~0u, ~0u, 0, ~0u});
+    }
+    if (!dirty_)
+      return;
+  }
   for (uint32_t level = 0; level < desc_.Levels; level++) {
     D3DBOX box = DirtyRegion(level);
+    if (sysmem)
+      box = {0, 0, std::max(1u, desc_.Width >> level), std::max(1u, desc_.Height >> level), 0,
+             std::max(1u, desc_.Depth >> level)};
     if (auto v = volume(level)) {
       parent_->CopyBufferToTexture(v->EnsureShadow(), v->layout(), texture_, level, 0, box);
       continue;
@@ -350,6 +368,8 @@ MTLD3D9TextureBase<Base>::FlushManaged() {
       parent_->CopyBufferToTexture(s->EnsureShadow(), s->layout(), texture_, level, face, aligned);
     }
   }
+  if (sysmem)
+    return;
   dirty_ = false;
   MarkMipsDirty();
 }
@@ -491,8 +511,17 @@ MTLD3D9Texture::UnlockRect(UINT Level) {
   return hr;
 }
 
+static bool
+ValidDirtyRect(const RECT &Rect, MTLD3D9Surface *pLevel0) {
+  auto &desc = pLevel0->Desc();
+  return Rect.left >= 0 && Rect.top >= 0 && Rect.left < Rect.right && Rect.top < Rect.bottom &&
+         Rect.right <= (LONG)desc.Width && Rect.bottom <= (LONG)desc.Height;
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::AddDirtyRect(const RECT *pDirtyRect) {
+  if (pDirtyRect && !ValidDirtyRect(*pDirtyRect, surface(0, 0)))
+    return D3DERR_INVALIDCALL;
   if (!pDirtyRect)
     AddDirtyRegion({0, 0, ~0u, ~0u, 0, ~0u});
   else
@@ -537,7 +566,7 @@ MTLD3D9CubeTexture::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::AddDirtyRect(D3DCUBEMAP_FACES FaceType, const RECT *pDirtyRect) {
-  if ((uint32_t)FaceType >= 6)
+  if ((uint32_t)FaceType >= 6 || (pDirtyRect && !ValidDirtyRect(*pDirtyRect, surface(FaceType, 0))))
     return D3DERR_INVALIDCALL;
   if (!pDirtyRect)
     AddDirtyRegion({0, 0, ~0u, ~0u, 0, ~0u});
