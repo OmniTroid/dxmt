@@ -69,10 +69,12 @@ MTLD3D9SwapChain::~MTLD3D9SwapChain() {
       wsi::leaveFullscreenMode(window_, &window_state_, true);
   }
   backbuffers_.clear();
-  if (native_view_) {
+  if (native_view_ || !overrides_.empty())
     parent_->WaitUntilGPUIdle();
+  for (auto &[window, target] : overrides_)
+    WMT::ReleaseMetalView(target.view);
+  if (native_view_)
     WMT::ReleaseMetalView(native_view_);
-  }
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -194,6 +196,30 @@ MTLD3D9SwapChain::CreateBackBuffers() {
   return D3D_OK;
 }
 
+// Presenting to another window (hDestWindowOverride) goes through a Metal view and presenter of its own.
+Rc<Presenter>
+MTLD3D9SwapChain::OverridePresenter(HWND Window) {
+  if (!wsi::isWindow(Window))
+    return nullptr;
+  auto &target = overrides_[Window];
+  if (!target.presenter) {
+    target.view = WMT::CreateMetalViewFromHWND((intptr_t)Window, parent_->GetMTLDevice(), target.layer);
+    if (!target.view) {
+      overrides_.erase(Window);
+      return nullptr;
+    }
+    target.presenter =
+        new Presenter(parent_->GetMTLDevice(), target.layer, parent_->queue().cmd_library, 1.0f, 1);
+  }
+  WMTPixelFormat format = D3D9GetPixelFormat(parent_->GetMTLDevice(), params_.BackBufferFormat);
+  if (target.presenter->changeLayerProperties(
+          (WMTPixelFormat)ORIGINAL_FORMAT(format), WMTColorSpaceSRGB, params_.BackBufferWidth,
+          params_.BackBufferHeight, params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1
+      ))
+    parent_->WaitUntilGPUIdle();
+  return target.presenter;
+}
+
 void
 MTLD3D9SwapChain::ApplyLayerProps() {
   WMTPixelFormat format = D3D9GetPixelFormat(parent_->GetMTLDevice(), params_.BackBufferFormat);
@@ -229,11 +255,12 @@ MTLD3D9SwapChain::Present(
   if (!presenter_ || backbuffers_.empty())
     return D3DERR_INVALIDCALL;
 
-  if (hDestWindowOverride && hDestWindowOverride != window_) {
-    WARN_ONCE("D3D9: Present window override is ignored");
-  }
+  HWND target = hDestWindowOverride ? hDestWindowOverride : window_;
+  Rc<Presenter> presenter = target == window_ ? presenter_ : OverridePresenter(target);
+  if (!presenter)
+    return D3DERR_INVALIDCALL;
 
-  if (wsi::isMinimized(window_)) {
+  if (wsi::isMinimized(target)) {
     parent_->FlushCommands();
     return parent_->IsExtended() ? S_PRESENT_OCCLUDED : D3D_OK;
   }
@@ -244,7 +271,7 @@ MTLD3D9SwapChain::Present(
   parent_->EndRenderPass();
   Rc<Texture> presented = backbuffers_[0]->texture();
   if (pSourceRect || pDestRect) {
-    HRESULT hr = ComposeRects(pSourceRect, pDestRect, presented);
+    HRESULT hr = ComposeRects(pSourceRect, pDestRect, target, presented);
     if (FAILED(hr))
       return hr;
   }
@@ -253,10 +280,11 @@ MTLD3D9SwapChain::Present(
   auto &queue = parent_->queue();
   auto chunk = queue.CurrentChunk();
   chunk->signal_frame_latency_fence_ = queue.CurrentFrameSeq();
-  presenter_->changeGammaRamp(gamma_enabled_ ? &gamma_lut_ : nullptr);
+  presenter->changeGammaRamp(gamma_enabled_ ? &gamma_lut_ : nullptr);
 
-  chunk->emitcc([backbuffer = std::move(presented), presenter = presenter_, vsync_duration,
-                 state = presenter_->synchronizeLayerProperties()](ArgumentEncodingContext &ctx) mutable {
+  auto state = presenter->synchronizeLayerProperties();
+  chunk->emitcc([backbuffer = std::move(presented), presenter = std::move(presenter), vsync_duration,
+                 state = std::move(state)](ArgumentEncodingContext &ctx) mutable {
     ctx.present(backbuffer, presenter, vsync_duration, state.metadata);
   });
   parent_->FlushCommands();
@@ -268,7 +296,7 @@ MTLD3D9SwapChain::Present(
 // Draws the source rect of the back buffer into the destination rect (window client coordinates) of a black
 // back-buffer-sized texture, which is presented instead.
 HRESULT
-MTLD3D9SwapChain::ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, Rc<Texture> &Out) {
+MTLD3D9SwapChain::ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, HWND Window, Rc<Texture> &Out) {
   auto &bb = backbuffers_[0]->Desc();
   if (bb.MultiSampleType != D3DMULTISAMPLE_NONE) {
     WARN_ONCE("D3D9: Present rects with a multisampled back buffer are ignored");
@@ -278,7 +306,7 @@ MTLD3D9SwapChain::ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, R
   if (pSourceRect)
     src = *pSourceRect;
   uint32_t window_width = bb.Width, window_height = bb.Height;
-  wsi::getWindowSize(window_, &window_width, &window_height);
+  wsi::getWindowSize(Window, &window_width, &window_height);
   RECT dst = {0, 0, (LONG)window_width, (LONG)window_height};
   if (pDestRect)
     dst = *pDestRect;

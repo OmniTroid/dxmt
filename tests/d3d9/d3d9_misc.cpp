@@ -143,6 +143,9 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     device->GetRenderTargetData(bb, bb_sys);
     check("additional back buffer renders", (read(bb_sys, 3, 3) & 0xFFFFFF) == 0x123456);
     check("additional chain presents", chain->Present(nullptr, nullptr, nullptr, nullptr, 0) == D3D_OK);
+    check("Present into another window", device->Present(nullptr, nullptr, second, nullptr) == D3D_OK);
+    check("Present into a destroyed window fails",
+          device->Present(nullptr, nullptr, (HWND)(ULONG_PTR)0xDEAD0, nullptr) == D3DERR_INVALIDCALL);
     bb_sys->Release();
     bb->Release();
     chain->Release();

@@ -23,6 +23,7 @@
 #include "com/com_pointer.hpp"
 #include "dxmt_presenter.hpp"
 #include "wsi_window.hpp"
+#include <unordered_map>
 #include <vector>
 
 namespace dxmt {
@@ -72,7 +73,14 @@ private:
   UINT SyncInterval() const;
   HRESULT CaptureFront(const Rc<Texture> &Source);
   HRESULT SetFullscreen(const D3DPRESENT_PARAMETERS &Params);
-  HRESULT ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, Rc<Texture> &Out);
+  HRESULT ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, HWND Window, Rc<Texture> &Out);
+  Rc<Presenter> OverridePresenter(HWND Window);
+
+  struct OverrideTarget {
+    WMT::Object view;
+    WMT::MetalLayer layer;
+    Rc<Presenter> presenter;
+  };
 
   MTLD3D9Device *parent_;
   D3DPRESENT_PARAMETERS params_;
@@ -91,6 +99,7 @@ private:
   Rc<Texture> front_;
   Rc<Texture> composed_;
   bool fullscreen_ = false;
+  std::unordered_map<HWND, OverrideTarget> overrides_;
   wsi::DXMTWindowState window_state_;
   bool keep_front_ = false;
 };
