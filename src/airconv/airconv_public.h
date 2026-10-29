@@ -288,7 +288,8 @@ struct SM30_SHADER_D3D9_DATA {
   /* ps_1_x declares no samplers: 2 bits per stage, 0 2D, 1 cube, 2 volume */
   uint32_t ps1_texture_types;
   uint32_t vs_outputs[7]; /* bit usage * 16 + usage index */
-  /* pixel shaders: samplers bound to depth textures, which D3D9 samples as a depth comparison against z */
+  /* pixel shaders: samplers bound to depth textures, which D3D9 samples as a depth comparison against z;
+     bit 16 + n marks sampler n as linearly filtered, which takes four comparisons (PCF) */
   uint32_t shadow_samplers;
   /* pixel shaders: AMD's FETCH4, samplers that return the 2x2 footprint's first channel instead of filtering */
   uint32_t fetch4_samplers;

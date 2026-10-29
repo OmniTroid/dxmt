@@ -1050,6 +1050,28 @@ private:
     auto resource = use_sampler(stage, swizzle_identity);
     SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
     uint32_t d = scratch(), pass = scratch();
+    if (shadow_samplers_ & (1u << (16 + stage))) {
+      // PCF: compare the bilinear footprint, gathered as (x0, y1), (x1, y1), (x1, y0), (x0, y0), then blend it
+      uint32_t size = scratch(), f = scratch();
+      emit(InstResourceInfo{temp_dst(size, 0x3), imm_u(0), resource, InstResourceInfo::M::none});
+      emit(InstFloatMAD{ic(), temp_dst(f, 0x3), coord, temp_src(size), imm_f(-0.5f)});
+      emit(InstFloatUnaryOp{ic(), FloatUnaryOp::Fraction, temp_dst(f, 0x3), temp_src(f)});
+      emit(InstGather{temp_dst(d), coord, resource, sampler, imm_u(0), std::nullopt});
+      emit(InstFloatCompare{
+          ic(), FloatComparison::GreaterEqual, temp_dst(pass, 0xF, OperandDataType::Integer), temp_src(d),
+          component(coord, 2)
+      });
+      emit(InstMovConditional{ic(), temp_dst(d), temp_src(pass, swizzle_identity, OperandDataType::Integer), imm_f(1.0f), imm_f(0.0f)});
+      uint32_t row = scratch();
+      // row.x = top (y0) row, row.y = bottom (y1) row, blended across x
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(row, 0x1), temp_src(d, replicate(2)), negate(temp_src(d, replicate(3)))});
+      emit(InstFloatMAD{ic(), temp_dst(row, 0x1), temp_src(row, replicate(0)), temp_src(f, replicate(0)), temp_src(d, replicate(3))});
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(row, 0x2), temp_src(d, replicate(1)), negate(temp_src(d, replicate(0)))});
+      emit(InstFloatMAD{ic(), temp_dst(row, 0x2), temp_src(row, replicate(1)), temp_src(f, replicate(0)), temp_src(d, replicate(0))});
+      emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Add, temp_dst(row, 0x4), temp_src(row, replicate(1)), negate(temp_src(row, replicate(0)))});
+      emit(InstFloatMAD{ic(), out, temp_src(row, replicate(2)), temp_src(f, replicate(1)), temp_src(row, replicate(0))});
+      return;
+    }
     emit(InstSample{temp_dst(d), coord, resource, sampler, {0, 0, 0}, std::nullopt, std::nullopt});
     emit(InstFloatCompare{
         ic(), FloatComparison::GreaterEqual, temp_dst(pass, 0x1, OperandDataType::Integer), temp_src(d, replicate(0)),

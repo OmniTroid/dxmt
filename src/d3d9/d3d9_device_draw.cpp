@@ -779,8 +779,11 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
       static_cast<IDirect3DCubeTexture9 *>(texture)->GetLevelDesc(0, &desc);
     D3D9_FORMAT_DESC format;
     if (D3D9QueryFormat(desc.Format, format) && (format.Flags & D3D9_FORMAT_DEPTH) &&
-        !(format.Flags & D3D9_FORMAT_SAMPLEABLE_DEPTH))
+        !(format.Flags & D3D9_FORMAT_SAMPLEABLE_DEPTH)) {
       shadow_samplers_ |= 1u << i;
+      if (sampler_states_[i][D3DSAMP_MAGFILTER] == D3DTEXF_LINEAR || sampler_states_[i][D3DSAMP_MINFILTER] == D3DTEXF_LINEAR)
+        shadow_samplers_ |= 1u << (16 + i);
+    }
   }
   ps_d3d9.shadow_samplers = shadow_samplers_;
   for (uint32_t i = 0; i < caps::MaxSamplersPS; i++) {
