@@ -63,6 +63,11 @@ MTLD3D9SwapChain::MTLD3D9SwapChain(MTLD3D9Device *pDevice, const D3DPRESENT_PARA
 }
 
 MTLD3D9SwapChain::~MTLD3D9SwapChain() {
+  if (fullscreen_) {
+    wsi::restoreDisplayMode(monitor_);
+    if (wsi::isWindow(window_))
+      wsi::leaveFullscreenMode(window_, &window_state_, true);
+  }
   backbuffers_.clear();
   if (native_view_) {
     parent_->WaitUntilGPUIdle();
@@ -117,13 +122,14 @@ MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
   if (params.BackBufferCount == 0)
     params.BackBufferCount = 1;
 
-  if (!params.Windowed)
-    WARN("D3D9: exclusive fullscreen is not implemented, presenting windowed");
 
   if (params.hDeviceWindow != window_)
     WARN("D3D9: changing the device window on Reset is not implemented");
 
   params.hDeviceWindow = window_;
+  HRESULT mode_hr = SetFullscreen(params);
+  if (FAILED(mode_hr))
+    return mode_hr;
   params_ = params;
   *pParams = params;
 
@@ -132,6 +138,32 @@ MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
     return hr;
 
   ApplyLayerProps();
+  return D3D_OK;
+}
+
+// Exclusive fullscreen switches the display to the back buffer size and covers the monitor with the window.
+HRESULT
+MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
+  if (Params.Windowed) {
+    if (!fullscreen_)
+      return D3D_OK;
+    wsi::restoreDisplayMode(monitor_);
+    wsi::leaveFullscreenMode(window_, &window_state_, true);
+    fullscreen_ = false;
+  } else {
+    monitor_ = wsi::getWindowMonitor(window_);
+    wsi::WsiMode mode = {
+        Params.BackBufferWidth, Params.BackBufferHeight, {Params.FullScreen_RefreshRateInHz, 1}, 32, false
+    };
+    if (!wsi::setWindowMode(monitor_, window_, mode))
+      return D3DERR_NOTAVAILABLE;
+    if (!fullscreen_ && !wsi::enterFullscreenMode(monitor_, window_, &window_state_, true))
+      return D3DERR_NOTAVAILABLE;
+    fullscreen_ = true;
+  }
+  wsi::WsiMode current;
+  if (wsi::getCurrentDisplayMode(monitor_, &current) && current.refreshRate.numerator && current.refreshRate.denominator)
+    refresh_rate_ = (double)current.refreshRate.numerator / (double)current.refreshRate.denominator;
   return D3D_OK;
 }
 

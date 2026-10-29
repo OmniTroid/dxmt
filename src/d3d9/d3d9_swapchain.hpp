@@ -22,6 +22,7 @@
 #include "d3d9_surface.hpp"
 #include "com/com_pointer.hpp"
 #include "dxmt_presenter.hpp"
+#include "wsi_window.hpp"
 #include <vector>
 
 namespace dxmt {
@@ -70,6 +71,7 @@ private:
   void ApplyLayerProps();
   UINT SyncInterval() const;
   HRESULT CaptureFront(const Rc<Texture> &Source);
+  HRESULT SetFullscreen(const D3DPRESENT_PARAMETERS &Params);
   HRESULT ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, Rc<Texture> &Out);
 
   MTLD3D9Device *parent_;
@@ -88,6 +90,8 @@ private:
   // a copy of each presented frame, kept once GetFrontBufferData has been called
   Rc<Texture> front_;
   Rc<Texture> composed_;
+  bool fullscreen_ = false;
+  wsi::DXMTWindowState window_state_;
   bool keep_front_ = false;
 };
 
