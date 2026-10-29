@@ -178,6 +178,15 @@ public:
     d_.final_bb = ret_main_;
     d_.copy_bb = copy;
 
+    // before vs_3_0, diffuse components the shader doesn't write read as 1
+    if (!ps_ && ver_.major < 3) {
+      record_legacy_output(reg::VSOutColorBase, Usage::Color, 0);
+      emit(InstMov{
+          ic(), DstOperandOutput{._ = {0xF, OperandDataType::Float}, .regid = reg::VSOutColorBase, .phase = kNoPhase},
+          imm_f(1.0f, 1.0f, 1.0f, 1.0f)
+      });
+    }
+
     d3d9bc::Instruction inst;
     while (!error_ && reader.next(inst)) {
       scratch_next_ = 0;
@@ -789,8 +798,8 @@ private:
     case Opcode::Cmp:
     case Opcode::Cnd: {
       SrcOperand a = src(p), b = src(p), c = src(p);
-      // a coissued cnd before ps_1_4 always selects the first value (Wine's cnd_test, matching hardware)
-      if (inst.opcode == Opcode::Cnd && ps1_ && !ps14_ && inst.coissue) {
+      // a coissued cnd before ps_1_4 always selects the first value unless it only writes alpha (Wine's cnd_test)
+      if (inst.opcode == Opcode::Cnd && ps1_ && !ps14_ && inst.coissue && d.mask() != 0x8) {
         sat_write([&](DstOperand o, bool s) { emit(InstMov{ic(s), o, b}); });
         break;
       }
