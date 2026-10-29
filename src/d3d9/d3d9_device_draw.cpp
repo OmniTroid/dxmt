@@ -1476,8 +1476,11 @@ MTLD3D9Device::SetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer9 *pStrea
   }
   auto &stream = streams_[StreamNumber];
   stream.buffer = static_cast<MTLD3D9VertexBuffer *>(pStreamData);
-  stream.offset = OffsetInBytes;
-  stream.stride = Stride;
+  // unbinding keeps the previous offset and stride
+  if (pStreamData) {
+    stream.offset = OffsetInBytes;
+    stream.stride = Stride;
+  }
   return D3D_OK;
 }
 

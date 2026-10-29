@@ -148,13 +148,14 @@ MTLD3D9Query::Ready() {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Query::GetData(void *pData, DWORD dwSize, DWORD dwGetDataFlags) {
   auto lock = parent_->Lock();
-  if (dwSize && (!pData || dwSize < GetDataSize()))
+  if (dwSize && !pData)
     return D3DERR_INVALIDCALL;
   if (state_ == State::Building)
-    return D3DERR_INVALIDCALL;
+    return S_FALSE;
+  // a smaller buffer gets the first dwSize bytes; a query never issued fills it with 0xdd
   if (state_ == State::Created && type_ != D3DQUERYTYPE_VCACHE) {
     if (dwSize)
-      std::memset(pData, 0, dwSize);
+      std::memset(pData, 0xdd, dwSize);
     return S_OK;
   }
 
@@ -169,33 +170,38 @@ MTLD3D9Query::GetData(void *pData, DWORD dwSize, DWORD dwGetDataFlags) {
   if (!dwSize)
     return S_OK;
 
+  union {
+    D3DDEVINFO_VCACHE vcache;
+    BOOL boolean;
+    DWORD dword;
+    UINT64 u64;
+  } result = {};
   uint64_t value = 0;
   switch (type_) {
-  case D3DQUERYTYPE_VCACHE: {
-    D3DDEVINFO_VCACHE info = {MAKEFOURCC('C', 'A', 'C', 'H'), 0, 0, 0};
-    std::memcpy(pData, &info, sizeof(info));
+  case D3DQUERYTYPE_VCACHE:
+    result.vcache = {MAKEFOURCC('C', 'A', 'C', 'H'), 0, 0, 0};
     break;
-  }
   case D3DQUERYTYPE_EVENT:
-    *(BOOL *)pData = TRUE;
+    result.boolean = TRUE;
     break;
   case D3DQUERYTYPE_TIMESTAMPDISJOINT:
-    *(BOOL *)pData = FALSE;
+    result.boolean = FALSE;
     break;
   case D3DQUERYTYPE_OCCLUSION:
     occlusion_->getValue(&value);
-    *(DWORD *)pData = (DWORD)value;
+    result.dword = (DWORD)value;
     break;
   case D3DQUERYTYPE_TIMESTAMP:
     timestamp_->getValue(&value);
-    *(UINT64 *)pData = value;
+    result.u64 = value;
     break;
   case D3DQUERYTYPE_TIMESTAMPFREQ:
-    *(UINT64 *)pData = 1'000'000'000;
+    result.u64 = 1'000'000'000;
     break;
   default:
     break;
   }
+  std::memcpy(pData, &result, std::min<DWORD>(dwSize, GetDataSize()));
   return S_OK;
 }
 

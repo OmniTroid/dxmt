@@ -88,7 +88,7 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   ts0->Issue(D3DISSUE_END);
   occlusion->Issue(D3DISSUE_BEGIN);
   DWORD samples = 0;
-  check("GetData on a building query fails", occlusion->GetData(&samples, sizeof(samples), 0) == D3DERR_INVALIDCALL);
+  check("GetData on a building query is not ready", occlusion->GetData(&samples, sizeof(samples), 0) == S_FALSE);
   quad(0, 0, 64, 64, 0.5f);
   occlusion->Issue(D3DISSUE_END);
   check("occlusion counts a full-screen quad", wait(occlusion, samples) == S_OK && samples == 64 * 64);
@@ -107,6 +107,17 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   occlusion->Issue(D3DISSUE_END);
   samples = 1234;
   check("empty occlusion query", wait(occlusion, samples) == S_OK && samples == 0);
+
+  // Wine's test_occlusion_query: END on a fresh query, BEGIN twice, then a draw
+  IDirect3DQuery9 *fresh = nullptr;
+  device->CreateQuery(D3DQUERYTYPE_OCCLUSION, &fresh);
+  fresh->Issue(D3DISSUE_END);
+  fresh->Issue(D3DISSUE_BEGIN);
+  fresh->Issue(D3DISSUE_BEGIN);
+  quad(0, 0, 64, 64, 0.2f);
+  fresh->Issue(D3DISSUE_END);
+  check("occlusion restarted by a second BEGIN", wait(fresh, samples) == S_OK && samples == 64 * 64);
+  fresh->Release();
 
   quad(0, 0, 64, 64, 0.1f);
   ts1->Issue(D3DISSUE_END);

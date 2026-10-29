@@ -42,6 +42,9 @@ public:
 
   ULONG STDMETHODCALLTYPE
   Release() override {
+    // implicit objects (back buffers, the implicit swap chain) start at 0, and releasing them there is a no-op
+    if (unlikely(!this->m_refCount))
+      return 0;
     uint32_t count = --this->m_refCount;
     if (unlikely(!count)) {
       IDirect3DDevice9Ex *device = device_;
@@ -85,7 +88,8 @@ public:
     if (Flags & D3DSPD_IUNKNOWN) {
       if (SizeOfData != sizeof(IUnknown *))
         return D3DERR_INVALIDCALL;
-      return FAILED(private_data_.setInterface(refguid, *reinterpret_cast<IUnknown *const *>(pData)))
+      // pData is the interface itself; SizeOfData is sizeof(IUnknown *)
+      return FAILED(private_data_.setInterface(refguid, static_cast<const IUnknown *>(pData)))
                  ? D3DERR_INVALIDCALL
                  : D3D_OK;
     }
