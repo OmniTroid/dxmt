@@ -67,6 +67,10 @@ private:
   uint64_t
   getNextWriteOffset(bool has_active_occlusion_queries) {
     if (has_active_occlusion_queries) {
+      // each draw counts into its own slot: one counter wraps at 2^32 samples on Apple GPUs (Wine's d3d9
+      // test_occlusion_query), and queries add up the slots between their begin and end
+      if (current_data_is_dirty)
+        next_offset++;
       current_data_is_dirty = true;
       return next_offset;
     }

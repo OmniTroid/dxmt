@@ -35,6 +35,8 @@ What DXMT's D3D9 work has learned about Metal, from Apple's headers and from exp
 - Multisampled render passes need pipelines with a matching `rasterSampleCount`, including internal blits.
 - Constant depth bias is in units of the minimum resolvable depth difference, which for float depth formats is 2^(e - 23) with e the exponent of the primitive's largest depth (the D3D10+ rule; Wine's test_depthbias fails with a fixed 2^24). Every D3D9 depth format but D16 is stored as float, so the pixel shader writes its depth plus D3DRS_DEPTHBIAS instead. Adding the bias to clip-space z in the vertex shader clipped geometry D3D9 keeps, because D3D9 biases after clipping (Wine's test_fog).
 - Primitive restart is always on for strips: index 0xFFFF (16-bit) or 0xFFFFFFFF (32-bit) ends the strip, with no switch to disable it. D3D9 has no restart, so 16-bit strips containing 0xFFFF are redrawn with 32-bit indices (Wine's test_max_index16).
+- Experiment: a counting visibility result slot wraps at 2^32 samples on Apple GPUs, though the buffer holds 64-bit values (65 draws of 8192x8192 read back 2^26). DXMT gives each draw inside an active query its own slot and sums them.
+- The render area is the smallest attachment: a depth buffer smaller than the color target clips every draw to its size. D3D9 draws the whole target, so such a depth buffer is left out of the pass.
 - Load actions only touch the render area (`renderTargetWidth`/`Height`), so a clear folded into a pass whose color target is smaller than the depth buffer leaves the rest uncleared. DXMT merges a clear into the following pass only when the pass covers the whole cleared texture.
 
 ## Building against a newer SDK
