@@ -100,10 +100,10 @@ New VS/PS variant structs, each with an `IOHelper` prologue/epilogue:
 All eight phases are implemented and covered by `tests/d3d9` and `tests/airconv_d3d9`. Wine's conformance suites run to the end; failures left (2026-10-29): visual 6, device 46, d3d9ex 10, stateblock 0 (`tests/d3d9/winetest.sh`). Not implemented:
 
 - Shared resources (`pSharedHandle` other than D3D9Ex user memory) and `D3DFMT_A1`, so `ComposeRects` fails.
-- YUY2/UYVY textures (offscreen surfaces work, converted on the CPU by StretchRect).
-- Draws with mismatched color and depth sample counts don't render.
 - D3D9On12 (`Direct3DCreate9On12`), and the ATI1N/ATI2N lock pitch AMD drivers report.
 - Not yet run against a real game.
+
+Matching native on purpose: no YUY2/UYVY textures (Windows drivers only offer YUV surfaces for StretchRect), and draws with mismatched color and depth sample counts don't render (as on NVIDIA; AMD draws them).
 
 ## Testing
 - `tests/d3d9/`: sample apps like `tests/dx11` (clear, triangle, FF lights, SM3 shading, UP draws, fans, point sprites, lock/discard).
