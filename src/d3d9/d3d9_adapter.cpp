@@ -288,6 +288,9 @@ MTLD3D9Adapter::CheckDeviceFormat(
       return D3DERR_NOTAVAILABLE;
     if (RType == D3DRTYPE_VOLUME || RType == D3DRTYPE_VOLUMETEXTURE)
       return D3DERR_NOTAVAILABLE;
+    // like native drivers, lockable depth formats aren't offered as textures
+    if ((desc.Flags & D3D9_FORMAT_LOCKABLE) && RType != D3DRTYPE_SURFACE)
+      return D3DERR_NOTAVAILABLE;
   } else if (is_depth && RType != D3DRTYPE_SURFACE && RType != D3DRTYPE_TEXTURE && RType != D3DRTYPE_CUBETEXTURE) {
     return D3DERR_NOTAVAILABLE;
   }

@@ -176,6 +176,12 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
       w.dcl(Usage::TexCoord, i, out(3 + i));
   if (S.fog_mode != ff::FogNone)
     w.dcl(Usage::Fog, 0, out(kFogOut, 0x1));
+  constexpr uint32_t kPSizeOut = 12;
+  bool psize = (S.point_size || S.point_scale) && !S.pretransformed;
+  if (S.point_size)
+    w.dcl(Usage::PSize, 0, Dst(RegisterType::Input, 16));
+  if (psize)
+    w.dcl(Usage::PSize, 0, out(kPSizeOut, 0x1));
   w.def_helper();
   w.op(Opcode::Def, {Dst(RegisterType::Const, kHelper2), std::bit_cast<DWORD>(1e-6f), std::bit_cast<DWORD>(-1.0f),
                      std::bit_cast<DWORD>(1.442695f), std::bit_cast<DWORD>(0.0f)});
@@ -412,6 +418,26 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
       }
     }
   }
+  if (psize) {
+    // the vertex's PSIZE or D3DRS_POINTSIZE, scaled by viewport height * sqrt(1 / (A + B d + C d^2))
+    constexpr uint32_t Size = 27;
+    if (S.point_size)
+      w.op(Opcode::Mov, {r(Size, 0x1), in(16, kXXXX)});
+    else
+      w.op(Opcode::Mov, {r(Size, 0x1), c(ff::VSPointScale, kWWWW)});
+    if (S.point_scale) {
+      if (S.point_size)
+        w.op(Opcode::Mul, {r(Size, 0x1), t(Size, kXXXX), c(ff::VSViewportScale, kWWWW)});
+      w.op(Opcode::Dp3, {r(28, 0x1), t(P), t(P)});
+      w.op(Opcode::Rsq, {r(28, 0x2), t(28, kXXXX)});
+      w.op(Opcode::Rcp, {r(28, 0x2), t(28, kYYYY)});
+      w.op(Opcode::Mad, {r(28, 0x4), c(ff::VSPointScale, kYYYY), t(28, kYYYY), c(ff::VSPointScale, kXXXX)});
+      w.op(Opcode::Mad, {r(28, 0x4), c(ff::VSPointScale, kZZZZ), t(28, kXXXX), t(28, kZZZZ)});
+      w.op(Opcode::Rsq, {r(28, 0x4), t(28, kZZZZ)});
+      w.op(Opcode::Mul, {r(Size, 0x1), t(Size, kXXXX), t(28, kZZZZ)});
+    }
+    w.op(Opcode::Mov, {out(kPSizeOut, 0x1), t(Size, kXXXX)});
+  }
   w.code.push_back(0x0000FFFF);
   return std::move(w.code);
 }
@@ -563,17 +589,21 @@ D3D9GenerateFixedFunctionPS(const D3D9FFPixelState &S) {
   for (uint32_t i = 0; i < stage_count; i++) {
     auto &stage = S.stages[i];
     bool alpha_enabled = stage.alpha_op != D3DTOP_DISABLE;
-    bool textured = UsesTexture(stage.color_op, stage.color_arg) ||
-                    (alpha_enabled && UsesTexture(stage.alpha_op, stage.alpha_arg));
-    // Like wined3d, a stage that reads an unbound texture passes the current color through.
-    if (textured && !stage.texture_type)
+    // An op that reads an unbound texture passes the current value through; the other op still runs.
+    bool color_skipped = !stage.texture_type && UsesTexture(stage.color_op, stage.color_arg);
+    bool alpha_skipped = !alpha_enabled || (!stage.texture_type && UsesTexture(stage.alpha_op, stage.alpha_arg));
+    if (color_skipped && alpha_skipped)
       continue;
-    if (textured)
+    if (stage.texture_type &&
+        (UsesTexture(stage.color_op, stage.color_arg) || (alpha_enabled && UsesTexture(stage.alpha_op, stage.alpha_arg))))
       w.op(Opcode::Tex, {Dst(RegisterType::Temp, 1), Src(RegisterType::Input, 2 + i), Src(RegisterType::Sampler, i)},
            stage.projected ? kTexLdProject : 0);
-    EmitStageOp(w, stage.color_op, stage.color_arg, i, 0x7);
-    if (stage.color_op != D3DTOP_DOTPRODUCT3) {
-      if (alpha_enabled)
+    if (color_skipped)
+      w.op(Opcode::Mov, {Dst(RegisterType::Temp, 5, 0x7), Temp(0)});
+    else
+      EmitStageOp(w, stage.color_op, stage.color_arg, i, 0x7);
+    if (color_skipped || stage.color_op != D3DTOP_DOTPRODUCT3) {
+      if (!alpha_skipped)
         EmitStageOp(w, stage.alpha_op, stage.alpha_arg, i, 0x8);
       else
         w.op(Opcode::Mov, {Dst(RegisterType::Temp, 5, 0x8), Temp(0)});

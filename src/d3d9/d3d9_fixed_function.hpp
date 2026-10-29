@@ -50,7 +50,9 @@ constexpr uint32_t VSProjection = VSWorldViewBlend + 3 * 4;
 // indexed blending reads WORLDMATRIX(0-8) * view through a0, three columns each
 constexpr uint32_t VSIndexedPalette = VSProjection + 4;
 constexpr uint32_t MaxIndexedMatrices = 9;
-constexpr uint32_t VSConstantCount = VSIndexedPalette + 3 * MaxIndexedMatrices;
+// D3DRS_POINTSCALE_A, B, C, D3DRS_POINTSIZE * viewport height
+constexpr uint32_t VSPointScale = VSIndexedPalette + 3 * MaxIndexedMatrices;
+constexpr uint32_t VSConstantCount = VSPointScale + 1;
 
 constexpr uint32_t PSTextureFactor = 0;
 constexpr uint32_t PSStageConstantBase = 1;
@@ -99,6 +101,8 @@ struct D3D9FFVertexState {
   bool tween;             // D3DVBF_TWEENING between POSITION0/1 and NORMAL0/1
   bool indexed;           // matrices picked by BLENDINDICES instead of WORLD0-3
   bool indices_d3dcolor;  // BLENDINDICES is D3DCOLOR, so its bytes load swizzled and normalized
+  bool point_size;        // the vertex carries PSIZE
+  bool point_scale;       // D3DRS_POINTSCALEENABLE
 };
 
 struct D3D9FFStage {

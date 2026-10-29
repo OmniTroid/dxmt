@@ -128,6 +128,9 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
       if (e.UsageIndex == 0)
         s.blend_weights = DeclTypeSize(e.Type);
       break;
+    case D3DDECLUSAGE_PSIZE:
+      s.point_size = e.UsageIndex == 0;
+      break;
     case D3DDECLUSAGE_BLENDINDICES:
       if (e.UsageIndex == 0) {
         has_indices = true;
@@ -147,6 +150,7 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   s.blend_weights = blend >= D3DVBF_1WEIGHTS && blend <= D3DVBF_3WEIGHTS ? std::min<uint32_t>(blend, s.blend_weights) : 0;
   s.indexed = render_states_[D3DRS_INDEXEDVERTEXBLENDENABLE] && has_indices &&
               (s.blend_weights || blend == D3DVBF_0WEIGHTS);
+  s.point_scale = render_states_[D3DRS_POINTSCALEENABLE];
   s.lighting = render_states_[D3DRS_LIGHTING];
   s.specular_lighting = render_states_[D3DRS_SPECULARENABLE];
   s.local_viewer = render_states_[D3DRS_LOCALVIEWER];
@@ -184,6 +188,12 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   offset[0] = -1.0f - 2.0f * viewport_.X / viewport_.Width;
   offset[1] = 1.0f + 2.0f * viewport_.Y / viewport_.Height;
   offset[2] = -min_z * depth_scale;
+  scale[3] = viewport_.Height;
+  float *point = C + 4 * ff::VSPointScale;
+  point[0] = std::bit_cast<float>(render_states_[D3DRS_POINTSCALE_A]);
+  point[1] = std::bit_cast<float>(render_states_[D3DRS_POINTSCALE_B]);
+  point[2] = std::bit_cast<float>(render_states_[D3DRS_POINTSCALE_C]);
+  point[3] = std::bit_cast<float>(render_states_[D3DRS_POINTSIZE]) * (s.point_scale ? viewport_.Height : 1.0f);
 
   StoreColor(C + 4 * ff::VSMaterialDiffuse, material_.Diffuse);
   StoreColor(C + 4 * ff::VSMaterialAmbient, material_.Ambient);

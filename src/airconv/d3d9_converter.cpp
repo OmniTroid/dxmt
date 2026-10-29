@@ -551,7 +551,8 @@ create_shader(
     shader->max_output_register = 4;
     shader->pso_valid_output_reg_mask = shader->d3d9->color_output_mask;
   } else {
-    shader->max_input_register = 16;
+    // vs_3_0 has 16 input registers; the generated fixed-function shader uses one more for PSIZE
+    shader->max_input_register = 32;
     shader->max_output_register = std::max(12u, reg::VSOutLegacyCount);
   }
   masks = define_argument_bindings(shader.get());

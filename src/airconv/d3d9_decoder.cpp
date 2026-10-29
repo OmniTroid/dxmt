@@ -506,6 +506,8 @@ private:
       break;
     }
     case RegisterType::AttrOut:
+      // vertex colors before vs_3_0 are clamped to [0, 1] before interpolation
+      result.saturate = true;
       record_legacy_output(reg::VSOutColorBase + n, Usage::Color, n);
       result.op = DstOperandOutput{
           ._ = {mask, OperandDataType::Float}, .regid = reg::VSOutColorBase + n, .phase = kNoPhase
