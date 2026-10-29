@@ -85,7 +85,8 @@ D3D9InitRenderStates(std::array<DWORD, 256> &rs, bool AutoDepthStencil) {
   rs[D3DRS_MULTISAMPLEMASK] = 0xFFFFFFFF;
   rs[D3DRS_PATCHEDGESTYLE] = D3DPATCHEDGE_DISCRETE;
   rs[D3DRS_DEBUGMONITORTOKEN] = D3DDMT_ENABLE;
-  rs[D3DRS_POINTSIZE_MAX] = FloatBits(64.0f);
+  // the default is the caps' MaxPointSize
+  rs[D3DRS_POINTSIZE_MAX] = FloatBits(256.0f);
   rs[D3DRS_INDEXEDVERTEXBLENDENABLE] = FALSE;
   rs[D3DRS_COLORWRITEENABLE] = 0xF;
   rs[D3DRS_TWEENFACTOR] = FloatBits(0.0f);

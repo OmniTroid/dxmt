@@ -75,6 +75,8 @@ private:
   void CaptureType(D3DSTATEBLOCKTYPE Type);
 
   MTLD3D9Device *parent_;
+  bool typed_ = false;
+  bool captured_ = false;
 
   std::array<DWORD, 256> render_states_ = {};
   std::bitset<256> render_state_mask_;

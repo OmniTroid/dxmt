@@ -58,7 +58,8 @@ MTLD3D9StateBlock::MTLD3D9StateBlock(MTLD3D9Device *pDevice) : MTLD3D9DeviceChil
 
 MTLD3D9StateBlock::MTLD3D9StateBlock(MTLD3D9Device *pDevice, D3DSTATEBLOCKTYPE Type) :
     MTLD3D9DeviceChild(pDevice),
-    parent_(pDevice) {
+    parent_(pDevice),
+    typed_(true) {
   CaptureType(Type);
   Capture();
 }
@@ -177,10 +178,16 @@ MTLD3D9StateBlock::Capture() {
     d->GetFVF(&fvf_);
   }
   for (uint32_t i = 0; i < caps::MaxStreams; i++) {
-    if (stream_mask_ & (1u << i))
+    if (stream_mask_ & (1u << i)) {
+      // as in native d3d9 (Wine's stateblock tests check it), Capture on a CreateStateBlock block keeps the
+      // stream offset it was created with
+      UINT offset = streams_[i].offset;
       CaptureObject(streams_[i].buffer, [&](IDirect3DVertexBuffer9 **p) {
         d->GetStreamSource(i, p, &streams_[i].offset, &streams_[i].stride);
       });
+      if (typed_ && captured_)
+        streams_[i].offset = offset;
+    }
     if (stream_freq_mask_ & (1u << i))
       d->GetStreamSourceFreq(i, &stream_freqs_[i]);
   }
@@ -209,6 +216,7 @@ MTLD3D9StateBlock::Capture() {
   for (uint32_t i = 0; i < caps::MaxClipPlanes; i++)
     if (clip_plane_mask_ & (1u << i))
       d->GetClipPlane(i, clip_planes_[i].data());
+  captured_ = true;
   return D3D_OK;
 }
 
