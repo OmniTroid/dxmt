@@ -299,6 +299,10 @@ MTLD3D9Device::FixedFunctionPS(float *C) {
     if (auto texture = textures_[i].texture)
       stage.texture_type = texture->GetType();
     StoreColor(C + 4 * (ff::PSStageConstantBase + i), (D3DCOLOR)tss[D3DTSS_CONSTANT]);
+    for (uint32_t k = 0; k < 4; k++)
+      C[4 * (ff::PSBumpMatrixBase + i) + k] = std::bit_cast<float>(tss[D3DTSS_BUMPENVMAT00 + k]);
+    C[4 * (ff::PSBumpLuminanceBase + i)] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLSCALE]);
+    C[4 * (ff::PSBumpLuminanceBase + i) + 1] = std::bit_cast<float>(tss[D3DTSS_BUMPENVLOFFSET]);
   }
   s.specular = render_states_[D3DRS_SPECULARENABLE];
   StoreColor(C + 4 * ff::PSTextureFactor, (D3DCOLOR)render_states_[D3DRS_TEXTUREFACTOR]);

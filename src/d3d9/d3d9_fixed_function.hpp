@@ -56,7 +56,10 @@ constexpr uint32_t VSConstantCount = VSPointScale + 1;
 
 constexpr uint32_t PSTextureFactor = 0;
 constexpr uint32_t PSStageConstantBase = 1;
-constexpr uint32_t PSConstantCount = 16;
+// c15 is defined by the shader
+constexpr uint32_t PSBumpMatrixBase = 16;    // D3DTSS_BUMPENVMAT00, 01, 10, 11
+constexpr uint32_t PSBumpLuminanceBase = 24; // D3DTSS_BUMPENVLSCALE, D3DTSS_BUMPENVLOFFSET
+constexpr uint32_t PSConstantCount = 32;
 
 constexpr uint32_t MaxStages = 8;
 constexpr uint32_t MaxLights = 8;

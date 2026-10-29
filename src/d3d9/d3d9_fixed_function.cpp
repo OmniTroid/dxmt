@@ -586,8 +586,20 @@ D3D9GenerateFixedFunctionPS(const D3D9FFPixelState &S) {
 
   w.op(Opcode::Mov, {Dst(RegisterType::Temp, 0), Src(RegisterType::Input, 0)});
   w.op(Opcode::Mov, {Dst(RegisterType::Temp, 2), Helper(kXXXX)});
+  // a BUMPENVMAP stage samples (du, dv[, l]) into r6 and offsets the next stage's texture coordinates
+  int bump = -1;
+  bool bump_luminance = false;
   for (uint32_t i = 0; i < stage_count; i++) {
     auto &stage = S.stages[i];
+    if (stage.color_op == D3DTOP_BUMPENVMAP || stage.color_op == D3DTOP_BUMPENVMAPLUMINANCE) {
+      if (stage.texture_type) {
+        w.op(Opcode::Tex, {Dst(RegisterType::Temp, 6), Src(RegisterType::Input, 2 + i), Src(RegisterType::Sampler, i)});
+        bump = i;
+        bump_luminance = stage.color_op == D3DTOP_BUMPENVMAPLUMINANCE;
+      }
+      continue;
+    }
+    bool bumped = bump >= 0 && (uint32_t)bump + 1 == i;
     bool alpha_enabled = stage.alpha_op != D3DTOP_DISABLE;
     // An op that reads an unbound texture passes the current value through; the other op still runs.
     bool color_skipped = !stage.texture_type && UsesTexture(stage.color_op, stage.color_arg);
@@ -595,9 +607,23 @@ D3D9GenerateFixedFunctionPS(const D3D9FFPixelState &S) {
     if (color_skipped && alpha_skipped)
       continue;
     if (stage.texture_type &&
-        (UsesTexture(stage.color_op, stage.color_arg) || (alpha_enabled && UsesTexture(stage.alpha_op, stage.alpha_arg))))
-      w.op(Opcode::Tex, {Dst(RegisterType::Temp, 1), Src(RegisterType::Input, 2 + i), Src(RegisterType::Sampler, i)},
-           stage.projected ? kTexLdProject : 0);
+        (UsesTexture(stage.color_op, stage.color_arg) || (alpha_enabled && UsesTexture(stage.alpha_op, stage.alpha_arg)))) {
+      if (bumped) {
+        uint32_t matrix = ff::PSBumpMatrixBase + bump, luminance = ff::PSBumpLuminanceBase + bump;
+        w.op(Opcode::Mov, {Dst(RegisterType::Temp, 7), Src(RegisterType::Input, 2 + i)});
+        w.op(Opcode::Mad, {Dst(RegisterType::Temp, 7, 0x3), Temp(6, kXXXX), Src(RegisterType::Const, matrix, 0x44), Temp(7)});
+        w.op(Opcode::Mad, {Dst(RegisterType::Temp, 7, 0x3), Temp(6, kYYYY), Src(RegisterType::Const, matrix, 0xEE), Temp(7)});
+        w.op(Opcode::Tex, {Dst(RegisterType::Temp, 1), Temp(7), Src(RegisterType::Sampler, i)});
+        if (bump_luminance) {
+          w.op(Opcode::Mad, {Dst(RegisterType::Temp, 8, 0x1, true), Temp(6, kZZZZ), Src(RegisterType::Const, luminance, kXXXX),
+                             Src(RegisterType::Const, luminance, kYYYY)});
+          w.op(Opcode::Mul, {Dst(RegisterType::Temp, 1), Temp(1), Temp(8, kXXXX)});
+        }
+      } else {
+        w.op(Opcode::Tex, {Dst(RegisterType::Temp, 1), Src(RegisterType::Input, 2 + i), Src(RegisterType::Sampler, i)},
+             stage.projected ? kTexLdProject : 0);
+      }
+    }
     if (color_skipped)
       w.op(Opcode::Mov, {Dst(RegisterType::Temp, 5, 0x7), Temp(0)});
     else
