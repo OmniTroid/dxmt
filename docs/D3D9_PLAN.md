@@ -99,7 +99,6 @@ New VS/PS variant structs, each with an `IOHelper` prologue/epilogue:
 
 All eight phases are implemented and covered by `tests/d3d9` and `tests/airconv_d3d9`. Wine's conformance suites run to the end; failures left (2026-10-29): visual 6, device 46, d3d9ex 10, stateblock 0 (`tests/d3d9/winetest.sh`). Not implemented:
 
-- `ProcessVertices` with a vertex shader (fixed-function only).
 - Shared resources (`pSharedHandle` other than D3D9Ex user memory) and `D3DFMT_A1`, so `ComposeRects` fails.
 - YUY2/UYVY textures (offscreen surfaces work, converted on the CPU by StretchRect).
 - Draws with mismatched color and depth sample counts don't render.
