@@ -937,10 +937,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
     raster.cull_mode = render_states_[D3DRS_CULLMODE] == D3DCULL_CW    ? WMTCullModeFront
                        : render_states_[D3DRS_CULLMODE] == D3DCULL_CCW ? WMTCullModeBack
                                                                        : WMTCullModeNone;
-    // pretransformed vertices aren't clipped against the depth range without z-buffering
-    bool z_buffered = depth_stencil_ && render_states_[D3DRS_ZENABLE] != D3DZB_FALSE;
-    bool pretransformed = positiont;
-    raster.depth_clip_mode = z_buffered || !pretransformed ? WMTDepthClipModeClip : WMTDepthClipModeClamp;
+    // without D3DPMISCCAPS_CLIPTLVERTS pretransformed vertices aren't clipped against the depth range
+    // (Wine's visual z_range_test, depth_clamp_test)
+    raster.depth_clip_mode = positiont ? WMTDepthClipModeClamp : WMTDepthClipModeClip;
     raster.winding = WMTWindingClockwise;
     raster.depth_bias = 0.0f;
     raster.scole_scale = std::bit_cast<float>(render_states_[D3DRS_SLOPESCALEDEPTHBIAS]);
