@@ -207,6 +207,18 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   for (IDirect3DSurface9 *s : {sys, rt, rt_sys, front, cursor})
     if (s)
       s->Release();
+
+  D3DPRESENT_PARAMETERS moved = pp;
+  moved.hDeviceWindow = second;
+  check("Reset onto another window", SUCCEEDED(device->Reset(&moved)));
+  IDirect3DSwapChain9 *implicit = nullptr;
+  D3DPRESENT_PARAMETERS got_pp = {};
+  device->GetSwapChain(0, &implicit);
+  implicit->GetPresentParameters(&got_pp);
+  implicit->Release();
+  check("the swap chain follows the window", got_pp.hDeviceWindow == second);
+  device->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF404040, 1.0f, 0);
+  check("Present after moving windows", device->Present(nullptr, nullptr, nullptr, nullptr) == D3D_OK);
   device->Release();
   d3d->Release();
   printf("%d failure(s)\n", failures);

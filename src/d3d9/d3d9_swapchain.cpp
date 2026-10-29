@@ -77,6 +77,30 @@ MTLD3D9SwapChain::~MTLD3D9SwapChain() {
     WMT::ReleaseMetalView(native_view_);
 }
 
+// Moves presentation to another window: a new Metal view and presenter, leaving fullscreen on the old one.
+HRESULT
+MTLD3D9SwapChain::AttachWindow(HWND Window) {
+  if (!wsi::isWindow(Window))
+    return D3DERR_INVALIDCALL;
+  WMT::MetalLayer layer;
+  WMT::Object view = WMT::CreateMetalViewFromHWND((intptr_t)Window, parent_->GetMTLDevice(), layer);
+  if (!view)
+    return D3DERR_NOTAVAILABLE;
+  if (fullscreen_) {
+    wsi::restoreDisplayMode(monitor_);
+    wsi::leaveFullscreenMode(window_, &window_state_, true);
+    fullscreen_ = false;
+  }
+  parent_->WaitUntilGPUIdle();
+  WMT::ReleaseMetalView(native_view_);
+  native_view_ = view;
+  layer_weak_ = layer;
+  window_ = Window;
+  monitor_ = wsi::getWindowMonitor(Window);
+  presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, 1);
+  return D3D_OK;
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9SwapChain::QueryInterface(REFIID riid, void **ppvObject) {
   if (!ppvObject)
@@ -101,6 +125,11 @@ MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
   D3DPRESENT_PARAMETERS params = *pParams;
   if (!params.hDeviceWindow)
     params.hDeviceWindow = window_;
+  if (params.hDeviceWindow != window_) {
+    HRESULT hr = AttachWindow(params.hDeviceWindow);
+    if (FAILED(hr))
+      return hr;
+  }
 
   if (params.Windowed && (params.BackBufferWidth == 0 || params.BackBufferHeight == 0)) {
     uint32_t width = 0, height = 0;
@@ -124,11 +153,6 @@ MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
   if (params.BackBufferCount == 0)
     params.BackBufferCount = 1;
 
-
-  if (params.hDeviceWindow != window_)
-    WARN("D3D9: changing the device window on Reset is not implemented");
-
-  params.hDeviceWindow = window_;
   HRESULT mode_hr = SetFullscreen(params);
   if (FAILED(mode_hr))
     return mode_hr;

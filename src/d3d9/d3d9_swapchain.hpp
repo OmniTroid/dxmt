@@ -75,6 +75,7 @@ private:
   HRESULT SetFullscreen(const D3DPRESENT_PARAMETERS &Params);
   HRESULT ComposeRects(const RECT *pSourceRect, const RECT *pDestRect, HWND Window, Rc<Texture> &Out);
   Rc<Presenter> OverridePresenter(HWND Window);
+  HRESULT AttachWindow(HWND Window);
 
   struct OverrideTarget {
     WMT::Object view;
