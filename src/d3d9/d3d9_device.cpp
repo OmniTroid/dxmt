@@ -73,7 +73,7 @@ MTLD3D9Device::Initialize(D3DPRESENT_PARAMETERS *pParams, D3DDISPLAYMODEEX *pFul
   if (FAILED(hr))
     return hr;
 
-  return ResetState(pParams);
+  return ResetState(pParams, true);
 }
 
 HRESULT
@@ -126,7 +126,7 @@ MTLD3D9Device::ClearBindings() {
 }
 
 HRESULT
-MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams) {
+MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams, bool Initial) {
   HRESULT hr = CreateAutoDepthStencil(*pParams);
   if (FAILED(hr))
     return hr;
@@ -134,10 +134,20 @@ MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams) {
   render_targets_ = {};
   render_targets_[0] = swapchain_->BackBuffer(0);
   depth_stencil_ = auto_depth_stencil_;
+  float min_z = viewport_.MinZ, max_z = viewport_.MaxZ;
   SetDefaultViewport(render_targets_[0].ptr());
+  if (extended_ && !Initial) {
+    viewport_.MinZ = min_z;
+    viewport_.MaxZ = max_z;
+  }
+  recording_ = nullptr;
+  in_scene_ = false;
+  lost_ = false;
+  // D3D9Ex Reset keeps the rest of the device state, bound resources included (Wine's d3d9ex test_reset)
+  if (extended_ && !Initial)
+    return D3D_OK;
   D3D9InitRenderStates(render_states_, pParams->EnableAutoDepthStencil);
   D3D9InitTextureStageStates(texture_stage_states_);
-  recording_ = nullptr;
   for (auto &m : transforms_)
     m = {{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}}};
   material_ = {};
@@ -153,8 +163,6 @@ MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams) {
     ss[D3DSAMP_MAXANISOTROPY] = 1;
   }
   ClearBindings();
-  in_scene_ = false;
-  lost_ = false;
   return D3D_OK;
 }
 
@@ -411,7 +419,7 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
 
   HRESULT hr = swapchain_->Reset(pPresentationParameters);
   if (SUCCEEDED(hr))
-    hr = ResetState(pPresentationParameters);
+    hr = ResetState(pPresentationParameters, false);
   if (FAILED(hr)) {
     lost_ = true;
     return D3DERR_INVALIDCALL;
@@ -487,12 +495,22 @@ MTLD3D9Device::CreateTexture(
 ) {
   auto lock = Lock();
   InitReturnPtr(ppTexture);
-  if (pSharedHandle) {
-    ERR("IDirect3DDevice9::CreateTexture: shared textures are not implemented");
+  // D3D9Ex: a single-level system memory texture on app memory
+  bool user_memory = pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM && Levels == 1;
+  if (pSharedHandle && !user_memory) {
+    if (Pool != D3DPOOL_SYSTEMMEM && Pool != D3DPOOL_SCRATCH)
+      ERR("IDirect3DDevice9::CreateTexture: shared textures are not implemented");
     return D3DERR_INVALIDCALL;
   }
   D3D9_TEXTURE_DESC desc = {D3DRTYPE_TEXTURE, Width, Height, 1, Levels, Usage, Format, Pool};
-  return CreateD3D9Texture(this, desc, reinterpret_cast<IDirect3DBaseTexture9 **>(ppTexture));
+  HRESULT hr = CreateD3D9Texture(this, desc, reinterpret_cast<IDirect3DBaseTexture9 **>(ppTexture));
+  if (SUCCEEDED(hr) && user_memory) {
+    IDirect3DSurface9 *level = nullptr;
+    (*ppTexture)->GetSurfaceLevel(0, &level);
+    static_cast<MTLD3D9Surface *>(level)->UseUserMemory(*pSharedHandle);
+    level->Release();
+  }
+  return hr;
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -534,6 +552,8 @@ MTLD3D9Device::CreateVertexBuffer(
 ) {
   auto lock = Lock();
   InitReturnPtr(ppVertexBuffer);
+  if (pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM)
+    return D3DERR_NOTAVAILABLE;
   if (!ppVertexBuffer || !Length || pSharedHandle || !ValidBufferPoolAndUsage(Pool, Usage))
     return D3DERR_INVALIDCALL;
   D3DVERTEXBUFFER_DESC desc = {D3DFMT_VERTEXDATA, D3DRTYPE_VERTEXBUFFER, Usage, Pool, Length, FVF};
@@ -548,6 +568,8 @@ MTLD3D9Device::CreateIndexBuffer(
 ) {
   auto lock = Lock();
   InitReturnPtr(ppIndexBuffer);
+  if (pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM)
+    return D3DERR_NOTAVAILABLE;
   if (!ppIndexBuffer || !Length || pSharedHandle || !ValidBufferPoolAndUsage(Pool, Usage))
     return D3DERR_INVALIDCALL;
   if (Format != D3DFMT_INDEX16 && Format != D3DFMT_INDEX32)
@@ -719,8 +741,10 @@ MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
 ) {
   auto lock = Lock();
   InitReturnPtr(ppSurface);
-  if (pSharedHandle) {
-    ERR("IDirect3DDevice9::CreateOffscreenPlainSurface: shared surfaces are not implemented");
+  bool user_memory = pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM;
+  if (pSharedHandle && !user_memory) {
+    if (Pool != D3DPOOL_SYSTEMMEM && Pool != D3DPOOL_SCRATCH)
+      ERR("IDirect3DDevice9::CreateOffscreenPlainSurface: shared surfaces are not implemented");
     return D3DERR_INVALIDCALL;
   }
   if (Pool == D3DPOOL_MANAGED)
@@ -738,7 +762,10 @@ MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
   desc.MultiSampleType = D3DMULTISAMPLE_NONE;
   desc.Width = Width;
   desc.Height = Height;
-  return CreateStandaloneSurface(this, desc, true, ppSurface);
+  HRESULT hr = CreateStandaloneSurface(this, desc, true, ppSurface);
+  if (SUCCEEDED(hr) && user_memory)
+    static_cast<MTLD3D9Surface *>(*ppSurface)->UseUserMemory(*pSharedHandle);
+  return hr;
 }
 
 static D3DBOX
@@ -780,6 +807,7 @@ MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSu
   CopyTextureToBuffer(
       src->texture(), src->level(), src->slice(), RectToBox(nullptr, sd), dst->Shadow(), dst->layout()
   );
+  dst->SyncToUserMemory();
   return D3D_OK;
 }
 
@@ -1296,6 +1324,11 @@ MTLD3D9Device::CheckDeviceState(HWND hDestinationWindow) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLAYMODEEX *pFullscreenDisplayMode) {
+  // fullscreen needs the display mode, and the back buffer has its size (Wine's d3d9ex test_reset_ex)
+  if (pPresentationParameters && !pPresentationParameters->Windowed &&
+      (!pFullscreenDisplayMode || pPresentationParameters->BackBufferWidth != pFullscreenDisplayMode->Width ||
+       pPresentationParameters->BackBufferHeight != pFullscreenDisplayMode->Height))
+    return D3DERR_INVALIDCALL;
   return Reset(pPresentationParameters);
 }
 

@@ -146,6 +146,9 @@ MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
       params.BackBufferHeight = std::max(height, 1u);
   }
 
+  if (!params.Windowed && (!params.BackBufferWidth || !params.BackBufferHeight))
+    return D3DERR_INVALIDCALL;
+
   if (params.BackBufferFormat == D3DFMT_UNKNOWN && params.Windowed)
     params.BackBufferFormat = D3DFMT_X8R8G8B8;
 
@@ -207,6 +210,9 @@ MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
 
 HRESULT
 MTLD3D9SwapChain::CreateBackBuffers() {
+  // replaced back buffers an app still holds belong to the device from now on
+  for (auto &backbuffer : backbuffers_)
+    backbuffer->DetachFromContainer();
   backbuffers_.clear();
 
   D3DSURFACE_DESC desc = {};
@@ -455,6 +461,7 @@ MTLD3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
   }
   D3DBOX box = {0, 0, bb.Width, bb.Height, 0, 1};
   parent_->CopyTextureToBuffer(source, 0, 0, box, dst->Shadow(), dst->layout());
+  dst->SyncToUserMemory();
   return D3D_OK;
 }
 

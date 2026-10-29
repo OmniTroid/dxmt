@@ -123,6 +123,24 @@ public:
     forward_refs_ = false;
   }
 
+  void
+  DetachFromContainer() {
+    container_ = nullptr;
+  }
+
+  // D3D9Ex system memory resources created on app memory (pSharedHandle): locks return it with a tight pitch,
+  // and the staging copy the GPU uses is refreshed from it and written back after readbacks
+  void
+  UseUserMemory(void *Memory) {
+    user_memory_ = Memory;
+    shared_ = nullptr;
+  }
+  bool
+  HasUserMemory() const {
+    return user_memory_;
+  }
+  void SyncToUserMemory();
+
 private:
   MTLD3D9Device *parent_;
   D3DSURFACE_DESC desc_;
@@ -136,6 +154,12 @@ private:
   D3D9_FORMAT_LAYOUT layout_ = {0, 1};
   Rc<StagingResource> shadow_;
   std::shared_ptr<D3D9SharedShadow> shared_;
+  void *user_memory_ = nullptr;
+  uint32_t
+  UserPitch() const {
+    return (desc_.Width + layout_.BlockSize - 1) / layout_.BlockSize * layout_.BlockBytes;
+  }
+  void SyncFromUserMemory();
   uint64_t shadow_offset_ = 0;
   uint32_t shadow_pitch_ = 0;
   uint32_t shadow_image_ = 0;

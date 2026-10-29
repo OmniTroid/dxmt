@@ -17,6 +17,7 @@
  */
 
 #include "d3d9_surface.hpp"
+#include <cstring>
 #include "d3d9_device.hpp"
 #include "d3d9_texture.hpp"
 #include "d3d9_format.hpp"
@@ -124,10 +125,38 @@ MTLD3D9Surface::EnsureShadow() {
   return shadow_;
 }
 
+void
+MTLD3D9Surface::SyncFromUserMemory() {
+  uint32_t pitch = UserPitch(), image = pitch * layout_.Rows(desc_.Height);
+  if (!shadow_)
+    shadow_ = new StagingResource(parent_->GetMTLDevice(), image, pitch, image);
+  void *data = nullptr;
+  if (FAILED(parent_->MapStaging(shadow_, false, true, false, &data)))
+    return;
+  std::memcpy(data, user_memory_, image);
+  shadow_->unmap();
+}
+
+void
+MTLD3D9Surface::SyncToUserMemory() {
+  if (!user_memory_ || !shadow_)
+    return;
+  parent_->WaitUntilGPUIdle();
+  void *data = nullptr;
+  if (FAILED(parent_->MapStaging(shadow_, true, false, false, &data)))
+    return;
+  std::memcpy(user_memory_, data, shadow_->length);
+  shadow_->unmap();
+}
+
 D3D9Shadow
 MTLD3D9Surface::Shadow() {
   if (shared_)
     return {shared_->resource, shadow_offset_, shadow_pitch_, shadow_image_};
+  if (user_memory_) {
+    SyncFromUserMemory();
+    return {shadow_, 0, shadow_->bytesPerRow, shadow_->bytesPerImage};
+  }
   auto shadow = EnsureShadow();
   return {shadow, 0, shadow->bytesPerRow, shadow->bytesPerImage};
 }
@@ -161,7 +190,10 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
 
   void *data = nullptr;
   uint32_t pitch;
-  if (shared_) {
+  if (user_memory_) {
+    data = user_memory_;
+    pitch = UserPitch();
+  } else if (shared_) {
     // levels of one texture map their shared memory together
     if (!shared_->maps) {
       HRESULT hr = parent_->MapStaging(shared_->resource, true, true, Flags & D3DLOCK_DONOTWAIT, &shared_->data);
@@ -225,10 +257,12 @@ MTLD3D9Surface::UnlockRect() {
   locked_ = false;
   if (!(lock_flags_ & D3DLOCK_READONLY))
     MarkWritten();
-  if (!shared_)
+  if (shared_) {
+    if (!--shared_->maps)
+      shared_->resource->unmap();
+  } else if (!user_memory_) {
     shadow_->unmap();
-  else if (!--shared_->maps)
-    shared_->resource->unmap();
+  }
 
   // managed texture levels upload their container's dirty region before the next draw instead
   bool deferred = desc_.Pool == D3DPOOL_MANAGED && container_;

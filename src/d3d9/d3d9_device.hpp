@@ -313,7 +313,7 @@ private:
   WMTPixelFormat RenderTargetFormat(MTLD3D9Surface *pSurface);
   TextureViewKey RenderTargetView(MTLD3D9Surface *pSurface);
 
-  HRESULT ResetState(D3DPRESENT_PARAMETERS *pParams);
+  HRESULT ResetState(D3DPRESENT_PARAMETERS *pParams, bool Initial);
   void ClearBindings();
   HRESULT CreateAutoDepthStencil(const D3DPRESENT_PARAMETERS &Params);
   void SetDefaultViewport(MTLD3D9Surface *pTarget);
