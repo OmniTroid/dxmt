@@ -218,14 +218,14 @@ BoxOffset(const D3DBOX &Box, const D3D9_FORMAT_LAYOUT &Layout, uint32_t BytesPer
 
 void
 MTLD3D9Device::CopyTextureToBuffer(
-    const Rc<Texture> &Src, uint32_t Level, uint32_t Slice, const D3DBOX &Box, const Rc<StagingResource> &Dst,
+    const Rc<Texture> &Src, uint32_t Level, uint32_t Slice, const D3DBOX &Box, const D3D9Shadow &Dst,
     const D3D9_FORMAT_LAYOUT &Layout
 ) {
-  Dst->useCopyDestination(queue().CurrentSeqId());
-  uint64_t offset = BoxOffset(Box, Layout, Dst->bytesPerRow);
-  EmitBlit([=](ArgumentEncodingContext &enc) {
+  Dst.resource->useCopyDestination(queue().CurrentSeqId());
+  uint64_t offset = Dst.offset + BoxOffset(Box, Layout, Dst.pitch);
+  EmitBlit([=, staging = Dst.resource](ArgumentEncodingContext &enc) {
     auto src = enc.access(Src, Level, Slice, ResourceAccess::Read);
-    auto [dst, dst_offset] = enc.access(Dst->buffer(), 0, Dst->length, ResourceAccess::Write);
+    auto [dst, dst_offset] = enc.access(staging->buffer(), 0, staging->length, ResourceAccess::Write);
     auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
     cmd.type = WMTBlitCommandCopyFromTextureToBuffer;
     cmd.src = src;
@@ -235,29 +235,29 @@ MTLD3D9Device::CopyTextureToBuffer(
     cmd.size = {Box.Right - Box.Left, Box.Bottom - Box.Top, Box.Back - Box.Front};
     cmd.dst = dst->buffer();
     cmd.offset = dst_offset + offset;
-    cmd.bytes_per_row = Dst->bytesPerRow;
-    cmd.bytes_per_image = Dst->bytesPerImage;
+    cmd.bytes_per_row = Dst.pitch;
+    cmd.bytes_per_image = Dst.image;
   });
 }
 
 void
 MTLD3D9Device::CopyBufferToTexture(
-    const Rc<StagingResource> &Src, const D3D9_FORMAT_LAYOUT &Layout, const Rc<Texture> &Dst, uint32_t Level,
+    const D3D9Shadow &Src, const D3D9_FORMAT_LAYOUT &Layout, const Rc<Texture> &Dst, uint32_t Level,
     uint32_t Slice, const D3DBOX &Box, uint32_t DstX, uint32_t DstY
 ) {
-  Src->useCopySource(queue().CurrentSeqId());
-  uint64_t offset = BoxOffset(Box, Layout, Src->bytesPerRow);
+  Src.resource->useCopySource(queue().CurrentSeqId());
+  uint64_t offset = Src.offset + BoxOffset(Box, Layout, Src.pitch);
   uint32_t x = DstX == ~0u ? Box.Left : DstX;
   uint32_t y = DstY == ~0u ? Box.Top : DstY;
-  EmitBlit([=](ArgumentEncodingContext &enc) {
-    auto [src, src_offset] = enc.access(Src->buffer(), 0, Src->length, ResourceAccess::Read);
+  EmitBlit([=, staging = Src.resource](ArgumentEncodingContext &enc) {
+    auto [src, src_offset] = enc.access(staging->buffer(), 0, staging->length, ResourceAccess::Read);
     auto dst = enc.access(Dst, Level, Slice, ResourceAccess::Write);
     auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_texture>();
     cmd.type = WMTBlitCommandCopyFromBufferToTexture;
     cmd.src = src->buffer();
     cmd.src_offset = src_offset + offset;
-    cmd.bytes_per_row = Src->bytesPerRow;
-    cmd.bytes_per_image = Src->bytesPerImage;
+    cmd.bytes_per_row = Src.pitch;
+    cmd.bytes_per_image = Src.image;
     cmd.size = {Box.Right - Box.Left, Box.Bottom - Box.Top, Box.Back - Box.Front};
     cmd.dst = dst;
     cmd.slice = Slice;
@@ -587,7 +587,7 @@ MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBas
         uint32_t mask = sv->layout().BlockSize - 1;
         box.Left &= ~mask;
         box.Top &= ~mask;
-        CopyBufferToTexture(sv->EnsureShadow(), sv->layout(), dst->texture(), level, 0, box);
+        CopyBufferToTexture(sv->Shadow(), sv->layout(), dst->texture(), level, 0, box);
         continue;
       }
       for (uint32_t face = 0; face < dst->faces(); face++) {
@@ -598,7 +598,7 @@ MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBas
         aligned.Top &= ~mask;
         aligned.Right = std::min((aligned.Right + mask) & ~mask, ss->Desc().Width);
         aligned.Bottom = std::min((aligned.Bottom + mask) & ~mask, ss->Desc().Height);
-        CopyBufferToTexture(ss->EnsureShadow(), ss->layout(), dst->texture(), level, face, aligned);
+        CopyBufferToTexture(ss->Shadow(), ss->layout(), dst->texture(), level, face, aligned);
       }
     }
     src->CleanDirtyRegion();
@@ -771,7 +771,7 @@ MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSu
     return D3DERR_INVALIDCALL;
 
   CopyTextureToBuffer(
-      src->texture(), src->level(), src->slice(), RectToBox(nullptr, sd), dst->EnsureShadow(), dst->layout()
+      src->texture(), src->level(), src->slice(), RectToBox(nullptr, sd), dst->Shadow(), dst->layout()
   );
   return D3D_OK;
 }
@@ -817,7 +817,7 @@ MTLD3D9Device::UpdateSurface(
   box.Right = std::min(box.Right, std::min(sd.Width, box.Left + (dd.Width - x)));
   box.Bottom = std::min(box.Bottom, std::min(sd.Height, box.Top + (dd.Height - y)));
 
-  CopyBufferToTexture(src->EnsureShadow(), src->layout(), dst->texture(), dst->level(), dst->slice(), box, x, y);
+  CopyBufferToTexture(src->Shadow(), src->layout(), dst->texture(), dst->level(), dst->slice(), box, x, y);
   dst->MarkWritten();
   return D3D_OK;
 }

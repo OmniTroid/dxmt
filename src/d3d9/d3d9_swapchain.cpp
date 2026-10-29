@@ -448,7 +448,7 @@ MTLD3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
     source = front_8bit_;
   }
   D3DBOX box = {0, 0, bb.Width, bb.Height, 0, 1};
-  parent_->CopyTextureToBuffer(source, 0, 0, box, dst->EnsureShadow(), dst->layout());
+  parent_->CopyTextureToBuffer(source, 0, 0, box, dst->Shadow(), dst->layout());
   return D3D_OK;
 }
 

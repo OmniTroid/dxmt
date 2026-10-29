@@ -22,10 +22,27 @@
 #include "d3d9_format.hpp"
 #include "dxmt_staging.hpp"
 #include "dxmt_texture.hpp"
+#include <memory>
 
 namespace dxmt {
 
 class MTLD3D9Device;
+
+// System memory of a subresource: a staging buffer, possibly shared by every level of a texture.
+struct D3D9Shadow {
+  Rc<StagingResource> resource;
+  uint64_t offset;
+  uint32_t pitch;
+  uint32_t image;
+};
+
+// Windows lays out the levels (face by face) of SYSTEMMEM, SCRATCH and MANAGED textures contiguously, and apps write
+// all of them through level 0's pointer (Wine's test_miptree_layout, test_mipmap_upload).
+struct D3D9SharedShadow {
+  Rc<StagingResource> resource;
+  uint32_t maps = 0;
+  void *data = nullptr;
+};
 
 // One mip level of one face. SYSTEMMEM/SCRATCH surfaces have no texture and live in the staging shadow only.
 class MTLD3D9Surface final : public MTLD3D9Resource<IDirect3DSurface9> {
@@ -91,6 +108,14 @@ public:
   }
 
   Rc<StagingResource> EnsureShadow();
+  D3D9Shadow Shadow();
+  void
+  UseSharedShadow(std::shared_ptr<D3D9SharedShadow> Shared, uint64_t Offset, uint32_t Pitch, uint32_t Image) {
+    shared_ = std::move(Shared);
+    shadow_offset_ = Offset;
+    shadow_pitch_ = Pitch;
+    shadow_image_ = Image;
+  }
 
   // swap chain back buffers keep their own refcount; texture levels forward theirs to the texture
   void
@@ -110,6 +135,10 @@ private:
   uint32_t slice_;
   D3D9_FORMAT_LAYOUT layout_ = {0, 1};
   Rc<StagingResource> shadow_;
+  std::shared_ptr<D3D9SharedShadow> shared_;
+  uint64_t shadow_offset_ = 0;
+  uint32_t shadow_pitch_ = 0;
+  uint32_t shadow_image_ = 0;
   bool locked_ = false;
   HDC dc_ = nullptr;
   HBITMAP dib_ = nullptr;

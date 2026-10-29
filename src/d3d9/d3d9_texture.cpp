@@ -172,7 +172,7 @@ MTLD3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD F
   auto shadow = EnsureShadow();
   if (texture_ && desc_.Pool == D3DPOOL_DEFAULT && !(Flags & D3DLOCK_DISCARD))
     parent_->CopyTextureToBuffer(
-        texture_, level_, 0, {0, 0, desc_.Width, desc_.Height, 0, desc_.Depth}, shadow, layout_
+        texture_, level_, 0, {0, 0, desc_.Width, desc_.Height, 0, desc_.Depth}, Shadow(), layout_
     );
 
   void *data = nullptr;
@@ -206,7 +206,7 @@ MTLD3D9Volume::UnlockBox() {
     D3DBOX box = lock_box_;
     box.Right = std::min((box.Right + mask) & ~mask, desc_.Width);
     box.Bottom = std::min((box.Bottom + mask) & ~mask, desc_.Height);
-    parent_->CopyBufferToTexture(shadow_, layout_, texture_, level_, 0, box);
+    parent_->CopyBufferToTexture(Shadow(), layout_, texture_, level_, 0, box);
   }
   return D3D_OK;
 }
@@ -248,6 +248,26 @@ MTLD3D9TextureBase<Base>::MTLD3D9TextureBase(
       sd.Height = std::max(1u, Desc.Height >> level);
       surfaces_.emplace_back(new MTLD3D9Surface(pDevice, sd, Rc(texture_), this, lockable, level, face));
     }
+  }
+
+  if (Desc.Pool == D3DPOOL_DEFAULT)
+    return;
+  // each level takes height * pitch bytes, which over-counts block rows for compressed formats as Windows does, and
+  // each cube face starts 16-byte aligned
+  auto face_start = [&](uint64_t offset, MTLD3D9Surface *s) { return s->level() ? offset : (offset + 15) & ~15ull; };
+  uint64_t total = 0;
+  for (auto &s : surfaces_)
+    total = face_start(total, s.ptr()) + (uint64_t)s->Desc().Height * s->layout().Pitch(s->Desc().Width);
+  if (!total || !surfaces_[0]->layout().BlockBytes)
+    return;
+  auto shared = std::make_shared<D3D9SharedShadow>();
+  shared->resource = new StagingResource(pDevice->GetMTLDevice(), total, 0, 0);
+  uint64_t offset = 0;
+  for (auto &s : surfaces_) {
+    uint32_t pitch = s->layout().Pitch(s->Desc().Width);
+    offset = face_start(offset, s.ptr());
+    s->UseSharedShadow(shared, offset, pitch, pitch * s->layout().Rows(s->Desc().Height));
+    offset += (uint64_t)s->Desc().Height * pitch;
   }
 }
 
@@ -352,7 +372,7 @@ MTLD3D9TextureBase<Base>::FlushManaged() {
       box = {0, 0, std::max(1u, desc_.Width >> level), std::max(1u, desc_.Height >> level), 0,
              std::max(1u, desc_.Depth >> level)};
     if (auto v = volume(level)) {
-      parent_->CopyBufferToTexture(v->EnsureShadow(), v->layout(), texture_, level, 0, box);
+      parent_->CopyBufferToTexture(v->Shadow(), v->layout(), texture_, level, 0, box);
       continue;
     }
     for (uint32_t face = 0; face < faces(); face++) {
@@ -365,7 +385,7 @@ MTLD3D9TextureBase<Base>::FlushManaged() {
       aligned.Top &= ~mask;
       aligned.Right = std::min((aligned.Right + mask) & ~mask, s->Desc().Width);
       aligned.Bottom = std::min((aligned.Bottom + mask) & ~mask, s->Desc().Height);
-      parent_->CopyBufferToTexture(s->EnsureShadow(), s->layout(), texture_, level, face, aligned);
+      parent_->CopyBufferToTexture(s->Shadow(), s->layout(), texture_, level, face, aligned);
     }
   }
   if (sysmem)

@@ -229,11 +229,11 @@ public:
 
   // Box offsets are in pixels relative to the subresource; the buffer holds the whole subresource.
   void CopyTextureToBuffer(
-      const Rc<Texture> &Src, uint32_t Level, uint32_t Slice, const D3DBOX &Box, const Rc<StagingResource> &Dst,
+      const Rc<Texture> &Src, uint32_t Level, uint32_t Slice, const D3DBOX &Box, const D3D9Shadow &Dst,
       const D3D9_FORMAT_LAYOUT &Layout
   );
   void CopyBufferToTexture(
-      const Rc<StagingResource> &Src, const D3D9_FORMAT_LAYOUT &Layout, const Rc<Texture> &Dst, uint32_t Level,
+      const D3D9Shadow &Src, const D3D9_FORMAT_LAYOUT &Layout, const Rc<Texture> &Dst, uint32_t Level,
       uint32_t Slice, const D3DBOX &Box, uint32_t DstX = ~0u, uint32_t DstY = ~0u
   );
 

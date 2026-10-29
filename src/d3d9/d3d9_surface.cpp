@@ -57,7 +57,7 @@ MTLD3D9Surface::MTLD3D9Surface(
     }
   }
 
-  if (Desc.Pool == D3DPOOL_SYSTEMMEM || Desc.Pool == D3DPOOL_SCRATCH)
+  if ((Desc.Pool == D3DPOOL_SYSTEMMEM || Desc.Pool == D3DPOOL_SCRATCH) && !pContainer)
     EnsureShadow();
 }
 
@@ -123,6 +123,14 @@ MTLD3D9Surface::EnsureShadow() {
   return shadow_;
 }
 
+D3D9Shadow
+MTLD3D9Surface::Shadow() {
+  if (shared_)
+    return {shared_->resource, shadow_offset_, shadow_pitch_, shadow_image_};
+  auto shadow = EnsureShadow();
+  return {shadow, 0, shadow->bytesPerRow, shadow->bytesPerImage};
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
   if (!pLockedRect)
@@ -148,19 +156,31 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
       rect = *pRect;
   }
 
-  auto shadow = EnsureShadow();
-  bool read_back = texture_ && desc_.Pool == D3DPOOL_DEFAULT && !(Flags & D3DLOCK_DISCARD);
-  if (read_back)
-    parent_->CopyTextureToBuffer(texture_, level_, slice_, {0, 0, desc_.Width, desc_.Height, 0, 1}, shadow, layout_);
-
   void *data = nullptr;
-  HRESULT hr = parent_->MapStaging(
-      shadow, !(Flags & D3DLOCK_DISCARD), !(Flags & D3DLOCK_READONLY), Flags & D3DLOCK_DONOTWAIT, &data
-  );
-  if (FAILED(hr))
-    return hr;
+  uint32_t pitch;
+  if (shared_) {
+    // levels of one texture map their shared memory together
+    if (!shared_->maps) {
+      HRESULT hr = parent_->MapStaging(shared_->resource, true, true, Flags & D3DLOCK_DONOTWAIT, &shared_->data);
+      if (FAILED(hr))
+        return hr;
+    }
+    shared_->maps++;
+    data = (char *)shared_->data + shadow_offset_;
+    pitch = shadow_pitch_;
+  } else {
+    auto shadow = EnsureShadow();
+    bool read_back = texture_ && desc_.Pool == D3DPOOL_DEFAULT && !(Flags & D3DLOCK_DISCARD);
+    if (read_back)
+      parent_->CopyTextureToBuffer(texture_, level_, slice_, {0, 0, desc_.Width, desc_.Height, 0, 1}, Shadow(), layout_);
+    HRESULT hr = parent_->MapStaging(
+        shadow, !(Flags & D3DLOCK_DISCARD), !(Flags & D3DLOCK_READONLY), Flags & D3DLOCK_DONOTWAIT, &data
+    );
+    if (FAILED(hr))
+      return hr;
+    pitch = shadow->bytesPerRow;
+  }
 
-  uint32_t pitch = shadow->bytesPerRow;
   pLockedRect->Pitch = pitch;
   pLockedRect->pBits = (char *)data + (ptrdiff_t)(origin.top / (LONG)layout_.BlockSize) * pitch +
                        (ptrdiff_t)(origin.left / (LONG)layout_.BlockSize) * layout_.BlockBytes;
@@ -202,7 +222,10 @@ MTLD3D9Surface::UnlockRect() {
   locked_ = false;
   if (!(lock_flags_ & D3DLOCK_READONLY))
     MarkWritten();
-  shadow_->unmap();
+  if (!shared_)
+    shadow_->unmap();
+  else if (!--shared_->maps)
+    shared_->resource->unmap();
 
   // managed texture levels upload their container's dirty region before the next draw instead
   bool deferred = desc_.Pool == D3DPOOL_MANAGED && container_;
@@ -212,7 +235,7 @@ MTLD3D9Surface::UnlockRect() {
         (UINT)lock_rect_.left, (UINT)lock_rect_.top, std::min((UINT)(lock_rect_.right + mask) & ~mask, desc_.Width),
         std::min((UINT)(lock_rect_.bottom + mask) & ~mask, desc_.Height), 0, 1
     };
-    parent_->CopyBufferToTexture(shadow_, layout_, texture_, level_, slice_, box);
+    parent_->CopyBufferToTexture(Shadow(), layout_, texture_, level_, slice_, box);
   }
   return D3D_OK;
 }

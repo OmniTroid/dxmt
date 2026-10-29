@@ -71,6 +71,11 @@ public:
   }
 
   Rc<StagingResource> EnsureShadow();
+  D3D9Shadow
+  Shadow() {
+    auto shadow = EnsureShadow();
+    return {shadow, 0, shadow->bytesPerRow, shadow->bytesPerImage};
+  }
 
 private:
   MTLD3D9Device *parent_;
