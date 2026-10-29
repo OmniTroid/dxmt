@@ -77,6 +77,9 @@ public:
     return layout_;
   }
 
+  // Tells an autogen-mipmap container that level 0 changed.
+  void MarkWritten();
+
   bool
   IsDepthStencil() const {
     return desc_.Usage & D3DUSAGE_DEPTHSTENCIL;

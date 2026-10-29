@@ -570,24 +570,32 @@ MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBas
     if (offset == sd.Levels || sd.Levels - offset < (dd.Usage & D3DUSAGE_AUTOGENMIPMAP ? 1 : dd.Levels))
       return D3DERR_INVALIDCALL;
 
+    // as in native d3d9, a source without dirty regions isn't copied again
+    if (!src->Dirty())
+      return D3D_OK;
     uint32_t levels = dd.Usage & D3DUSAGE_AUTOGENMIPMAP ? 1 : dd.Levels;
     for (uint32_t level = 0; level < levels; level++) {
+      D3DBOX box = src->DirtyRegion(level + offset);
       if (type == D3DRTYPE_VOLUMETEXTURE) {
         auto sv = src->volume(level + offset);
-        auto &vd = sv->Desc();
-        CopyBufferToTexture(
-            sv->EnsureShadow(), sv->layout(), dst->texture(), level, 0, {0, 0, vd.Width, vd.Height, 0, vd.Depth}
-        );
+        uint32_t mask = sv->layout().BlockSize - 1;
+        box.Left &= ~mask;
+        box.Top &= ~mask;
+        CopyBufferToTexture(sv->EnsureShadow(), sv->layout(), dst->texture(), level, 0, box);
         continue;
       }
       for (uint32_t face = 0; face < dst->faces(); face++) {
         auto ss = src->surface(face, level + offset);
-        auto &desc = ss->Desc();
-        CopyBufferToTexture(
-            ss->EnsureShadow(), ss->layout(), dst->texture(), level, face, {0, 0, desc.Width, desc.Height, 0, 1}
-        );
+        uint32_t mask = ss->layout().BlockSize - 1;
+        D3DBOX aligned = box;
+        aligned.Left &= ~mask;
+        aligned.Top &= ~mask;
+        aligned.Right = std::min((aligned.Right + mask) & ~mask, ss->Desc().Width);
+        aligned.Bottom = std::min((aligned.Bottom + mask) & ~mask, ss->Desc().Height);
+        CopyBufferToTexture(ss->EnsureShadow(), ss->layout(), dst->texture(), level, face, aligned);
       }
     }
+    src->CleanDirtyRegion();
     dst->MarkMipsDirty();
     return D3D_OK;
   };
@@ -801,6 +809,7 @@ MTLD3D9Device::UpdateSurface(
   box.Bottom = std::min(box.Bottom, std::min(sd.Height, box.Top + (dd.Height - y)));
 
   CopyBufferToTexture(src->EnsureShadow(), src->layout(), dst->texture(), dst->level(), dst->slice(), box, x, y);
+  dst->MarkWritten();
   return D3D_OK;
 }
 
@@ -823,6 +832,7 @@ MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLO
     return D3DERR_INVALIDCALL;
   RECT rect = {(LONG)box.Left, (LONG)box.Top, (LONG)box.Right, (LONG)box.Bottom};
   ClearSurface(surface, rect, D3DCLEAR_TARGET, Color, 0.0f, 0);
+  surface->MarkWritten();
   return D3D_OK;
 }
 
@@ -848,6 +858,7 @@ MTLD3D9Device::StretchRect(
     return D3DERR_INVALIDCALL;
   if (IsTextureLevel(dst) && !(dd.Usage & D3DUSAGE_RENDERTARGET))
     return D3DERR_INVALIDCALL;
+  dst->MarkWritten();
   bool depth = (sd.Usage | dd.Usage) & D3DUSAGE_DEPTHSTENCIL;
   // depth copies are whole-surface only
   if (depth && (pSourceRect || pDestRect || sd.Width != dd.Width || sd.Height != dd.Height || sd.Format != dd.Format))
@@ -931,8 +942,11 @@ MTLD3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRend
   if (surface && !(surface->Desc().Usage & D3DUSAGE_RENDERTARGET))
     return D3DERR_INVALIDCALL;
 
-  if (render_targets_[RenderTargetIndex].ptr() != surface)
+  if (render_targets_[RenderTargetIndex].ptr() != surface) {
     EndRenderPass();
+    if (auto previous = render_targets_[RenderTargetIndex].ptr())
+      previous->MarkWritten();
+  }
   render_targets_[RenderTargetIndex] = surface;
   if (RenderTargetIndex == 0)
     SetDefaultViewport(surface);

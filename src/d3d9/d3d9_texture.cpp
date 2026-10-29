@@ -190,6 +190,8 @@ MTLD3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD F
   locked_ = true;
   lock_flags_ = Flags;
   lock_box_ = box;
+  if (container_ && !(Flags & (D3DLOCK_READONLY | D3DLOCK_NO_DIRTY_UPDATE)))
+    D3D9AddDirtyRegion(static_cast<IDirect3DBaseTexture9 *>(static_cast<IDirect3DVolumeTexture9 *>(container_)), level_, box);
   return D3D_OK;
 }
 
@@ -320,7 +322,86 @@ MTLD3D9TextureBase<Base>::GenerateMipSubLevels() {
 template <typename Base>
 void
 MTLD3D9TextureBase<Base>::MarkMipsDirty() {
+  if (desc_.Usage & D3DUSAGE_AUTOGENMIPMAP)
+    mips_dirty_ = true;
+}
+
+template <typename Base>
+void
+MTLD3D9TextureBase<Base>::FlushMips() {
+  if (!mips_dirty_)
+    return;
+  mips_dirty_ = false;
   GenerateMipSubLevels();
+}
+
+template <typename Base>
+void
+MTLD3D9TextureBase<Base>::AddDirtyRegion(const D3DBOX &Box) {
+  if (!dirty_) {
+    dirty_box_ = Box;
+    dirty_ = true;
+    return;
+  }
+  dirty_box_.Left = std::min(dirty_box_.Left, Box.Left);
+  dirty_box_.Top = std::min(dirty_box_.Top, Box.Top);
+  dirty_box_.Front = std::min(dirty_box_.Front, Box.Front);
+  dirty_box_.Right = std::max(dirty_box_.Right, Box.Right);
+  dirty_box_.Bottom = std::max(dirty_box_.Bottom, Box.Bottom);
+  dirty_box_.Back = std::max(dirty_box_.Back, Box.Back);
+}
+
+template <typename Base>
+void
+MTLD3D9TextureBase<Base>::AddDirtyRegion(uint32_t Level, const D3DBOX &Box) {
+  auto scale = [&](UINT v) { return v == ~0u ? v : v << Level; };
+  AddDirtyRegion({scale(Box.Left), scale(Box.Top), scale(Box.Right), scale(Box.Bottom), scale(Box.Front), scale(Box.Back)});
+}
+
+template <typename Base>
+D3DBOX
+MTLD3D9TextureBase<Base>::DirtyRegion(uint32_t Level) const {
+  UINT width = std::max(1u, desc_.Width >> Level), height = std::max(1u, desc_.Height >> Level);
+  UINT depth = std::max(1u, desc_.Depth >> Level);
+  auto down = [&](UINT v) { return v >> Level; };
+  auto up = [&](UINT v, UINT size) { return v == ~0u ? size : std::min(size, (v + (1u << Level) - 1) >> Level); };
+  D3DBOX box = {
+      std::min(down(dirty_box_.Left), width - 1), std::min(down(dirty_box_.Top), height - 1),
+      up(dirty_box_.Right, width), up(dirty_box_.Bottom, height),
+      std::min(down(dirty_box_.Front), depth - 1), up(dirty_box_.Back, depth),
+  };
+  box.Right = std::max(box.Right, box.Left + 1);
+  box.Bottom = std::max(box.Bottom, box.Top + 1);
+  box.Back = std::max(box.Back, box.Front + 1);
+  return box;
+}
+
+void
+D3D9AddDirtyRegion(IDirect3DBaseTexture9 *pTexture, uint32_t Level, const D3DBOX &Box) {
+  switch (pTexture->GetType()) {
+  case D3DRTYPE_TEXTURE:
+    return static_cast<MTLD3D9Texture *>(pTexture)->AddDirtyRegion(Level, Box);
+  case D3DRTYPE_CUBETEXTURE:
+    return static_cast<MTLD3D9CubeTexture *>(pTexture)->AddDirtyRegion(Level, Box);
+  case D3DRTYPE_VOLUMETEXTURE:
+    return static_cast<MTLD3D9VolumeTexture *>(pTexture)->AddDirtyRegion(Level, Box);
+  default:
+    return;
+  }
+}
+
+void
+D3D9MarkMipsDirty(IDirect3DBaseTexture9 *pTexture) {
+  switch (pTexture->GetType()) {
+  case D3DRTYPE_TEXTURE:
+    return static_cast<MTLD3D9Texture *>(pTexture)->MarkMipsDirty();
+  case D3DRTYPE_CUBETEXTURE:
+    return static_cast<MTLD3D9CubeTexture *>(pTexture)->MarkMipsDirty();
+  case D3DRTYPE_VOLUMETEXTURE:
+    return static_cast<MTLD3D9VolumeTexture *>(pTexture)->MarkMipsDirty();
+  default:
+    return;
+  }
 }
 
 template <typename Base>
@@ -384,6 +465,10 @@ MTLD3D9Texture::UnlockRect(UINT Level) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::AddDirtyRect(const RECT *pDirtyRect) {
+  if (!pDirtyRect)
+    AddDirtyRegion({0, 0, ~0u, ~0u, 0, ~0u});
+  else
+    AddDirtyRegion({(UINT)pDirtyRect->left, (UINT)pDirtyRect->top, (UINT)pDirtyRect->right, (UINT)pDirtyRect->bottom, 0, 1});
   return D3D_OK;
 }
 
@@ -424,6 +509,12 @@ MTLD3D9CubeTexture::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::AddDirtyRect(D3DCUBEMAP_FACES FaceType, const RECT *pDirtyRect) {
+  if ((uint32_t)FaceType >= 6)
+    return D3DERR_INVALIDCALL;
+  if (!pDirtyRect)
+    AddDirtyRegion({0, 0, ~0u, ~0u, 0, ~0u});
+  else
+    AddDirtyRegion({(UINT)pDirtyRect->left, (UINT)pDirtyRect->top, (UINT)pDirtyRect->right, (UINT)pDirtyRect->bottom, 0, 1});
   return D3D_OK;
 }
 
@@ -462,6 +553,7 @@ MTLD3D9VolumeTexture::UnlockBox(UINT Level) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::AddDirtyBox(const D3DBOX *pDirtyBox) {
+  AddDirtyRegion(pDirtyBox ? *pDirtyBox : D3DBOX{0, 0, ~0u, ~0u, 0, ~0u});
   return D3D_OK;
 }
 

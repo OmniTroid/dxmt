@@ -126,7 +126,22 @@ public:
     return Level < volumes_.size() ? volumes_[Level].ptr() : nullptr;
   }
 
+  // D3DUSAGE_AUTOGENMIPMAP: writes to level 0 mark the chain dirty, and it's regenerated before the next draw
   void MarkMipsDirty();
+  void FlushMips();
+
+  // UpdateTexture copies only the dirty region (level 0 coordinates) of a source texture, then cleans it.
+  void AddDirtyRegion(const D3DBOX &Box);
+  void AddDirtyRegion(uint32_t Level, const D3DBOX &Box);
+  bool
+  Dirty() const {
+    return dirty_;
+  }
+  D3DBOX DirtyRegion(uint32_t Level) const;
+  void
+  CleanDirtyRegion() {
+    dirty_ = false;
+  }
 
   // View used for sampling: the whole mip chain with the D3D9 format's swizzle, optionally as sRGB.
   TextureViewKey SampleView(bool Srgb);
@@ -138,6 +153,9 @@ protected:
   std::vector<Com<MTLD3D9Surface, false>> surfaces_;
   std::vector<Com<MTLD3D9Volume, false>> volumes_;
   DWORD lod_ = 0;
+  bool mips_dirty_ = false;
+  bool dirty_ = true;
+  D3DBOX dirty_box_ = {0, 0, ~0u, ~0u, 0, ~0u};
   D3DTEXTUREFILTERTYPE autogen_filter_ = D3DTEXF_LINEAR;
   TextureViewKey sample_views_[2] = {};
   bool sample_view_valid_[2] = {};
@@ -182,5 +200,8 @@ HRESULT CreateD3D9TextureStorage(MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC
                                  uint32_t SampleCount, Rc<Texture> &OutTexture);
 
 HRESULT CreateD3D9Texture(MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC &Desc, IDirect3DBaseTexture9 **ppTexture);
+
+void D3D9MarkMipsDirty(IDirect3DBaseTexture9 *pTexture);
+void D3D9AddDirtyRegion(IDirect3DBaseTexture9 *pTexture, uint32_t Level, const D3DBOX &Box);
 
 } // namespace dxmt

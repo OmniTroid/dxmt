@@ -163,7 +163,25 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
   locked_ = true;
   lock_flags_ = Flags;
   lock_rect_ = rect;
+  if (container_ && !(Flags & (D3DLOCK_READONLY | D3DLOCK_NO_DIRTY_UPDATE))) {
+    IDirect3DBaseTexture9 *texture = nullptr;
+    if (SUCCEEDED(container_->QueryInterface(__uuidof(IDirect3DBaseTexture9), (void **)&texture))) {
+      D3D9AddDirtyRegion(texture, level_, {(UINT)rect.left, (UINT)rect.top, (UINT)rect.right, (UINT)rect.bottom, 0, 1});
+      texture->Release();
+    }
+  }
   return D3D_OK;
+}
+
+void
+MTLD3D9Surface::MarkWritten() {
+  if (level_ != 0 || !container_)
+    return;
+  IDirect3DBaseTexture9 *texture = nullptr;
+  if (FAILED(container_->QueryInterface(__uuidof(IDirect3DBaseTexture9), (void **)&texture)))
+    return;
+  D3D9MarkMipsDirty(texture);
+  texture->Release();
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -171,6 +189,8 @@ MTLD3D9Surface::UnlockRect() {
   if (!locked_)
     return D3DERR_INVALIDCALL;
   locked_ = false;
+  if (!(lock_flags_ & D3DLOCK_READONLY))
+    MarkWritten();
   shadow_->unmap();
 
   if (texture_ && !(lock_flags_ & D3DLOCK_READONLY)) {
