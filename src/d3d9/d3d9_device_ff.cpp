@@ -109,6 +109,7 @@ Normalize(float *V) {
 MTLD3D9ShaderCode *
 MTLD3D9Device::FixedFunctionVS(float *C) {
   D3D9FFVertexState s = {};
+  bool has_indices = false;
   for (auto &e : vertex_declaration_->elements()) {
     switch (e.Usage) {
     case D3DDECLUSAGE_POSITIONT:
@@ -127,6 +128,12 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
       if (e.UsageIndex == 0)
         s.blend_weights = DeclTypeSize(e.Type);
       break;
+    case D3DDECLUSAGE_BLENDINDICES:
+      if (e.UsageIndex == 0) {
+        has_indices = true;
+        s.indices_d3dcolor = e.Type == D3DDECLTYPE_D3DCOLOR;
+      }
+      break;
     case D3DDECLUSAGE_TEXCOORD:
       if (e.UsageIndex < 8) {
         s.texcoord_mask |= 1 << e.UsageIndex;
@@ -137,10 +144,9 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   }
   DWORD blend = render_states_[D3DRS_VERTEXBLEND];
   s.tween = blend == D3DVBF_TWEENING;
-  if (render_states_[D3DRS_INDEXEDVERTEXBLENDENABLE]) {
-    WARN_ONCE("D3D9: indexed vertex blending is not implemented");
-  }
   s.blend_weights = blend >= D3DVBF_1WEIGHTS && blend <= D3DVBF_3WEIGHTS ? std::min<uint32_t>(blend, s.blend_weights) : 0;
+  s.indexed = render_states_[D3DRS_INDEXEDVERTEXBLENDENABLE] && has_indices &&
+              (s.blend_weights || blend == D3DVBF_0WEIGHTS);
   s.lighting = render_states_[D3DRS_LIGHTING];
   s.specular_lighting = render_states_[D3DRS_SPECULARENABLE];
   s.local_viewer = render_states_[D3DRS_LOCALVIEWER];
@@ -161,9 +167,12 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   auto world_view = Multiply(world, view);
   StoreColumns(C + 4 * ff::VSWorldViewProj, Multiply(world_view, transforms_[D3DTS_PROJECTION]), 4);
   StoreColumns(C + 4 * ff::VSWorldView, world_view, 4);
+  if (s.indexed)
+    for (uint32_t i = 0; i < ff::MaxIndexedMatrices; i++)
+      StoreColumns(C + 4 * (ff::VSIndexedPalette + 3 * i), Multiply(transforms_[D3DTS_WORLDMATRIX(i)], view), 3);
   for (uint32_t i = 1; i <= s.blend_weights; i++)
     StoreColumns(C + 4 * (ff::VSWorldViewBlend + 4 * (i - 1)), Multiply(transforms_[D3DTS_WORLDMATRIX(i)], view), 4);
-  if (s.blend_weights)
+  if (s.blend_weights || s.indexed)
     StoreColumns(C + 4 * ff::VSProjection, transforms_[D3DTS_PROJECTION], 4);
 
   float depth = viewport_.MaxZ - viewport_.MinZ;

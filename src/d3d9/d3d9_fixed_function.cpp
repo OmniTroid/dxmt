@@ -77,6 +77,13 @@ struct Writer {
     code.insert(code.end(), Args);
   }
 
+  // for operands of varying length, like relative constants with their address token
+  void
+  op(Opcode Op, const std::vector<DWORD> &Args) {
+    code.push_back((DWORD)Op | ((DWORD)Args.size() << 24));
+    code.insert(code.end(), Args.begin(), Args.end());
+  }
+
   void
   dcl(Usage U, uint32_t Index, DWORD DstToken) {
     op(Opcode::Dcl, {0x80000000u | (DWORD)U | (Index << 16), DstToken});
@@ -103,6 +110,14 @@ struct Writer {
     return Temp(Scratch);
   }
 };
+
+std::vector<DWORD>
+Operands(DWORD Dst, DWORD A, std::pair<DWORD, DWORD> B) {
+  std::vector<DWORD> tokens = {Dst, A, B.first};
+  if (B.second)
+    tokens.push_back(B.second);
+  return tokens;
+}
 
 DWORD
 MaterialSource(D3DMATERIALCOLORSOURCE Source, uint32_t MaterialConst) {
@@ -142,9 +157,11 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   for (uint32_t i = 0; i < 8; i++)
     if (S.texcoord_mask & (1 << i))
       w.dcl(Usage::TexCoord, i, Dst(RegisterType::Input, 4 + i));
-  bool blend = S.blend_weights && !S.pretransformed;
-  if (blend)
+  bool blend = (S.blend_weights || S.indexed) && !S.pretransformed;
+  if (blend && S.blend_weights)
     w.dcl(Usage::BlendWeight, 0, Dst(RegisterType::Input, 12));
+  if (blend && S.indexed)
+    w.dcl(Usage::BlendIndices, 0, Dst(RegisterType::Input, 15));
   bool tween = S.tween && !S.pretransformed;
   if (tween) {
     w.dcl(Usage::Position, 1, Dst(RegisterType::Input, 13));
@@ -162,6 +179,11 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
   w.def_helper();
   w.op(Opcode::Def, {Dst(RegisterType::Const, kHelper2), std::bit_cast<DWORD>(1e-6f), std::bit_cast<DWORD>(-1.0f),
                      std::bit_cast<DWORD>(1.442695f), std::bit_cast<DWORD>(0.0f)});
+  // c18 = palette stride for UBYTE4 and for normalized D3DCOLOR blend indices
+  constexpr uint32_t kIndexScale = 18;
+  if (S.indexed)
+    w.op(Opcode::Def, {Dst(RegisterType::Const, kIndexScale), std::bit_cast<DWORD>(3.0f), std::bit_cast<DWORD>(765.0f),
+                       std::bit_cast<DWORD>(0.0f), std::bit_cast<DWORD>(0.0f)});
 
   // r29 and r30 hold the tweened position and normal
   DWORD pos = tween ? t(29) : in(0), nrm = tween && S.normal ? t(30) : in(1);
@@ -184,17 +206,30 @@ D3D9GenerateFixedFunctionVS(const D3D9FFVertexState &S) {
     w.op(Opcode::Mov, {r(P), Helper(kXXXX)});
     w.op(Opcode::Mov, {r(12), Helper(kXXXX)});
     w.op(Opcode::Mov, {r(25, 0x1), Helper(kYYYY)});
+    if (S.indexed) {
+      // r31 = palette offsets (index * 3); D3DCOLOR indices arrive as normalized (b, g, r, a) bytes
+      DWORD indices = S.indices_d3dcolor ? in(15, 0xC6) : in(15);
+      w.op(Opcode::Mul, {r(31), indices, c(kIndexScale, S.indices_d3dcolor ? kYYYY : kXXXX)});
+    }
     for (uint32_t i = 0; i <= S.blend_weights; i++) {
       uint32_t base = i == 0 ? ff::VSWorldView : ff::VSWorldViewBlend + 4 * (i - 1);
+      if (S.indexed)
+        w.op(Opcode::Mova, {Dst(RegisterType::Addr, 0, 0x1), t(31, (i * 0x55) & 0xFF)});
+      // relative constants take a second token naming the address register component
+      auto column = [&](uint32_t k) -> std::pair<DWORD, DWORD> {
+        if (S.indexed)
+          return {c(ff::VSIndexedPalette + k) | (1u << 13), Src(RegisterType::Addr, 0, kXXXX)};
+        return {c(base + k), 0};
+      };
       DWORD weight = i < S.blend_weights ? in(12, (i * 0x55) & 0xFF) : t(25, kXXXX);
       if (i < S.blend_weights)
         w.op(Opcode::Add, {r(25, 0x1), t(25, kXXXX), Src(RegisterType::Input, 12, (i * 0x55) & 0xFF, SrcModifier::Neg)});
       for (uint32_t k = 0; k < 3; k++)
-        w.op(Opcode::Dp4, {r(26, 1u << k), pos, c(base + k)});
+        w.op(Opcode::Dp4, Operands(r(26, 1u << k), pos, column(k)));
       w.op(Opcode::Mad, {r(P, 0x7), t(26), weight, t(P)});
       if (S.normal) {
         for (uint32_t k = 0; k < 3; k++)
-          w.op(Opcode::Dp3, {r(26, 1u << k), nrm, c(base + k)});
+          w.op(Opcode::Dp3, Operands(r(26, 1u << k), nrm, column(k)));
         w.op(Opcode::Mad, {r(12, 0x7), t(26), weight, t(12)});
       }
     }

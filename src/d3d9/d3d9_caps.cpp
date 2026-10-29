@@ -18,6 +18,7 @@
 
 #include "d3d9_adapter.hpp"
 #include "d3d9_constants.hpp"
+#include "d3d9_fixed_function.hpp"
 #include <cstring>
 
 namespace dxmt {
@@ -132,7 +133,7 @@ D3D9FillCaps(UINT Ordinal, WMT::Device Device, D3DCAPS9 *pCaps) {
   pCaps->MaxActiveLights = caps::MaxEnabledLights;
   pCaps->MaxUserClipPlanes = caps::MaxClipPlanes;
   pCaps->MaxVertexBlendMatrices = 4;
-  pCaps->MaxVertexBlendMatrixIndex = 0;
+  pCaps->MaxVertexBlendMatrixIndex = ff::MaxIndexedMatrices - 1;
   pCaps->MaxPointSize = 256.0f;
   pCaps->MaxPrimitiveCount = 0x00555555;
   pCaps->MaxVertexIndex = 0x00ffffff;

@@ -99,7 +99,6 @@ New VS/PS variant structs, each with an `IOHelper` prologue/epilogue:
 
 All eight phases are implemented and covered by `tests/d3d9` and `tests/airconv_d3d9`. Not implemented, by choice:
 
-- Indexed vertex blending (the caps report `MaxVertexBlendMatrixIndex = 0`).
 - `ProcessVertices` with a vertex shader (fixed-function only).
 - Shared resources (`pSharedHandle`) and `D3DFMT_A1`, so `ComposeRects` fails.
 - Not yet run against a real game; `d3d9_fullscreen` needs an unlocked screen (`D3D9_TEST_FULLSCREEN=1`).

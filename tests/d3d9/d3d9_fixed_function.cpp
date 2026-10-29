@@ -3,6 +3,7 @@
 #include <d3dcompiler.h>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 // type-punning through a pointer cast is undefined, and the optimizer did drop the float stores
 static DWORD
@@ -46,6 +47,12 @@ expect(const char *name, int x, int y, DWORD want, int tolerance = 3) {
     printf("PASS: %s\n", name);
   else
     printf("FAIL: %s (got %08lx want %08lx)\n", name, got, want);
+  failures += !ok;
+}
+
+static void
+check(const char *name, bool ok) {
+  printf("%s: %s\n", ok ? "PASS" : "FAIL", name);
   failures += !ok;
 }
 
@@ -393,6 +400,37 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   blended(0.5f);
   expect("half weights cancel out", 32, 32, 0xFFFFFFFF);
   expect("half weights leave the left", 16, 32, 0xFF000000);
+  // indexed blending picks WORLDMATRIX(3) and (7) through the vertex's blend indices
+  D3DCAPS9 caps;
+  device->GetDeviceCaps(&caps);
+  check("indexed blend matrices advertised", caps.MaxVertexBlendMatrixIndex == 8);
+  device->SetTransform(D3DTS_WORLDMATRIX(0), &identity);
+  device->SetTransform(D3DTS_WORLDMATRIX(1), &identity);
+  device->SetTransform(D3DTS_WORLDMATRIX(3), &left);
+  device->SetTransform(D3DTS_WORLDMATRIX(7), &right);
+  device->SetRenderState(D3DRS_INDEXEDVERTEXBLENDENABLE, TRUE);
+  struct IndexedVertex {
+    float x, y, z, weight;
+    DWORD indices, color;
+  };
+  for (DWORD fvf : {D3DFVF_LASTBETA_UBYTE4, D3DFVF_LASTBETA_D3DCOLOR}) {
+    device->SetFVF(D3DFVF_XYZB2 | fvf | D3DFVF_DIFFUSE);
+    // byte 0 is the first index for both encodings
+    DWORD indices = 3 | 7 << 8;
+    bool d3dcolor = fvf == D3DFVF_LASTBETA_D3DCOLOR;
+    for (float weight : {1.0f, 0.0f}) {
+      IndexedVertex v[4] = {
+          {-0.2f, -0.2f, 0.5f, weight, indices, 0xFFFFFFFF}, {-0.2f, 0.2f, 0.5f, weight, indices, 0xFFFFFFFF},
+          {0.2f, -0.2f, 0.5f, weight, indices, 0xFFFFFFFF}, {0.2f, 0.2f, 0.5f, weight, indices, 0xFFFFFFFF},
+      };
+      clear();
+      device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, v, sizeof(IndexedVertex));
+      char name[96];
+      snprintf(name, sizeof(name), "%s indices, weight %.0f", d3dcolor ? "D3DCOLOR" : "UBYTE4", weight);
+      expect(name, weight ? 16 : 48, 32, 0xFFFFFFFF);
+    }
+  }
+  device->SetRenderState(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
   device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
   device->SetTransform(D3DTS_WORLDMATRIX(0), &identity);
   device->SetTransform(D3DTS_WORLDMATRIX(1), &identity);
