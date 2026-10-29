@@ -90,6 +90,7 @@ Leftover artifacts have produced wrong conclusions more than any other trap. Bef
 **Reading Wine's tests**
 
 - State leaks between loop iterations: `test_fog` only calls `SetVertexShader(NULL)` in its FFP mode, so its POSITIONT draws ran with the last mode's shader bound. Windows skips vertex processing for POSITIONT whatever shader is set; check what a failing iteration inherits before suspecting the feature it names.
+- The visual count varies by a few between identical runs (61-64): `test_mipmap_autogen` fails now and then in the full suite and passes alone, likely a timing race in autogen mip generation. Rerun before blaming a change for a difference that small, and diff per-test counts rather than totals.
 - Wine's summary total includes "Test succeeded inside todo block": checks marked `todo_wine` because wined3d gets them wrong, which DXMT passes. `winetest.sh` reports real failures and those passes separately; checks DXMT fails inside a todo stay silent ("Test marked todo").
 - Like `visual`, the `device` suite never ran to the end: a process crash (wrong `SetPrivateData(D3DSPD_IUNKNOWN)` pointer handling, then an over-release in `test_refcount`) silently ended it a dozen tests in. After any fix, check the log ends with the summary line.
 - Both fullscreen hangs were winemac bugs in CrossOver 26.3, fixed in the Wine fork:
