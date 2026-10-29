@@ -1300,6 +1300,9 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
 
       if (render->render_target_array_length != clear->array_length)
         break;
+      // a load action only clears the render area, which a smaller attachment can shrink
+      if (render->render_target_width < clear->width || render->render_target_height < clear->height)
+        break;
 
       if (clear->clear_dsv) {
         if (auto depth_attachment = isClearDepthSignatureMatched(clear, render)) {
