@@ -45,6 +45,29 @@ StoreColumns(float *Out, const D3DMATRIX &M, int Count) {
       Out[j * 4 + i] = M.m[i][j];
 }
 
+// the upper 3x3 of M inverted and transposed, so normals keep their length scaling (D3DRS_NORMALIZENORMALS off)
+static D3DMATRIX
+NormalMatrix(const D3DMATRIX &M) {
+  const auto &m = M.m;
+  float c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1], c01 = m[1][2] * m[2][0] - m[1][0] * m[2][2],
+        c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+  float det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+  if (det == 0.0f)
+    return M;
+  float s = 1.0f / det;
+  D3DMATRIX r = {};
+  r.m[0][0] = c00 * s;
+  r.m[0][1] = c01 * s;
+  r.m[0][2] = c02 * s;
+  r.m[1][0] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) * s;
+  r.m[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) * s;
+  r.m[1][2] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) * s;
+  r.m[2][0] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) * s;
+  r.m[2][1] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) * s;
+  r.m[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) * s;
+  return r;
+}
+
 static void
 StoreColor(float *Out, const D3DCOLORVALUE &C) {
   Out[0] = C.r;
@@ -172,6 +195,7 @@ MTLD3D9Device::FixedFunctionVS(float *C) {
   auto world_view = Multiply(world, view);
   StoreColumns(C + 4 * ff::VSWorldViewProj, Multiply(world_view, transforms_[D3DTS_PROJECTION]), 4);
   StoreColumns(C + 4 * ff::VSWorldView, world_view, 4);
+  StoreColumns(C + 4 * ff::VSNormalMatrix, NormalMatrix(world_view), 3);
   if (s.indexed)
     for (uint32_t i = 0; i < ff::MaxIndexedMatrices; i++)
       StoreColumns(C + 4 * (ff::VSIndexedPalette + 3 * i), Multiply(transforms_[D3DTS_WORLDMATRIX(i)], view), 3);

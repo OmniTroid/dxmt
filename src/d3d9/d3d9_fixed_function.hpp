@@ -52,7 +52,9 @@ constexpr uint32_t VSIndexedPalette = VSProjection + 4;
 constexpr uint32_t MaxIndexedMatrices = 9;
 // D3DRS_POINTSCALE_A, B, C, D3DRS_POINTSIZE * viewport height
 constexpr uint32_t VSPointScale = VSIndexedPalette + 3 * MaxIndexedMatrices;
-constexpr uint32_t VSConstantCount = VSPointScale + 1;
+// inverse transpose of the world-view matrix for normals, three columns
+constexpr uint32_t VSNormalMatrix = VSPointScale + 1;
+constexpr uint32_t VSConstantCount = VSNormalMatrix + 3;
 
 constexpr uint32_t PSTextureFactor = 0;
 constexpr uint32_t PSStageConstantBase = 1;

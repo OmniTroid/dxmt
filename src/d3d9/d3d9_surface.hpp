@@ -133,6 +133,13 @@ public:
     forward_refs_ = false;
   }
 
+  // flip chains rotate contents under unchanged surface pointers
+  void
+  SwapStorage(MTLD3D9Surface &Other) {
+    std::swap(texture_, Other.texture_);
+    std::swap(view_, Other.view_);
+  }
+
   // only lockable back buffers are GDI compatible (Wine's test_lockable_backbuffer)
   void
   RequireLockableForDC() {

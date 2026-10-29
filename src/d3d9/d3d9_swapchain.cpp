@@ -383,6 +383,10 @@ MTLD3D9SwapChain::Present(
   parent_->FlushCommands();
   queue.PresentBoundary();
   present_count_++;
+  // back buffer i shows what i + 1 held, and the last one the presented image (Wine's visual test_flip)
+  if (params_.SwapEffect != D3DSWAPEFFECT_COPY)
+    for (size_t i = 0; i + 1 < backbuffers_.size(); i++)
+      backbuffers_[i]->SwapStorage(*backbuffers_[i + 1].ptr());
   return D3D_OK;
 }
 
