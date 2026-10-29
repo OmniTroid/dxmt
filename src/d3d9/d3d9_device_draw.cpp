@@ -487,7 +487,11 @@ MTLD3D9Device::GetSampler(uint32_t Index) {
   info.max_anisotroy = anisotropic ? std::clamp<DWORD>(ss[D3DSAMP_MAXANISOTROPY], 1, 16) : 1;
   info.normalized_coords = true;
   info.support_argument_buffers = true;
-  float lod_bias = std::bit_cast<float>(ss[D3DSAMP_MIPMAPLODBIAS]);
+  // 'GET4' and 'GET1' in the bias switch AMD's FETCH4 on and off rather than biasing
+  DWORD bias = ss[D3DSAMP_MIPMAPLODBIAS];
+  float lod_bias = bias == MAKEFOURCC('G', 'E', 'T', '4') || bias == MAKEFOURCC('G', 'E', 'T', '1')
+                       ? 0.0f
+                       : std::bit_cast<float>(bias);
 
   Sha1HashState h;
   h.update(info);
@@ -691,7 +695,10 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
   // regenerating mips is a blit, so it has to happen before the render pass starts
   for (auto &binding : textures_)
     if (binding.texture)
-      WithTexture(binding.texture, [](auto *t) { t->FlushMips(); });
+      WithTexture(binding.texture, [](auto *t) {
+        t->FlushManaged();
+        t->FlushMips();
+      });
   std::array<float, ff::VSConstantCount * 4> ff_vs_constants = {};
   std::array<float, ff::PSConstantCount * 4> ff_ps_constants = {};
   MTLD3D9ShaderCode *vs_code = vertex_shader_ ? vertex_shader_->code() : FixedFunctionVS(ff_vs_constants.data());
@@ -778,6 +785,29 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
       shadow_samplers_ |= 1u << i;
   }
   ps_d3d9.shadow_samplers = shadow_samplers_;
+  for (uint32_t i = 0; i < caps::MaxSamplersPS; i++) {
+    auto texture = textures_[i].texture;
+    auto &ss = sampler_states_[i];
+    if (!texture || texture->GetType() != D3DRTYPE_TEXTURE || ss[D3DSAMP_MIPMAPLODBIAS] != MAKEFOURCC('G', 'E', 'T', '4') ||
+        ss[D3DSAMP_MAGFILTER] != D3DTEXF_POINT)
+      continue;
+    D3DSURFACE_DESC desc = {};
+    static_cast<IDirect3DTexture9 *>(texture)->GetLevelDesc(0, &desc);
+    switch ((DWORD)desc.Format) {
+    case D3DFMT_L8:
+    case D3DFMT_L16:
+    case D3DFMT_R16F:
+    case D3DFMT_R32F:
+    case MAKEFOURCC('A', 'T', 'I', '1'):
+    case MAKEFOURCC('D', 'F', '1', '6'):
+    case MAKEFOURCC('D', 'F', '2', '4'):
+    case MAKEFOURCC('I', 'N', 'T', 'Z'):
+      ps_d3d9.fetch4_samplers |= 1u << i;
+      break;
+    default:
+      break;
+    }
+  }
   ps_d3d9.flags |= SM30_SHADER_FLAG_VS_OUTPUTS;
   std::copy(vs_code->outputs().begin(), vs_code->outputs().end(), ps_d3d9.vs_outputs);
   if (ps_code->bytecode()[0] < 0xFFFF0200) {
@@ -821,6 +851,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
                     .update(ps_d3d9.ps1_texture_types)
                     .update(ps_d3d9.vs_outputs)
                     .update(ps_d3d9.shadow_samplers)
+                    .update(ps_d3d9.fetch4_samplers)
                     .final();
   auto ps = ps_code->GetFunction(
       GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version

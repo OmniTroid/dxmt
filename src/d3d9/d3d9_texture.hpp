@@ -129,6 +129,8 @@ public:
   // D3DUSAGE_AUTOGENMIPMAP: writes to level 0 mark the chain dirty, and it's regenerated before the next draw
   void MarkMipsDirty();
   void FlushMips();
+  // D3DPOOL_MANAGED: the system memory copy is authoritative and its dirty region uploads before a draw
+  void FlushManaged();
 
   // UpdateTexture copies only the dirty region (level 0 coordinates) of a source texture, then cleans it.
   void AddDirtyRegion(const D3DBOX &Box);

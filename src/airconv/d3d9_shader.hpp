@@ -103,6 +103,7 @@ struct IOElement {
 struct DecodeOptions {
   uint32_t ps1_texture_types = 0;
   uint32_t shadow_samplers = 0;
+  uint32_t fetch4_samplers = 0;
 
   bool
   operator==(const DecodeOptions &) const = default;

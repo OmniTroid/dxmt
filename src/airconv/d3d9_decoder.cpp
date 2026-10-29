@@ -162,7 +162,8 @@ public:
       ps1_(version.pixel && version.major == 1),
       ps14_(ps1_ && version.minor >= 4),
       ps1_texture_types_(options.ps1_texture_types),
-      shadow_samplers_(options.shadow_samplers) {}
+      shadow_samplers_(options.shadow_samplers),
+      fetch4_samplers_(options.fetch4_samplers) {}
 
   std::optional<std::string>
   run(Reader &reader) {
@@ -980,6 +981,15 @@ private:
         }
         return shadow_compare(s, at, o);
       }
+      if (fetch4_samplers_ & (1u << s)) {
+        SrcOperand at = coord;
+        if ((inst.controls & 0x3) == kTexLdProject) {
+          uint32_t t = scratch();
+          emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Div, temp_dst(t), coord, component(coord, 3)});
+          at = temp_src(t);
+        }
+        return fetch4(s, at, o);
+      }
       switch (inst.opcode) {
       case Opcode::TexLdl:
         emit(InstSampleLOD{o, coord, resource, sampler, component(coord, 3), {0, 0, 0}, std::nullopt});
@@ -1045,10 +1055,27 @@ private:
     emit(InstMov{ic(), out, temp_src(r, replicate(0))});
   }
 
+  // AMD's FETCH4: the first channel of the 2x2 footprint whose top-left texel the coordinate falls in, as
+  // (x+1, y), (x, y+1), (x+1, y+1), (x, y); gather picks the footprint around the nearest texel corner, so the
+  // coordinate moves half a texel first
+  void
+  fetch4(uint32_t stage, SrcOperand coord, DstOperand out) {
+    auto resource = use_sampler(stage, swizzle_identity);
+    uint32_t size = scratch(), at = scratch(), r = scratch();
+    emit(InstResourceInfo{temp_dst(size, 0x3), imm_u(0), resource, InstResourceInfo::M::rcp});
+    emit(InstMov{ic(), temp_dst(at), coord});
+    emit(InstFloatMAD{ic(), temp_dst(at, 0x3), temp_src(size), imm_f(0.5f), coord});
+    SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
+    emit(InstGather{temp_dst(r), temp_src(at), resource, sampler, imm_u(0), std::nullopt});
+    emit(InstMov{ic(), out, temp_src(r, {2, 0, 1, 3})});
+  }
+
   void
   ps1_sample(uint32_t stage, SrcOperand coord, DstOperand out) {
     if (shadow_samplers_ & (1u << stage))
       return shadow_compare(stage, coord, out);
+    if (fetch4_samplers_ & (1u << stage))
+      return fetch4(stage, coord, out);
     auto resource = use_sampler(stage, swizzle_identity);
     SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
     emit(InstSample{out, coord, resource, sampler, {0, 0, 0}, std::nullopt, std::nullopt});
@@ -1547,6 +1574,7 @@ private:
   bool ps14_;
   uint32_t ps1_texture_types_;
   uint32_t shadow_samplers_;
+  uint32_t fetch4_samplers_;
   uint32_t matrix_row_ = 0;
   uint32_t matrix_stages_[3] = {};
   BasicBlock *cur_ = nullptr;

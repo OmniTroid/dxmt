@@ -193,7 +193,9 @@ MTLD3D9Surface::UnlockRect() {
     MarkWritten();
   shadow_->unmap();
 
-  if (texture_ && !(lock_flags_ & D3DLOCK_READONLY)) {
+  // managed texture levels upload their container's dirty region before the next draw instead
+  bool deferred = desc_.Pool == D3DPOOL_MANAGED && container_;
+  if (texture_ && !deferred && !(lock_flags_ & D3DLOCK_READONLY)) {
     uint32_t mask = layout_.BlockSize - 1;
     D3DBOX box = {
         (UINT)lock_rect_.left, (UINT)lock_rect_.top, std::min((UINT)(lock_rect_.right + mask) & ~mask, desc_.Width),

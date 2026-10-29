@@ -290,6 +290,8 @@ struct SM30_SHADER_D3D9_DATA {
   uint32_t vs_outputs[7]; /* bit usage * 16 + usage index */
   /* pixel shaders: samplers bound to depth textures, which D3D9 samples as a depth comparison against z */
   uint32_t shadow_samplers;
+  /* pixel shaders: AMD's FETCH4, samplers that return the 2x2 footprint's first channel instead of filtering */
+  uint32_t fetch4_samplers;
 };
 
 struct SM30_RUNTIME_CONSTANTS {

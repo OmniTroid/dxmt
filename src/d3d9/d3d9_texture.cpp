@@ -201,7 +201,7 @@ MTLD3D9Volume::UnlockBox() {
     return D3DERR_INVALIDCALL;
   locked_ = false;
   shadow_->unmap();
-  if (texture_ && !(lock_flags_ & D3DLOCK_READONLY)) {
+  if (texture_ && desc_.Pool != D3DPOOL_MANAGED && !(lock_flags_ & D3DLOCK_READONLY)) {
     uint32_t mask = layout_.BlockSize - 1;
     D3DBOX box = lock_box_;
     box.Right = std::min((box.Right + mask) & ~mask, desc_.Width);
@@ -324,6 +324,34 @@ void
 MTLD3D9TextureBase<Base>::MarkMipsDirty() {
   if (desc_.Usage & D3DUSAGE_AUTOGENMIPMAP)
     mips_dirty_ = true;
+}
+
+template <typename Base>
+void
+MTLD3D9TextureBase<Base>::FlushManaged() {
+  if (desc_.Pool != D3DPOOL_MANAGED || !dirty_ || !texture_)
+    return;
+  for (uint32_t level = 0; level < desc_.Levels; level++) {
+    D3DBOX box = DirtyRegion(level);
+    if (auto v = volume(level)) {
+      parent_->CopyBufferToTexture(v->EnsureShadow(), v->layout(), texture_, level, 0, box);
+      continue;
+    }
+    for (uint32_t face = 0; face < faces(); face++) {
+      auto s = surface(face, level);
+      if (!s)
+        continue;
+      uint32_t mask = s->layout().BlockSize - 1;
+      D3DBOX aligned = box;
+      aligned.Left &= ~mask;
+      aligned.Top &= ~mask;
+      aligned.Right = std::min((aligned.Right + mask) & ~mask, s->Desc().Width);
+      aligned.Bottom = std::min((aligned.Bottom + mask) & ~mask, s->Desc().Height);
+      parent_->CopyBufferToTexture(s->EnsureShadow(), s->layout(), texture_, level, face, aligned);
+    }
+  }
+  dirty_ = false;
+  MarkMipsDirty();
 }
 
 template <typename Base>
