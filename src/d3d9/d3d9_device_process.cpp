@@ -162,10 +162,6 @@ MTLD3D9Device::ProcessVertices(
   auto lock = Lock();
   if (!pDestBuffer || !vertex_declaration_)
     return D3DERR_INVALIDCALL;
-  if (vertex_shader_) {
-    WARN_ONCE("D3D9: ProcessVertices with a vertex shader is not implemented");
-    return D3DERR_INVALIDCALL;
-  }
   auto dst_buffer = static_cast<MTLD3D9VertexBuffer *>(pDestBuffer);
   D3DVERTEXBUFFER_DESC dst_desc;
   dst_buffer->GetDesc(&dst_desc);
@@ -183,6 +179,9 @@ MTLD3D9Device::ProcessVertices(
   });
   if (!has_positiont || !dst_stride || (DestIndex + VertexCount) * dst_stride > dst_desc.Size)
     return D3DERR_INVALIDCALL;
+
+  if (vertex_shader_)
+    return ProcessVerticesWithShader(SrcStartIndex, DestIndex, VertexCount, dst_buffer, dst_elements, dst_stride, Flags);
 
   std::array<const BYTE *, caps::MaxStreams> sources = {};
   std::vector<MTLD3D9VertexBuffer *> locked;
@@ -331,6 +330,91 @@ MTLD3D9Device::ProcessVertices(
   dst_buffer->storage().Unlock();
   for (auto *vb : locked)
     vb->storage().Unlock();
+  return D3D_OK;
+}
+
+// The vertex shader runs on the GPU with its output registers streamed to a buffer; the CPU then applies the
+// viewport transform and writes the destination declaration, as Windows' software vertex processing does.
+HRESULT
+MTLD3D9Device::ProcessVerticesWithShader(
+    UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, MTLD3D9VertexBuffer *pDest,
+    const std::vector<D3DVERTEXELEMENT9> &DstElements, UINT DstStride, DWORD Flags
+) {
+  auto &outputs = vertex_shader_->code()->outputRegisters();
+  uint32_t registers = 0;
+  for (auto &out : outputs)
+    registers = std::max(registers, out.reg + 1);
+  if (!registers || !VertexCount)
+    return D3D_OK;
+
+  UINT stride = registers * 16;
+  // outputs land at vertex_id - base_vertex, which a non-indexed draw counts from its start vertex
+  Rc<Buffer> buffer = new Buffer((uint64_t)VertexCount * stride, GetMTLDevice());
+  dxmt::Flags<BufferAllocationFlag> flags;
+#ifdef __i386__
+  // a 32-bit process can only read memory placed in its address space
+  flags.set(BufferAllocationFlag::CpuPlaced);
+#endif
+  auto allocation = buffer->allocate(flags);
+  auto _ = buffer->rename(std::move(allocation));
+  so_target_ = buffer;
+  so_registers_ = registers;
+  HRESULT hr = DrawPrimitive(D3DPT_POINTLIST, SrcStartIndex, VertexCount);
+  so_target_ = nullptr;
+  so_registers_ = 0;
+  Emit([](ArgumentEncodingContext &enc) { enc.bindStreamOutputBuffer(0, 0, {}, {}); });
+  if (FAILED(hr))
+    return hr;
+  EndRenderPass();
+  WaitUntilGPUIdle();
+
+  auto find = [&](d3d9bc::Usage usage, uint32_t index) {
+    for (auto &out : outputs)
+      if (out.usage == usage && out.usage_index == index)
+        return (int)out.reg;
+    return -1;
+  };
+  BYTE *dst = nullptr;
+  if (FAILED(pDest->storage().Lock(DestIndex * DstStride, VertexCount * DstStride, (void **)&dst, 0)))
+    return D3DERR_INVALIDCALL;
+  auto base = (const float *)buffer->current()->mappedMemory(0);
+  auto read = [&](int reg, const float *vertex, Vec4 &out) {
+    if (reg < 0)
+      return false;
+    std::memcpy(out.v, vertex + reg * 4, sizeof(out.v));
+    return true;
+  };
+  int pos = find(d3d9bc::Usage::Position, 0);
+  for (UINT n = 0; n < VertexCount; n++) {
+    const float *vertex = base + (size_t)n * registers * 4;
+    Vec4 clip, value;
+    read(pos, vertex, clip);
+    float rhw = clip[3] != 0 ? 1.0f / clip[3] : 1.0f;
+    Vec4 screen = {{
+        viewport_.X + (clip[0] * rhw + 1) * viewport_.Width / 2,
+        viewport_.Y + (1 - clip[1] * rhw) * viewport_.Height / 2,
+        viewport_.MinZ + clip[2] * rhw * (viewport_.MaxZ - viewport_.MinZ),
+        rhw,
+    }};
+    BYTE *out = dst + n * DstStride;
+    for (auto &e : DstElements) {
+      if (e.Stream != 0)
+        continue;
+      if (e.Usage == D3DDECLUSAGE_POSITIONT) {
+        WriteElement(out + e.Offset, e.Type, screen);
+      } else if (e.Usage == D3DDECLUSAGE_COLOR && e.UsageIndex < 2) {
+        if (read(find(d3d9bc::Usage::Color, e.UsageIndex), vertex, value))
+          WriteElement(out + e.Offset, e.Type, value);
+      } else if (e.Usage == D3DDECLUSAGE_TEXCOORD && e.UsageIndex < 8 && !(Flags & D3DPV_DONOTCOPYDATA)) {
+        if (read(find(d3d9bc::Usage::TexCoord, e.UsageIndex), vertex, value))
+          WriteElement(out + e.Offset, e.Type, value);
+      } else if (e.Usage == D3DDECLUSAGE_PSIZE) {
+        if (read(find(d3d9bc::Usage::PSize, 0), vertex, value))
+          WriteElement(out + e.Offset, e.Type, value);
+      }
+    }
+  }
+  pDest->storage().Unlock();
   return D3D_OK;
 }
 

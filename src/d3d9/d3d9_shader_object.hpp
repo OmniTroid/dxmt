@@ -86,6 +86,12 @@ public:
     return outputs_;
   }
 
+  // vertex shaders: the output register each semantic is written to, for ProcessVertices
+  const std::vector<D3D9ShaderInput> &
+  outputRegisters() const {
+    return output_registers_;
+  }
+
   const std::vector<DWORD> &
   bytecode() const {
     return bytecode_;
@@ -110,6 +116,7 @@ private:
   std::vector<MTL_SM50_SHADER_ARGUMENT> arguments_;
   std::vector<D3D9ShaderInput> inputs_;
   std::array<uint32_t, 7> outputs_ = {};
+  std::vector<D3D9ShaderInput> output_registers_;
   std::vector<FloatDef> relative_defs_;
   Sha1Digest sha1_;
   dxmt::mutex mutex_;

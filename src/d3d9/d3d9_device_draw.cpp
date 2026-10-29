@@ -377,7 +377,7 @@ MTLD3D9Device::GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Functio
   WMT::InitializeRenderPipelineInfo(info);
   info.vertex_function = VS;
   info.fragment_function = PS;
-  info.rasterization_enabled = true;
+  info.rasterization_enabled = !so_target_.ptr();
   info.input_primitive_topology = Topology;
   info.raster_sample_count = 1;
 
@@ -439,6 +439,7 @@ MTLD3D9Device::GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Functio
   Sha1HashState h;
   h.update(VS.handle);
   h.update(PS.handle);
+  h.update(info.rasterization_enabled);
   h.update(info.alpha_to_coverage_enabled);
   h.update(info.colors);
   h.update(info.depth_pixel_format);
@@ -898,9 +899,23 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
                     .update(vs_d3d9.clip_plane_mask)
                     .update(vs_d3d9.flags)
                     .final();
-  auto vs = vs_code->GetFunction(
-      GetMTLDevice(), vs_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ia, metal_version
-  );
+  SM50_SHADER_COMPILATION_ARGUMENT_DATA *vs_args = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ia;
+  std::vector<SM50_STREAM_OUTPUT_ELEMENT> so_elements;
+  SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA so = {};
+  if (so_target_.ptr()) {
+    for (uint32_t reg = 0; reg < so_registers_; reg++)
+      for (uint32_t c = 0; c < 4; c++)
+        so_elements.push_back({reg, c, 0, (reg * 4 + c) * 4});
+    so.next = &ia;
+    so.type = SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT;
+    so.num_output_slots = 1;
+    so.num_elements = so_elements.size();
+    so.strides[0] = so_registers_ * 16;
+    so.elements = so_elements.data();
+    vs_args = (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&so;
+    vs_key = Sha1HashState().update(vs_key).update(so_registers_).final();
+  }
+  auto vs = vs_code->GetFunction(GetMTLDevice(), vs_key, vs_args, metal_version);
 
   SM50_SHADER_PSO_PIXEL_SHADER_DATA ps_data = {};
   ps_data.next = &ps_d3d9;
@@ -923,10 +938,10 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
                     .update(ps_d3d9.fetch4_samplers)
                     .update(ps_d3d9.unbound_samplers)
                     .final();
-  auto ps = ps_code->GetFunction(
-      GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version
-  );
-  if (!vs || !ps)
+  WMT::Function ps;
+  if (!so_target_.ptr())
+    ps = ps_code->GetFunction(GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version);
+  if (!vs || (!ps && !so_target_.ptr()))
     return false;
 
   if (!BeginRenderPass())
@@ -1031,6 +1046,14 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
   }
 
   BindStageResources(false, vs_code, vertex_shader ? nullptr : ff_vs_constants.data(), ff::VSConstantCount);
+  if (so_target_.ptr()) {
+    Emit([buffer = so_target_](ArgumentEncodingContext &enc) mutable {
+      enc.bindStreamOutputBuffer(0, 0, std::move(buffer), {});
+    });
+    auto offset = PreAllocateArgumentBuffer(16 * kStreamOutputSlots, 32);
+    Emit([offset](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Ordinary>(offset); });
+    return true;
+  }
   BindStageResources(true, ps_code, pixel_shader_ ? nullptr : ff_ps_constants.data(), ff::PSConstantCount);
   return true;
 }

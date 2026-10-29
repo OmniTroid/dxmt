@@ -252,6 +252,40 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   memcpy(out, data, sizeof(out));
   dst_vb->Unlock();
   check("ProcessVertices lighting", out[0].color == 0xFF800000);
+
+  // with a vertex shader, which runs on the GPU: mad oPos, v0, c0, c1; mov oD0, c2; mov oT0, v0
+  static const DWORD vs_code[] = {
+      0xFFFE0101, 0x0000001F, 0x80000000, 0x900F0000, 0x0000001F, 0x8000000A, 0x900F0001,
+      0x00000004, 0xC00F0000, 0x90E40000, 0xA0E40000, 0xA0E40001, 0x00000001, 0xD00F0000, 0xA0E40002,
+      0x00000001, 0xE00F0000, 0x90E40000, 0x0000FFFF,
+  };
+  IDirect3DVertexShader9 *vs = nullptr;
+  device->CreateVertexShader(vs_code, &vs);
+  device->SetVertexShader(vs);
+  const float vs_consts[] = {1, 1, 1, 1, 0.5f, 0, 0, 0, 0.5f, 0.25f, 1, 1};
+  device->SetVertexShaderConstantF(0, vs_consts, 3);
+  struct OutTex {
+    float x, y, z, rhw;
+    DWORD color;
+    float u, v;
+  } out_tex[1] = {};
+  IDirect3DVertexBuffer9 *tex_vb = nullptr;
+  device->CreateVertexBuffer(sizeof(out_tex), 0, D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1, D3DPOOL_SYSTEMMEM,
+                             &tex_vb, nullptr);
+  check("ProcessVertices with a vertex shader", vs && device->ProcessVertices(1, 0, 1, tex_vb, nullptr, 0) == D3D_OK);
+  tex_vb->Lock(0, 0, &data, D3DLOCK_READONLY);
+  memcpy(out_tex, data, sizeof(out_tex));
+  tex_vb->Unlock();
+  char vs_name[160];
+  snprintf(vs_name, sizeof(vs_name), "vertex shader ProcessVertices output (%g %g %g %g %08lx %g %g)", out_tex[0].x,
+           out_tex[0].y, out_tex[0].z, out_tex[0].rhw, (unsigned long)out_tex[0].color, out_tex[0].u, out_tex[0].v);
+  // source vertex 1 is (1, 1, 0.5): clip (1.5, 1, 0.5, 1) on the 64x64 viewport
+  check(vs_name, out_tex[0].x == 80 && out_tex[0].y == 0 && out_tex[0].z == 0.5f && out_tex[0].rhw == 1 &&
+                     out_tex[0].color == 0xFF8040FF && out_tex[0].u == 1 && out_tex[0].v == 1);
+  device->SetVertexShader(nullptr);
+  if (vs)
+    vs->Release();
+  tex_vb->Release();
   device->SetStreamSource(0, nullptr, 0, 0);
   src_vb->Release();
   dst_vb->Release();

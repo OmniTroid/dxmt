@@ -349,6 +349,10 @@ private:
       MTLD3D9Surface *pSource, const RECT *pSourceRect, MTLD3D9Surface *pDest, const RECT *pDestRect,
       D3DTEXTUREFILTERTYPE Filter
   );
+  HRESULT ProcessVerticesWithShader(
+      UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, MTLD3D9VertexBuffer *pDest,
+      const std::vector<D3DVERTEXELEMENT9> &DstElements, UINT DstStride, DWORD Flags
+  );
   HRESULT FillYUV(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color);
   HRESULT FillBlocks(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color);
   bool ValidMultisampleQuality(D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD Quality);
@@ -373,6 +377,9 @@ private:
   std::atomic<DeviceState> state_ = DeviceState::Ok;
   std::atomic<int> default_resources_ = 0;
   std::atomic<bool> filter_messages_ = false;
+  // ProcessVertices with a vertex shader: draws write the shader's output registers here instead of rasterizing
+  Rc<Buffer> so_target_;
+  uint32_t so_registers_ = 0;
   friend void D3D9CountDefaultResource(IDirect3DDevice9Ex *pDevice, int Delta);
   HWND focus_window_ = nullptr;
   bool restore_screensaver_ = false;

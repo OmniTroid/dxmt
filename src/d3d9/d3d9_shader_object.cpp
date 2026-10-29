@@ -109,6 +109,15 @@ MTLD3D9ShaderCode::Create(const DWORD *pFunction, bool Pixel, std::unique_ptr<MT
       set_output(d3d9bc::Usage::TexCoord, i);
     set_output(d3d9bc::Usage::Fog, 0);
     set_output(d3d9bc::Usage::Position, 0);
+    // before vs_3_0 the output registers are fixed: oPos, oFog, oPts, oD0-1, oT0-7
+    if (pFunction[0] < 0xFFFE0300) {
+      code->output_registers_ = {
+          {d3d9bc::Usage::Position, 0, 0}, {d3d9bc::Usage::Fog, 0, 1}, {d3d9bc::Usage::PSize, 0, 2},
+          {d3d9bc::Usage::Color, 0, 3},    {d3d9bc::Usage::Color, 1, 4},
+      };
+      for (uint32_t i = 0; i < 8; i++)
+        code->output_registers_.push_back({d3d9bc::Usage::TexCoord, i, 5 + i});
+    }
     d3d9bc::Reader reader((const uint32_t *)pFunction, count);
     d3d9bc::Instruction inst;
     while (reader.next(inst)) {
@@ -117,6 +126,9 @@ MTLD3D9ShaderCode::Create(const DWORD *pFunction, bool Pixel, std::unique_ptr<MT
       uint32_t reg_token = inst.operands[1];
       if (d3d9bc::register_type(reg_token) == d3d9bc::RegisterType::Output) {
         set_output(d3d9bc::Usage(inst.operands[0] & 0x1F), (inst.operands[0] >> 16) & 0xF);
+        code->output_registers_.push_back(
+            {d3d9bc::Usage(inst.operands[0] & 0x1F), (inst.operands[0] >> 16) & 0xF, d3d9bc::register_number(reg_token)}
+        );
         continue;
       }
       if (d3d9bc::register_type(reg_token) != d3d9bc::RegisterType::Input)
