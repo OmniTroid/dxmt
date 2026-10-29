@@ -526,6 +526,15 @@ void
 MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const float *FFConstants, UINT FFConstantCount) {
   auto &refl = Code->reflection();
   uint32_t stage = Pixel ? 1 : 0;
+  std::vector<float> merged;
+  if (!FFConstants && !Code->relativeDefs().empty()) {
+    merged.assign(const_float_[stage].begin(), const_float_[stage].end());
+    for (auto &def : Code->relativeDefs())
+      if (def.reg < 256)
+        std::memcpy(&merged[def.reg * 4], def.value, sizeof(def.value));
+    FFConstants = merged.data();
+    FFConstantCount = 256;
+  }
 
   if (refl.NumConstantBuffers) {
     for (uint32_t slot = 0; slot < 4; slot++) {
@@ -679,6 +688,10 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
     ERR_ONCE("D3D9: draw without a vertex declaration");
     return false;
   }
+  // regenerating mips is a blit, so it has to happen before the render pass starts
+  for (auto &binding : textures_)
+    if (binding.texture)
+      WithTexture(binding.texture, [](auto *t) { t->FlushMips(); });
   std::array<float, ff::VSConstantCount * 4> ff_vs_constants = {};
   std::array<float, ff::PSConstantCount * 4> ff_ps_constants = {};
   MTLD3D9ShaderCode *vs_code = vertex_shader_ ? vertex_shader_->code() : FixedFunctionVS(ff_vs_constants.data());
@@ -1437,7 +1450,7 @@ MTLD3D9Device::SetStreamSourceFreq(UINT StreamNumber, UINT Setting) {
   if (StreamNumber >= caps::MaxStreams)
     return D3DERR_INVALIDCALL;
   bool indexed = Setting & D3DSTREAMSOURCE_INDEXEDDATA, instanced = Setting & D3DSTREAMSOURCE_INSTANCEDATA;
-  if ((indexed && instanced) || (StreamNumber == 0 && instanced) || !(Setting & 0x3FFFFFFF))
+  if ((indexed && instanced) || (StreamNumber == 0 && instanced) || !Setting)
     return D3DERR_INVALIDCALL;
   if (recording_) {
     recording_->SetStreamSourceFreq(StreamNumber, Setting);

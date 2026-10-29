@@ -785,6 +785,11 @@ private:
     case Opcode::Cmp:
     case Opcode::Cnd: {
       SrcOperand a = src(p), b = src(p), c = src(p);
+      // a coissued cnd before ps_1_4 always selects the first value (Wine's cnd_test, matching hardware)
+      if (inst.opcode == Opcode::Cnd && ps1_ && !ps14_ && inst.coissue) {
+        sat_write([&](DstOperand o, bool s) { emit(InstMov{ic(s), o, b}); });
+        break;
+      }
       uint32_t t = scratch();
       auto mask_dst = temp_dst(t, 0xF, OperandDataType::Integer);
       if (inst.opcode == Opcode::Cmp)

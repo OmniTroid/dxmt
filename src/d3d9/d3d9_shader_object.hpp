@@ -70,6 +70,16 @@ public:
     return inputs_;
   }
 
+  // def constants a relatively addressed constant read may reach; the device writes them over the app's
+  struct FloatDef {
+    uint32_t reg;
+    float value[4];
+  };
+  const std::vector<FloatDef> &
+  relativeDefs() const {
+    return relative_defs_;
+  }
+
   // vertex shaders: the semantics written, as SM30_SHADER_D3D9_DATA::vs_outputs bits
   const std::array<uint32_t, 7> &
   outputs() const {
@@ -100,6 +110,7 @@ private:
   std::vector<MTL_SM50_SHADER_ARGUMENT> arguments_;
   std::vector<D3D9ShaderInput> inputs_;
   std::array<uint32_t, 7> outputs_ = {};
+  std::vector<FloatDef> relative_defs_;
   Sha1Digest sha1_;
   dxmt::mutex mutex_;
   std::unordered_map<Sha1Digest, WMT::Reference<WMT::Function>> variants_;

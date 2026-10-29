@@ -73,6 +73,29 @@ MTLD3D9ShaderCode::Create(const DWORD *pFunction, bool Pixel, std::unique_ptr<MT
   code->arguments_.resize(code->reflection_.NumArguments);
   SM50GetArgumentsInfo(code->handle_, code->cbuffers_.data(), code->arguments_.data());
 
+  {
+    std::vector<FloatDef> defs;
+    bool relative = false;
+    d3d9bc::Reader reader((const uint32_t *)pFunction, count);
+    d3d9bc::Instruction inst;
+    while (reader.next(inst)) {
+      if (inst.opcode == d3d9bc::Opcode::Def) {
+        FloatDef def = {d3d9bc::register_number(inst.operands[0])};
+        std::memcpy(def.value, inst.operands + 1, sizeof(def.value));
+        defs.push_back(def);
+        continue;
+      }
+      for (uint32_t i = 0; i < inst.length; i++) {
+        uint32_t token = inst.operands[i];
+        if ((token & 0x80000000u) && d3d9bc::register_type(token) == d3d9bc::RegisterType::Const &&
+            d3d9bc::relative_addressing(token))
+          relative = true;
+      }
+    }
+    if (relative)
+      code->relative_defs_ = std::move(defs);
+  }
+
   if (!Pixel) {
     auto set_output = [&](d3d9bc::Usage usage, uint32_t index) {
       uint32_t bit = (uint32_t)usage * 16 + index;
