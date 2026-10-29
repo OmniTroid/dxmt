@@ -133,24 +133,26 @@ MTLD3D9Surface::Shadow() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
+  // a failing call leaves *pLockedRect untouched
   if (!pLockedRect)
     return D3DERR_INVALIDCALL;
-  pLockedRect->pBits = nullptr;
-  pLockedRect->Pitch = 0;
 
   if (!lockable_ || locked_ || !layout_.BlockBytes)
     return D3DERR_INVALIDCALL;
 
   RECT rect = {0, 0, (LONG)desc_.Width, (LONG)desc_.Height};
-  // Windows XP accepts invalid rects and points at their corner, and some games (C&C3) rely on it; the whole
-  // surface counts as written then
+  // DEFAULT pool surfaces refuse invalid and block-misaligned rects. The others accept them, pointing at the rect's
+  // corner as Windows XP did (C&C3 relies on it), and count the whole surface as written for an invalid one.
   RECT origin = rect;
   if (pRect) {
     origin = *pRect;
     bool valid = pRect->left >= 0 && pRect->top >= 0 && pRect->right <= rect.right && pRect->bottom <= rect.bottom &&
                  pRect->left < pRect->right && pRect->top < pRect->bottom;
     uint32_t mask = layout_.BlockSize - 1;
-    if (valid && ((pRect->left & mask) || (pRect->top & mask)))
+    bool aligned = !(pRect->left & mask) && !(pRect->top & mask) &&
+                   ((pRect->right & mask) == 0 || pRect->right == rect.right) &&
+                   ((pRect->bottom & mask) == 0 || pRect->bottom == rect.bottom);
+    if (desc_.Pool == D3DPOOL_DEFAULT && (!valid || !aligned))
       return D3DERR_INVALIDCALL;
     if (valid)
       rect = *pRect;
