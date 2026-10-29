@@ -671,6 +671,9 @@ CreateD3D9Texture(MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC &Desc, IDirect
     return D3DERR_INVALIDCALL;
   if (Desc.Usage & D3DUSAGE_WRITEONLY)
     return D3DERR_INVALIDCALL;
+  // D3D9Ex has no managed pool
+  if (Desc.Pool == D3DPOOL_MANAGED && pDevice->IsExtended())
+    return D3DERR_INVALIDCALL;
   // dynamic GPU outputs and depth render targets don't exist (Wine's test_resource_access)
   if ((Desc.Usage & D3DUSAGE_DYNAMIC) && gpu_output)
     return D3DERR_INVALIDCALL;

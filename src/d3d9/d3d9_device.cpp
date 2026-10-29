@@ -554,6 +554,9 @@ MTLD3D9Device::CreateVertexBuffer(
   InitReturnPtr(ppVertexBuffer);
   if (pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM)
     return D3DERR_NOTAVAILABLE;
+  // D3D9Ex has no managed pool
+  if (extended_ && Pool == D3DPOOL_MANAGED)
+    return D3DERR_INVALIDCALL;
   if (!ppVertexBuffer || !Length || pSharedHandle || !ValidBufferPoolAndUsage(Pool, Usage))
     return D3DERR_INVALIDCALL;
   D3DVERTEXBUFFER_DESC desc = {D3DFMT_VERTEXDATA, D3DRTYPE_VERTEXBUFFER, Usage, Pool, Length, FVF};
@@ -570,6 +573,8 @@ MTLD3D9Device::CreateIndexBuffer(
   InitReturnPtr(ppIndexBuffer);
   if (pSharedHandle && extended_ && Pool == D3DPOOL_SYSTEMMEM)
     return D3DERR_NOTAVAILABLE;
+  if (extended_ && Pool == D3DPOOL_MANAGED)
+    return D3DERR_INVALIDCALL;
   if (!ppIndexBuffer || !Length || pSharedHandle || !ValidBufferPoolAndUsage(Pool, Usage))
     return D3DERR_INVALIDCALL;
   if (Format != D3DFMT_INDEX16 && Format != D3DFMT_INDEX32)
@@ -661,6 +666,9 @@ MTLD3D9Device::CreateRenderTarget(
   );
 }
 
+constexpr DWORD kExSurfaceUsages =
+    D3DUSAGE_RESTRICTED_CONTENT | D3DUSAGE_RESTRICT_SHARED_RESOURCE | D3DUSAGE_RESTRICT_SHARED_RESOURCE_DRIVER;
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateRenderTargetEx(
     UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
@@ -668,6 +676,9 @@ MTLD3D9Device::CreateRenderTargetEx(
 ) {
   auto lock = Lock();
   InitReturnPtr(ppSurface);
+  // only the D3D9Ex restriction flags are usages here (Wine's d3d9ex test_resource_access)
+  if (Usage & ~kExSurfaceUsages)
+    return D3DERR_INVALIDCALL;
   if (pSharedHandle) {
     ERR("IDirect3DDevice9::CreateRenderTarget: shared surfaces are not implemented");
     return D3DERR_INVALIDCALL;
@@ -706,6 +717,9 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
 ) {
   auto lock = Lock();
   InitReturnPtr(ppSurface);
+  // only the D3D9Ex restriction flags are usages here (Wine's d3d9ex test_resource_access)
+  if (Usage & ~kExSurfaceUsages)
+    return D3DERR_INVALIDCALL;
   if (pSharedHandle) {
     ERR("IDirect3DDevice9::CreateDepthStencilSurface: shared surfaces are not implemented");
     return D3DERR_INVALIDCALL;
