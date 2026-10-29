@@ -63,6 +63,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - New Wine unix calls are indexed by position in `__wine_unix_call_funcs`; count entries by commas, not lines (`MTLTexture_getBytes` hid at 145).
 - Changes to shared converter code must leave D3D11 output untouched: compile the shaders in `toolchains/dxbc-check` with `origin/main`'s airconv and this tree's, and `cmp` the `.metallib`s. Delete outputs between runs so a failed conversion can't compare stale files.
 - Texture view key 0 is not a view; `ArgumentEncodingContext::access` asserts on it. Use `texture->fullView` for a whole texture.
+- `sample_compare` on D3D9 depth textures returned 0 whatever the sampler's compare function, even ALWAYS, while a plain sample of the same texture read the depth; shadow sampling compares in the shader instead. Narrow such problems with a tiny repro exe in `toolchains/test/repro` before reading converter code.
 - New compilation argument types need a case in `sm50_compilation_argument32_convert` or 32-bit apps silently drop them.
 
 **Writing test shaders with Wine's d3dcompiler (vkd3d)**

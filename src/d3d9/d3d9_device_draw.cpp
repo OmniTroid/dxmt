@@ -462,8 +462,6 @@ Rc<Sampler>
 MTLD3D9Device::GetSampler(uint32_t Index) {
   auto &ss = sampler_states_[Index];
   WMTSamplerInfo info = {};
-  if (Index < 32 && (shadow_samplers_ & (1u << Index)))
-    info.compare_function = WMTCompareFunctionLessEqual;
   auto filter = [](DWORD f) {
     return f == D3DTEXF_POINT || f == D3DTEXF_NONE ? WMTSamplerMinMagFilterNearest : WMTSamplerMinMagFilterLinear;
   };

@@ -1034,7 +1034,6 @@ private:
                                                         : ResourceType::Texture2D;
       srv.structure_stride = -1;
       srv.sampled = true;
-      srv.compared = shadow_samplers_ & (1u << s);
       info_.srvMap[s] = srv;
       SamplerInfo sampler;
       sampler.range = srv.range;
@@ -1043,16 +1042,20 @@ private:
     return {.range_id = s, .index = s, .read_swizzle = swz};
   }
 
-  // D3D9 samples depth textures as a comparison of the coordinate's z with the stored depth, in every channel
+  // D3D9 samples depth textures as a comparison of the coordinate's z with the stored depth, in every channel.
+  // Metal's sample_compare returned 0 for these textures through our bindings, so the comparison is done here
+  // on a plain sample; that matches point-filtered shadow maps but not hardware PCF under linear filtering.
   void
   shadow_compare(uint32_t stage, SrcOperand coord, DstOperand out) {
-    auto resource = use_sampler(stage, replicate(0));
+    auto resource = use_sampler(stage, swizzle_identity);
     SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
-    uint32_t r = scratch();
-    emit(InstSampleCompare{
-        temp_dst(r, 0x1), coord, resource, sampler, component(coord, 2), {0, 0, 0}, std::nullopt, std::nullopt, false
+    uint32_t d = scratch(), pass = scratch();
+    emit(InstSample{temp_dst(d), coord, resource, sampler, {0, 0, 0}, std::nullopt, std::nullopt});
+    emit(InstFloatCompare{
+        ic(), FloatComparison::GreaterEqual, temp_dst(pass, 0x1, OperandDataType::Integer), temp_src(d, replicate(0)),
+        component(coord, 2)
     });
-    emit(InstMov{ic(), out, temp_src(r, replicate(0))});
+    emit(InstMovConditional{ic(), out, temp_src(pass, replicate(0), OperandDataType::Integer), imm_f(1.0f), imm_f(0.0f)});
   }
 
   // AMD's FETCH4: the first channel of the 2x2 footprint whose top-left texel the coordinate falls in, as
