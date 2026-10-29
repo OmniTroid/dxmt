@@ -39,10 +39,55 @@ Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **ppD3D9Ex) {
   return CreateD3D9(true, ppD3D9Ex);
 }
 
+// The undocumented validator fxc.exe and The Sims 2 use; like Wine's, it accepts every shader.
+namespace {
+struct ShaderValidator;
+typedef HRESULT(WINAPI *ShaderValidatorCallback)(const char *, int, DWORD_PTR, DWORD_PTR, const char *, void *);
+struct ShaderValidatorVtbl {
+  HRESULT(WINAPI *QueryInterface)(ShaderValidator *, REFIID, void **);
+  ULONG(WINAPI *AddRef)(ShaderValidator *);
+  ULONG(WINAPI *Release)(ShaderValidator *);
+  HRESULT(WINAPI *Begin)(ShaderValidator *, ShaderValidatorCallback, void *, DWORD_PTR);
+  HRESULT(WINAPI *Instruction)(ShaderValidator *, const char *, int, const DWORD *, unsigned int);
+  HRESULT(WINAPI *End)(ShaderValidator *);
+};
+struct ShaderValidator {
+  const ShaderValidatorVtbl *vtbl;
+};
+HRESULT WINAPI
+ValidatorQueryInterface(ShaderValidator *, REFIID, void **ppv) {
+  *ppv = nullptr;
+  return E_NOINTERFACE;
+}
+ULONG WINAPI
+ValidatorAddRef(ShaderValidator *) {
+  return 2;
+}
+ULONG WINAPI
+ValidatorRelease(ShaderValidator *) {
+  return 1;
+}
+HRESULT WINAPI
+ValidatorBegin(ShaderValidator *, ShaderValidatorCallback, void *, DWORD_PTR) {
+  return S_OK;
+}
+HRESULT WINAPI
+ValidatorInstruction(ShaderValidator *, const char *, int, const DWORD *, unsigned int) {
+  return S_OK;
+}
+HRESULT WINAPI
+ValidatorEnd(ShaderValidator *) {
+  return S_OK;
+}
+const ShaderValidatorVtbl shader_validator_vtbl = {
+    ValidatorQueryInterface, ValidatorAddRef, ValidatorRelease, ValidatorBegin, ValidatorInstruction, ValidatorEnd,
+};
+ShaderValidator shader_validator = {&shader_validator_vtbl};
+} // namespace
+
 extern "C" void *WINAPI
 Direct3DShaderValidatorCreate9() {
-  ERR("Direct3DShaderValidatorCreate9: not implemented");
-  return nullptr;
+  return &shader_validator;
 }
 
 extern "C" void WINAPI
