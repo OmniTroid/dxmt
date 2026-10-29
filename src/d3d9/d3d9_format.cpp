@@ -147,17 +147,22 @@ D3D9QueryFormat(D3DFORMAT Format, D3D9_FORMAT_DESC &Desc) {
     Desc = {DXGI_FORMAT_D32_FLOAT, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 0, 0, 1)), D3D9_FORMAT_DEPTH};
     return true;
   case D3D9FMT_INTZ:
-  case D3D9FMT_DF24:
   case D3D9FMT_RAWZ:
-    // sampling these returns the depth in every channel
+    // sampling these returns the depth in every channel; AMD's DF16 and DF24 return (d, 0, 0, 1)
     Desc = {
         DXGI_FORMAT_D24_UNORM_S8_UINT, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 2, 2, 2)),
         D3D9_FORMAT_DEPTH | D3D9_FORMAT_STENCIL | D3D9_FORMAT_SAMPLEABLE_DEPTH
     };
     return true;
+  case D3D9FMT_DF24:
+    Desc = {
+        DXGI_FORMAT_D24_UNORM_S8_UINT, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 0, 0, 1)),
+        D3D9_FORMAT_DEPTH | D3D9_FORMAT_SAMPLEABLE_DEPTH
+    };
+    return true;
   case D3D9FMT_DF16:
     Desc = {
-        DXGI_FORMAT_D16_UNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 2, 2, 2)),
+        DXGI_FORMAT_D16_UNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 0, 0, 1)),
         D3D9_FORMAT_DEPTH | D3D9_FORMAT_SAMPLEABLE_DEPTH
     };
     return true;
