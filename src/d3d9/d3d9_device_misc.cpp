@@ -52,6 +52,9 @@ MTLD3D9Device::SetPaletteEntries(UINT PaletteNumber, const PALETTEENTRY *pEntrie
   auto lock = Lock();
   if (!pEntries || PaletteNumber == 0xFFFF)
     return D3DERR_INVALIDCALL;
+  // without D3DPTEXTURECAPS_ALPHAPALETTE every entry must be opaque
+  if (std::any_of(pEntries, pEntries + 256, [](const PALETTEENTRY &e) { return e.peFlags != 0xff; }))
+    return D3DERR_INVALIDCALL;
   std::copy(pEntries, pEntries + 256, palettes_[PaletteNumber].begin());
   return D3D_OK;
 }

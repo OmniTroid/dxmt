@@ -330,7 +330,7 @@ MTLD3D9Surface::GetDC(HDC *phdc) {
   if (!phdc)
     return D3DERR_INVALIDCALL;
   UINT bpp = DCBitsPerPixel(desc_.Format);
-  if (!bpp || map_state_->maps || map_state_->dc)
+  if (!bpp || map_state_->maps || map_state_->dc || (dc_needs_lockable_ && !lockable_))
     return D3DERR_INVALIDCALL;
 
   // a DC is allowed on surfaces the app itself can't lock

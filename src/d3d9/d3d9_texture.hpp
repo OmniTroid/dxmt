@@ -123,7 +123,7 @@ public:
   MTLD3D9Surface *
   surface(uint32_t Face, uint32_t Level) {
     uint32_t index = Face * desc_.Levels + Level;
-    return index < surfaces_.size() ? surfaces_[index].ptr() : nullptr;
+    return Level < desc_.Levels && index < surfaces_.size() ? surfaces_[index].ptr() : nullptr;
   }
 
   MTLD3D9Volume *

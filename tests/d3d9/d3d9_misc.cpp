@@ -58,9 +58,14 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   device->GetClipStatus(&got_status);
   check("clip status round trip", got_status.ClipUnion == D3DCS_LEFT && got_status.ClipIntersection == D3DCS_ALL);
   PALETTEENTRY palette[256] = {}, got_palette[256] = {};
-  palette[7] = {1, 2, 3, 4};
+  for (auto &e : palette)
+    e.peFlags = 0xff;
+  palette[7] = {1, 2, 3, 0xff};
   UINT current = 0;
   check("unknown palette fails", device->SetCurrentTexturePalette(3) == D3DERR_INVALIDCALL);
+  palette[8].peFlags = 4;
+  check("translucent palette fails", device->SetPaletteEntries(4, palette) == D3DERR_INVALIDCALL);
+  palette[8].peFlags = 0xff;
   device->SetPaletteEntries(3, palette);
   device->SetCurrentTexturePalette(3);
   device->GetPaletteEntries(3, got_palette);

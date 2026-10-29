@@ -98,13 +98,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) final {
-    if (!pSizeOfData)
-      return D3DERR_INVALIDCALL;
-    UINT size = *pSizeOfData;
-    HRESULT hr = private_data_.getData(refguid, &size, pData);
-    *pSizeOfData = size;
+    // a missing GUID is reported before the size is checked, and leaves the size untouched
+    UINT size = pSizeOfData ? *pSizeOfData : 0;
+    HRESULT hr = private_data_.getData(refguid, &size, pSizeOfData ? pData : nullptr);
     if (hr == DXGI_ERROR_NOT_FOUND)
       return D3DERR_NOTFOUND;
+    if (!pSizeOfData)
+      return D3DERR_INVALIDCALL;
+    *pSizeOfData = size;
     if (hr == DXGI_ERROR_MORE_DATA)
       return D3DERR_MOREDATA;
     return FAILED(hr) ? D3DERR_INVALIDCALL : D3D_OK;

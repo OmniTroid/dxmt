@@ -1220,8 +1220,8 @@ MTLD3D9Device::CreateVertexDeclaration(
   for (auto e = pVertexElements; e->Stream != 0xFF; e++) {
     if (e->Stream >= caps::MaxStreams || elements.size() >= 64)
       return D3DERR_INVALIDCALL;
-    // only the end marker may be UNUSED (Wine's test_unused_declaration_type)
-    if (e->Type == D3DDECLTYPE_UNUSED)
+    // only the end marker may be UNUSED, and offsets are 4-byte aligned (Wine's test_unused_declaration_type)
+    if (e->Type == D3DDECLTYPE_UNUSED || (e->Offset & 3))
       return E_FAIL;
     elements.push_back(*e);
   }

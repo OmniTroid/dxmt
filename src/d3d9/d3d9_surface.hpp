@@ -133,6 +133,12 @@ public:
     forward_refs_ = false;
   }
 
+  // only lockable back buffers are GDI compatible (Wine's test_lockable_backbuffer)
+  void
+  RequireLockableForDC() {
+    dc_needs_lockable_ = true;
+  }
+
   void
   DetachFromContainer() {
     container_ = nullptr;
@@ -158,6 +164,7 @@ private:
   TextureViewKey view_;
   IUnknown *container_;
   bool forward_refs_ = true;
+  bool dc_needs_lockable_ = false;
   bool lockable_;
   uint32_t level_;
   uint32_t slice_;

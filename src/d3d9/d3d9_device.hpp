@@ -339,6 +339,7 @@ private:
 
   Com<MTLD3D9> parent_;
   MTLD3D9Adapter *adapter_;
+  bool ValidMultisampleQuality(D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD Quality);
   D3DDEVICE_CREATION_PARAMETERS creation_params_;
   bool extended_;
   bool multithreaded_;

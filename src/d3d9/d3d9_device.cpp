@@ -761,6 +761,15 @@ MTLD3D9Device::CreateRenderTarget(
 constexpr DWORD kExSurfaceUsages =
     D3DUSAGE_RESTRICTED_CONTENT | D3DUSAGE_RESTRICT_SHARED_RESOURCE | D3DUSAGE_RESTRICT_SHARED_RESOURCE_DRIVER;
 
+bool
+MTLD3D9Device::ValidMultisampleQuality(D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD Quality) {
+  if (MultiSample == D3DMULTISAMPLE_NONE)
+    return true;
+  DWORD levels = 0;
+  return SUCCEEDED(adapter_->CheckDeviceMultiSampleType(D3DDEVTYPE_HAL, Format, TRUE, MultiSample, &levels)) &&
+         Quality < levels;
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateRenderTargetEx(
     UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
@@ -778,6 +787,8 @@ MTLD3D9Device::CreateRenderTargetEx(
 
   D3D9_FORMAT_DESC format;
   if (!D3D9QueryFormat(Format, format) || (format.Flags & (D3D9_FORMAT_DEPTH | D3D9_FORMAT_BC)))
+    return D3DERR_INVALIDCALL;
+  if (!ValidMultisampleQuality(Format, MultiSample, MultisampleQuality))
     return D3DERR_INVALIDCALL;
 
   D3DSURFACE_DESC desc = {};
@@ -819,6 +830,8 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
 
   D3D9_FORMAT_DESC format;
   if (!D3D9QueryFormat(Format, format) || !(format.Flags & D3D9_FORMAT_DEPTH))
+    return D3DERR_INVALIDCALL;
+  if (!ValidMultisampleQuality(Format, MultiSample, MultisampleQuality))
     return D3DERR_INVALIDCALL;
 
   D3DSURFACE_DESC desc = {};
@@ -1101,7 +1114,7 @@ MTLD3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRend
     return D3DERR_INVALIDCALL;
 
   auto surface = static_cast<MTLD3D9Surface *>(pRenderTarget);
-  if (surface && !(surface->Desc().Usage & D3DUSAGE_RENDERTARGET))
+  if (surface && (!(surface->Desc().Usage & D3DUSAGE_RENDERTARGET) || surface->GetParentDevice() != this))
     return D3DERR_INVALIDCALL;
 
   if (render_targets_[RenderTargetIndex].ptr() != surface) {
@@ -1131,7 +1144,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) {
   auto lock = Lock();
   auto surface = static_cast<MTLD3D9Surface *>(pNewZStencil);
-  if (surface && !surface->IsDepthStencil())
+  if (surface && (!surface->IsDepthStencil() || surface->GetParentDevice() != this))
     return D3DERR_INVALIDCALL;
   if (depth_stencil_.ptr() != surface)
     EndRenderPass();

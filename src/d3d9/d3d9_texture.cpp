@@ -695,7 +695,7 @@ CreateD3D9Texture(MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC &Desc, IDirect
   UINT max_levels = MaxLevels(desc.Width, desc.Height, desc.Type == D3DRTYPE_VOLUMETEXTURE ? desc.Depth : 1);
   UINT storage_levels;
   if (desc.Usage & D3DUSAGE_AUTOGENMIPMAP) {
-    if (desc.Levels > 1 || desc.Pool == D3DPOOL_SYSTEMMEM)
+    if (desc.Levels > 1 || desc.Pool == D3DPOOL_SYSTEMMEM || desc.Type == D3DRTYPE_VOLUMETEXTURE)
       return D3DERR_INVALIDCALL;
     desc.Levels = 1;
     storage_levels = max_levels;
