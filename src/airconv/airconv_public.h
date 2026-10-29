@@ -272,7 +272,7 @@ enum SM30_SHADER_FLAG {
   SM30_SHADER_FLAG_POINT_SIZE = 1 << 2,
   /* pixel shaders: vs_outputs lists what the vertex shader writes; other inputs read zero */
   SM30_SHADER_FLAG_VS_OUTPUTS = 1 << 3,
-  /* vertex shader adds depth_bias * w to the output z */
+  /* pixel shader writes its depth plus depth_bias, unless it writes depth itself */
   SM30_SHADER_FLAG_DEPTH_BIAS = 1 << 4,
 };
 
@@ -307,7 +307,7 @@ struct SM30_RUNTIME_CONSTANTS {
   float bump_env[8][4];       /* D3DTSS_BUMPENVMAT00, 01, 10, 11 */
   float bump_luminance[8][4]; /* D3DTSS_BUMPENVLSCALE, D3DTSS_BUMPENVLOFFSET, 0, 0 */
   float projection[8][4];     /* one-hot component ps_1_x tex divides by, or zero */
-  float depth_bias[4];        /* D3DRS_DEPTHBIAS in clip-space z units, 0, 0, 0 */
+  float depth_bias[4];        /* D3DRS_DEPTHBIAS, 0, 0, 0 */
 };
 
 /* D3D9 vertex declaration types Metal can't fetch directly; or'd into SM50_IA_INPUT_ELEMENT.format << 16 */

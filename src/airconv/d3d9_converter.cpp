@@ -252,7 +252,7 @@ struct Driver {
       });
       prologue.Add([=](IOHelper &io) -> llvm::Error { return io.InitializeInput(index, reg::PSInputFog, 0xF); });
     }
-    if (data.uses_vpos || variant.fog_mode >= SM30_FOG_EXP) {
+    if (data.uses_vpos || variant.fog_mode >= SM30_FOG_EXP || biasesDepth()) {
       auto index = func_signature.DefineInput(InputPosition{.interpolation = Interpolation::center_no_perspective});
       prologue.Add([=](IOHelper &io) -> llvm::Error { return io.InitializeInput(index, reg::PSInputVPos, 0xF); });
     }
@@ -283,7 +283,7 @@ struct Driver {
       });
     }
 
-    if (data.writes_depth) {
+    if (data.writes_depth || biasesDepth()) {
       prologue.Add([](IOHelper &io) -> llvm::Error { return io.CreateDepthOutputRegister(); });
       if (!pso || !pso->disable_depth_output) {
         auto index = func_signature.DefineOutput(OutputDepth{.depth_argument = DepthArgument::any});
@@ -300,6 +300,11 @@ struct Driver {
         return io.PopulateDefaultCoverageMask(ret, index, sample_mask);
       });
     }
+  }
+
+  bool
+  biasesDepth() const {
+    return data.version.pixel && (variant.flags & SM30_SHADER_FLAG_DEPTH_BIAS) && !data.writes_depth;
   }
 
   BasicBlock *
@@ -353,10 +358,19 @@ struct Driver {
       discard_unless({temp_src(e, rep(0), OperandDataType::Integer), true});
     }
 
+    SrcOperand pixel_z = SrcOperandInput{._ = {rep(2), false, false, OperandDataType::Float}, .regid = reg::PSInputVPos};
+    if (biasesDepth()) {
+      cur->instructions.push_back(InstFloatBinaryOp{
+          kNoSat, FloatBinaryOp::Add, temp_dst(e + 2, 0x1), pixel_z, runtime_src(offsetof(SM30_RUNTIME_CONSTANTS, depth_bias) / 16, rep(0))
+      });
+      pixel_z = temp_src(e + 2, rep(0));
+      cur->instructions.push_back(InstMov{kSat, DstOperandOutputDepth{._ = {0x1, OperandDataType::Float}}, pixel_z});
+    }
+
     if (data.version.pixel && color0 && variant.fog_mode != SM30_FOG_NONE) {
       auto f = temp_dst(e, 0x1);
       SrcOperand fx = temp_src(e, rep(0));
-      SrcOperand z = SrcOperandInput{._ = {rep(2), false, false, OperandDataType::Float}, .regid = reg::PSInputVPos};
+      SrcOperand z = pixel_z;
       auto &ins = cur->instructions;
       switch (variant.fog_mode) {
       case SM30_FOG_VERTEX:
@@ -392,12 +406,6 @@ struct Driver {
         cur->instructions.push_back(InstDotProduct{
             kNoSat, DstOperandOutput{._ = {0x1, OperandDataType::Float}, .regid = reg::VSOutClipBase + k++, .phase = ~0u},
             temp_src(reg::OutPos), runtime_src(3 + i), 4
-        });
-      }
-      if (variant.flags & SM30_SHADER_FLAG_DEPTH_BIAS) {
-        cur->instructions.push_back(InstFloatMAD{
-            kNoSat, temp_dst(reg::OutPos, 0x4), runtime_src(offsetof(SM30_RUNTIME_CONSTANTS, depth_bias) / 16, rep(0)),
-            temp_src(reg::OutPos, rep(3)), temp_src(reg::OutPos, rep(2))
         });
       }
       if (variant.flags & SM30_SHADER_FLAG_POINT_SIZE) {

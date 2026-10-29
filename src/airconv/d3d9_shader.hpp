@@ -57,7 +57,8 @@ constexpr uint32_t OutFog = 61;
 constexpr uint32_t OutPSize = 62;
 constexpr uint32_t EpilogueBase = 63;
 constexpr uint32_t EpilogueCount = 6;
-constexpr uint32_t TotalTemps = EpilogueBase + EpilogueCount;
+constexpr uint32_t OutSpecular = EpilogueBase + EpilogueCount;
+constexpr uint32_t TotalTemps = OutSpecular + 1;
 
 // pixel shader inputs before ps_3_0: v0-v1 are colors, t0-t7 are texture coordinates
 constexpr uint32_t PSTexCoordBase = 2;

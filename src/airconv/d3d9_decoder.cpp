@@ -185,6 +185,7 @@ public:
           ic(), DstOperandOutput{._ = {0xF, OperandDataType::Float}, .regid = reg::VSOutColorBase, .phase = kNoPhase},
           imm_f(1.0f, 1.0f, 1.0f, 1.0f)
       });
+      emit(InstMov{ic(), temp_dst(reg::OutSpecular), imm_f(0.0f, 0.0f, 0.0f, 0.0f)});
     }
 
     d3d9bc::Instruction inst;
@@ -216,6 +217,17 @@ public:
         copy_out(reg::OutColorBase + i, i);
     if (d_.pos_output_reg != ~0u)
       copy_out(reg::OutPos, d_.pos_output_reg);
+    if (writes_specular_) {
+      copy_out(reg::OutSpecular, reg::VSOutColorBase + 1);
+      // without oFog, vertex fog is the specular alpha
+      if (d_.fog_output_reg == ~0u) {
+        record_legacy_output(reg::VSOutFog, Usage::Fog, 0);
+        d_.copy_bb->instructions.push_back(InstMov{
+            ic(), DstOperandOutput{._ = {0xF, OperandDataType::Float}, .regid = reg::VSOutFog, .phase = kNoPhase},
+            temp_src(reg::OutSpecular, replicate(3))
+        });
+      }
+    }
     if (d_.fog_output_reg != ~0u)
       copy_out(reg::OutFog, d_.fog_output_reg);
 
@@ -520,6 +532,11 @@ private:
       // vertex colors before vs_3_0 are clamped to [0, 1] before interpolation
       result.saturate = true;
       record_legacy_output(reg::VSOutColorBase + n, Usage::Color, n);
+      if (n == 1) {
+        writes_specular_ = true;
+        result.op = temp_dst(reg::OutSpecular, mask);
+        break;
+      }
       result.op = DstOperandOutput{
           ._ = {mask, OperandDataType::Float}, .regid = reg::VSOutColorBase + n, .phase = kNoPhase
       };
@@ -1635,6 +1652,7 @@ private:
   uint32_t scratch_next_ = 0;
   uint32_t cb_used_ = 0;
   uint32_t psize_output_reg_ = ~0u;
+  bool writes_specular_ = false;
   bool pred_not_ = false;
   std::optional<std::string> error_;
 };
