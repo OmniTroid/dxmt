@@ -39,6 +39,7 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - When a test disagrees with the expectation, re-derive the expectation before touching the code. Wrong expectations so far: SRCALPHA/INVSRCALPHA also blends alpha (0.75, not 1.0); a 2x2 texture sampled at uv (0.25, 0.5) is texel (0, 1); a constant with a negative z makes `texkill` discard; fixed-function lighting is per vertex, so a full-screen quad's center shows the interpolated corner values; D3DRS_LOCALVIEWER defaults to TRUE; lit vertex alpha is the diffuse material's alpha.
 - Wine's expectations aren't ground truth. `broken()` marks results real Windows drivers give, and Wine counts them as failures, so passing a test can mean copying one vendor. When Windows results disagree, match what games relied on, and fix the test in the Wine fork (`~/code/wine`, branch `main`) when it is wrong or incomplete.
 - Stop a run's watcher as soon as the run ends.
+- While iterating, run only the tests a change affects (`winetest.sh <suite> <test>...`, one of our exes); run the full suite once at the end of a batch.
 - Screenshots: capture a single window by its exact title (`screencapture -l <id>`), never the whole screen, and never pick a window by owner process: other Wine apps (games) may be running.
 
 ## Traps
