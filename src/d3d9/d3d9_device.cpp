@@ -463,12 +463,14 @@ CreateStandaloneSurface(
     MTLD3D9Device *pDevice, const D3DSURFACE_DESC &Desc, bool Lockable, IDirect3DSurface9 **ppSurface
 ) {
   InitReturnPtr(ppSurface);
-  if (!ppSurface || !Desc.Width || !Desc.Height)
+  if (!ppSurface || !Desc.Width || !Desc.Height || !D3D9SizeInWholeBlocks(Desc.Format, Desc.Width, Desc.Height))
     return D3DERR_INVALIDCALL;
 
   Rc<Texture> texture;
   D3D9_FORMAT_DESC format;
   bool null_target = D3D9QueryFormat(Desc.Format, format) && (format.Flags & D3D9_FORMAT_NULL_RT);
+  if ((format.Flags & D3D9_FORMAT_CPU_ONLY) && Desc.Pool != D3DPOOL_SCRATCH)
+    return D3DERR_INVALIDCALL;
   if (Desc.Pool != D3DPOOL_SYSTEMMEM && Desc.Pool != D3DPOOL_SCRATCH && !null_target) {
     HRESULT hr = CreateD3D9SurfaceTexture(pDevice, Desc, texture);
     if (FAILED(hr))
@@ -636,6 +638,7 @@ MTLD3D9Device::CreateRenderTargetEx(
     BOOL Lockable, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
   auto lock = Lock();
+  InitReturnPtr(ppSurface);
   if (pSharedHandle) {
     ERR("IDirect3DDevice9::CreateRenderTarget: shared surfaces are not implemented");
     return D3DERR_INVALIDCALL;
@@ -673,6 +676,7 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
     BOOL Discard, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
   auto lock = Lock();
+  InitReturnPtr(ppSurface);
   if (pSharedHandle) {
     ERR("IDirect3DDevice9::CreateDepthStencilSurface: shared surfaces are not implemented");
     return D3DERR_INVALIDCALL;
@@ -707,6 +711,7 @@ MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
     DWORD Usage
 ) {
   auto lock = Lock();
+  InitReturnPtr(ppSurface);
   if (pSharedHandle) {
     ERR("IDirect3DDevice9::CreateOffscreenPlainSurface: shared surfaces are not implemented");
     return D3DERR_INVALIDCALL;
@@ -1321,6 +1326,7 @@ CreateD3D9Device(
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) {
+  InitReturnPtr(ppQuery);
   if (!MTLD3D9Query::Supported(Type))
     return D3DERR_NOTAVAILABLE;
   if (!ppQuery)

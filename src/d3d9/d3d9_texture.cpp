@@ -628,11 +628,13 @@ MaxLevels(UINT Width, UINT Height, UINT Depth) {
 HRESULT
 CreateD3D9Texture(MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC &Desc, IDirect3DBaseTexture9 **ppTexture) {
   InitReturnPtr(ppTexture);
-  if (!ppTexture || !Desc.Width || !Desc.Height || !Desc.Depth)
+  if (!ppTexture || !Desc.Width || !Desc.Height || !Desc.Depth || !D3D9SizeInWholeBlocks(Desc.Format, Desc.Width, Desc.Height))
     return D3DERR_INVALIDCALL;
 
   D3D9_FORMAT_DESC format;
   if (!D3D9QueryFormat(Desc.Format, format) || (format.Flags & D3D9_FORMAT_NULL_RT && Desc.Type != D3DRTYPE_TEXTURE))
+    return D3DERR_INVALIDCALL;
+  if ((format.Flags & D3D9_FORMAT_CPU_ONLY) && Desc.Pool != D3DPOOL_SCRATCH)
     return D3DERR_INVALIDCALL;
 
   bool gpu_output = Desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL);

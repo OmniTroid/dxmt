@@ -44,6 +44,8 @@ enum D3D9_FORMAT_FLAG : uint32_t {
   D3D9_FORMAT_BACKBUFFER = 32,
   D3D9_FORMAT_DISPLAY = 64,
   D3D9_FORMAT_NULL_RT = 128,
+  // YUY2 and UYVY: system memory layout only, so scratch resources only
+  D3D9_FORMAT_CPU_ONLY = 256,
 };
 
 struct D3D9_FORMAT_DESC {
@@ -75,5 +77,13 @@ struct D3D9_FORMAT_LAYOUT {
 };
 
 bool D3D9GetFormatLayout(WMT::Device Device, D3DFORMAT Format, D3D9_FORMAT_LAYOUT &Layout);
+
+// DXT1-5 resources need sizes in whole 4x4 blocks; ATI1/ATI2 and YUV formats don't (Wine's test_surface_blocks)
+inline bool
+D3D9SizeInWholeBlocks(D3DFORMAT Format, UINT Width, UINT Height) {
+  bool dxt = Format == D3DFMT_DXT1 || Format == D3DFMT_DXT2 || Format == D3DFMT_DXT3 || Format == D3DFMT_DXT4 ||
+             Format == D3DFMT_DXT5;
+  return !dxt || (!(Width & 3) && !(Height & 3));
+}
 
 } // namespace dxmt

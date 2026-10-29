@@ -169,6 +169,10 @@ D3D9QueryFormat(D3DFORMAT Format, D3D9_FORMAT_DESC &Desc) {
   case D3D9FMT_NULL:
     Desc = {DXGI_FORMAT_UNKNOWN, WMTPixelFormatInvalid, D3D9_FORMAT_NULL_RT};
     return true;
+  case D3DFMT_YUY2:
+  case D3DFMT_UYVY:
+    Desc = {DXGI_FORMAT_UNKNOWN, WMTPixelFormatInvalid, D3D9_FORMAT_CPU_ONLY};
+    return true;
   default:
     return false;
   }
@@ -192,7 +196,14 @@ D3D9GetPixelFormat(WMT::Device Device, D3DFORMAT Format) {
 bool
 D3D9GetFormatLayout(WMT::Device Device, D3DFORMAT Format, D3D9_FORMAT_LAYOUT &Layout) {
   D3D9_FORMAT_DESC desc;
-  if (!D3D9QueryFormat(Format, desc) || desc.DXGIFormat == DXGI_FORMAT_UNKNOWN)
+  if (!D3D9QueryFormat(Format, desc))
+    return false;
+  // 2x1 pixel blocks of 4 bytes; Windows doesn't enforce them on locks
+  if (desc.Flags & D3D9_FORMAT_CPU_ONLY) {
+    Layout = {2, 1};
+    return true;
+  }
+  if (desc.DXGIFormat == DXGI_FORMAT_UNKNOWN)
     return false;
   MTL_DXGI_FORMAT_DESC metal;
   if (FAILED(MTLQueryDXGIFormat(Device, desc.DXGIFormat, metal)))
