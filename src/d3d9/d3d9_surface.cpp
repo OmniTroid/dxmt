@@ -25,6 +25,32 @@
 #include "util_string.hpp"
 #include <algorithm>
 
+namespace {
+
+struct D3DKMT_CREATEDCFROMMEMORY {
+  void *pMemory;
+  D3DFORMAT Format;
+  UINT Width;
+  UINT Height;
+  UINT Pitch;
+  HDC hDeviceDc;
+  PALETTEENTRY *pColorTable;
+  HDC hDc;
+  HANDLE hBitmap;
+};
+
+struct D3DKMT_DESTROYDCFROMMEMORY {
+  HDC hDc;
+  HANDLE hBitmap;
+};
+
+} // namespace
+
+extern "C" {
+DECLSPEC_IMPORT LONG WINAPI D3DKMTCreateDCFromMemory(D3DKMT_CREATEDCFROMMEMORY *desc);
+DECLSPEC_IMPORT LONG WINAPI D3DKMTDestroyDCFromMemory(const D3DKMT_DESTROYDCFROMMEMORY *desc);
+}
+
 namespace dxmt {
 
 MTLD3D9Surface::MTLD3D9Surface(
@@ -167,7 +193,7 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
   if (!pLockedRect)
     return D3DERR_INVALIDCALL;
 
-  if (!lockable_ || locked_ || !layout_.BlockBytes)
+  if (!lockable_ || locked_ || map_state_->dc || !layout_.BlockBytes)
     return D3DERR_INVALIDCALL;
 
   RECT rect = {0, 0, (LONG)desc_.Width, (LONG)desc_.Height};
@@ -220,6 +246,7 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
   pLockedRect->pBits = (char *)data + (ptrdiff_t)(origin.top / (LONG)layout_.BlockSize) * pitch +
                        (ptrdiff_t)(origin.left / (LONG)layout_.BlockSize) * layout_.BlockBytes;
   locked_ = true;
+  map_state_->maps++;
   lock_flags_ = Flags;
   lock_rect_ = rect;
   if (container_ && !(Flags & (D3DLOCK_READONLY | D3DLOCK_NO_DIRTY_UPDATE))) {
@@ -246,7 +273,9 @@ MTLD3D9Surface::MarkWritten() {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::UnlockRect() {
   if (!locked_) {
-    // unlocking an unlocked 2D texture level succeeds, unlike other surfaces
+    // unlocking an unlocked 2D texture level succeeds, unlike other surfaces, and so does any level while a DC is out
+    if (map_state_->dc)
+      return D3D_OK;
     IDirect3DTexture9 *texture = nullptr;
     if (container_ && SUCCEEDED(container_->QueryInterface(__uuidof(IDirect3DTexture9), (void **)&texture))) {
       texture->Release();
@@ -255,6 +284,7 @@ MTLD3D9Surface::UnlockRect() {
     return D3DERR_INVALIDCALL;
   }
   locked_ = false;
+  map_state_->maps--;
   if (!(lock_flags_ & D3DLOCK_READONLY))
     MarkWritten();
   if (shared_) {
@@ -300,7 +330,7 @@ MTLD3D9Surface::GetDC(HDC *phdc) {
   if (!phdc)
     return D3DERR_INVALIDCALL;
   UINT bpp = DCBitsPerPixel(desc_.Format);
-  if (!bpp || locked_ || dc_)
+  if (!bpp || map_state_->maps || map_state_->dc)
     return D3DERR_INVALIDCALL;
 
   // a DC is allowed on surfaces the app itself can't lock
@@ -311,40 +341,22 @@ MTLD3D9Surface::GetDC(HDC *phdc) {
   if (FAILED(hr))
     return hr;
 
-  struct {
-    BITMAPINFOHEADER header;
-    DWORD masks[3];
-  } info = {};
-  info.header.biSize = sizeof(info.header);
-  info.header.biWidth = desc_.Width;
-  info.header.biHeight = -(LONG)desc_.Height;
-  info.header.biPlanes = 1;
-  info.header.biBitCount = bpp;
-  info.header.biCompression = BI_RGB;
-  if (desc_.Format == D3DFMT_R5G6B5) {
-    info.header.biCompression = BI_BITFIELDS;
-    info.masks[0] = 0xF800;
-    info.masks[1] = 0x07E0;
-    info.masks[2] = 0x001F;
-  }
-  void *bits = nullptr;
-  dib_ = CreateDIBSection(nullptr, (BITMAPINFO *)&info, DIB_RGB_COLORS, &bits, nullptr, 0);
-  dc_ = CreateCompatibleDC(nullptr);
-  if (!dib_ || !dc_) {
-    if (dib_)
-      DeleteObject(dib_);
-    if (dc_)
-      DeleteDC(dc_);
-    dib_ = nullptr;
-    dc_ = nullptr;
+  D3DKMT_CREATEDCFROMMEMORY desc = {};
+  desc.pMemory = dc_lock_.pBits;
+  desc.Format = desc_.Format;
+  desc.Width = desc_.Width;
+  desc.Height = desc_.Height;
+  desc.Pitch = dc_lock_.Pitch;
+  desc.hDeviceDc = CreateCompatibleDC(nullptr);
+  LONG status = D3DKMTCreateDCFromMemory(&desc);
+  DeleteDC(desc.hDeviceDc);
+  if (status) {
     UnlockRect();
     return D3DERR_INVALIDCALL;
   }
-  dib_bits_ = bits;
-  dib_pitch_ = (desc_.Width * bpp + 31) / 32 * 4;
-  for (UINT y = 0; y < desc_.Height; y++)
-    std::memcpy((char *)bits + y * dib_pitch_, (char *)dc_lock_.pBits + y * dc_lock_.Pitch, desc_.Width * bpp / 8);
-  previous_bitmap_ = SelectObject(dc_, dib_);
+  dc_ = desc.hDc;
+  dc_bitmap_ = desc.hBitmap;
+  map_state_->dc = true;
   *phdc = dc_;
   return D3D_OK;
 }
@@ -354,14 +366,11 @@ MTLD3D9Surface::ReleaseDC(HDC hdc) {
   if (!dc_ || hdc != dc_)
     return D3DERR_INVALIDCALL;
   GdiFlush();
-  UINT bytes = desc_.Width * DCBitsPerPixel(desc_.Format) / 8;
-  for (UINT y = 0; y < desc_.Height; y++)
-    std::memcpy((char *)dc_lock_.pBits + y * dc_lock_.Pitch, (char *)dib_bits_ + y * dib_pitch_, bytes);
-  SelectObject(dc_, previous_bitmap_);
-  DeleteDC(dc_);
-  DeleteObject(dib_);
+  D3DKMT_DESTROYDCFROMMEMORY desc = {dc_, dc_bitmap_};
+  D3DKMTDestroyDCFromMemory(&desc);
   dc_ = nullptr;
-  dib_ = nullptr;
+  dc_bitmap_ = nullptr;
+  map_state_->dc = false;
   return UnlockRect();
 }
 

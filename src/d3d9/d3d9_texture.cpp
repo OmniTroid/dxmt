@@ -247,6 +247,7 @@ MTLD3D9TextureBase<Base>::MTLD3D9TextureBase(
     return;
   }
 
+  auto map_state = std::make_shared<MTLD3D9Surface::MapState>();
   for (uint32_t face = 0; face < faces(); face++) {
     for (uint32_t level = 0; level < Desc.Levels; level++) {
       D3DSURFACE_DESC sd = {};
@@ -258,6 +259,7 @@ MTLD3D9TextureBase<Base>::MTLD3D9TextureBase(
       sd.Width = std::max(1u, Desc.Width >> level);
       sd.Height = std::max(1u, Desc.Height >> level);
       surfaces_.emplace_back(new MTLD3D9Surface(pDevice, sd, Rc(texture_), this, lockable, level, face));
+      surfaces_.back()->ShareMapState(map_state);
     }
   }
 

@@ -117,6 +117,16 @@ public:
     shadow_image_ = Image;
   }
 
+  // locks and DCs are counted per texture: a DC excludes locks and other DCs on every level and face
+  struct MapState {
+    uint32_t maps = 0;
+    bool dc = false;
+  };
+  void
+  ShareMapState(std::shared_ptr<MapState> State) {
+    map_state_ = std::move(State);
+  }
+
   // swap chain back buffers keep their own refcount; texture levels forward theirs to the texture
   void
   KeepOwnRefcount() {
@@ -164,11 +174,9 @@ private:
   uint32_t shadow_pitch_ = 0;
   uint32_t shadow_image_ = 0;
   bool locked_ = false;
+  std::shared_ptr<MapState> map_state_ = std::make_shared<MapState>();
   HDC dc_ = nullptr;
-  HBITMAP dib_ = nullptr;
-  HGDIOBJ previous_bitmap_ = nullptr;
-  void *dib_bits_ = nullptr;
-  UINT dib_pitch_ = 0;
+  HANDLE dc_bitmap_ = nullptr;
   D3DLOCKED_RECT dc_lock_ = {};
   DWORD lock_flags_ = 0;
   RECT lock_rect_ = {};
