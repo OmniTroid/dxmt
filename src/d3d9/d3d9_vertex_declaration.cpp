@@ -95,6 +95,17 @@ D3D9DeclarationFromFVF(DWORD FVF) {
     break;
   }
 
+  // native quirks (Wine's test_fvf_decl_conversion): XYZB5 without LASTBETA makes the fifth value FLOAT1 indices,
+  // and XYZB2 with LASTBETA_D3DCOLOR declares a D3DCOLOR weight and UBYTE4 indices
+  if (blend_weights == 5 && !(FVF & (D3DFVF_LASTBETA_UBYTE4 | D3DFVF_LASTBETA_D3DCOLOR))) {
+    add(D3DDECLTYPE_FLOAT4, D3DDECLUSAGE_BLENDWEIGHT, 0, 16);
+    add(D3DDECLTYPE_FLOAT1, D3DDECLUSAGE_BLENDINDICES, 0, 4);
+    blend_weights = 0;
+  } else if (blend_weights == 2 && (FVF & D3DFVF_LASTBETA_D3DCOLOR)) {
+    add(D3DDECLTYPE_D3DCOLOR, D3DDECLUSAGE_BLENDWEIGHT, 0, 4);
+    add(D3DDECLTYPE_UBYTE4, D3DDECLUSAGE_BLENDINDICES, 0, 4);
+    blend_weights = 0;
+  }
   if (blend_weights) {
     bool last_index = FVF & (D3DFVF_LASTBETA_UBYTE4 | D3DFVF_LASTBETA_D3DCOLOR);
     uint32_t weights = last_index ? blend_weights - 1 : blend_weights;
