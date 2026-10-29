@@ -27,6 +27,7 @@
 #include "dxmt_sampler.hpp"
 #include "sha1/sha1_util.hpp"
 #include <unordered_map>
+#include <atomic>
 #include "d3d9_surface.hpp"
 #include "d3d9_swapchain.hpp"
 #include "com/com_pointer.hpp"
@@ -205,6 +206,21 @@ public:
     return extended_;
   }
 
+  void ProcessFocusMessage(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, bool Unicode);
+  // focus changes of a fullscreen app: lost when deactivated, needing a Reset (D3D9Ex: fine) when back
+  void SetActive(bool Active);
+  // what Present returns while the device isn't usable
+  HRESULT
+  PresentState() const {
+    if (state_ == DeviceState::Ok)
+      return D3D_OK;
+    return extended_ ? S_PRESENT_OCCLUDED : D3DERR_DEVICELOST;
+  }
+  DWORD
+  BehaviorFlags() const {
+    return creation_params_.BehaviorFlags;
+  }
+
   template <CommandWithContext<ArgumentEncodingContext> cmd>
   void
   Emit(cmd &&fn) {
@@ -339,7 +355,13 @@ private:
   RECT scissor_rect_ = {};
   std::array<DWORD, 256> render_states_ = {};
   bool in_scene_ = false;
-  bool lost_ = false;
+  // lost while a fullscreen app is inactive; NotReset once it's back (or when a Reset failed) until a Reset succeeds
+  enum class DeviceState { Ok, Lost, NotReset };
+  std::atomic<DeviceState> state_ = DeviceState::Ok;
+  HWND focus_window_ = nullptr;
+  bool restore_screensaver_ = false;
+  void AcquireFocusWindow(HWND Window);
+  void ReleaseFocusWindow();
 
   std::vector<std::unique_ptr<MTLD3D9ShaderCode>> shader_codes_;
   Com<MTLD3D9VertexShader, false> vertex_shader_;

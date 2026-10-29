@@ -17,6 +17,7 @@
  */
 
 #include "d3d9_device.hpp"
+#include "d3d9_window.hpp"
 #include "d3d9_query.hpp"
 #include "d3d9_buffer.hpp"
 #include "d3d9_texture.hpp"
@@ -46,6 +47,7 @@ MTLD3D9Device::MTLD3D9Device(
 }
 
 MTLD3D9Device::~MTLD3D9Device() {
+  ReleaseFocusWindow();
   if (cursor_)
     DestroyCursor(cursor_);
   ClearBindings();
@@ -68,12 +70,63 @@ MTLD3D9Device::Initialize(D3DPRESENT_PARAMETERS *pParams, D3DDISPLAYMODEEX *pFul
     return D3DERR_INVALIDCALL;
   }
 
+  // like wined3d, before the swap chain goes fullscreen
+  if (!pParams->Windowed)
+    AcquireFocusWindow(creation_params_.hFocusWindow ? creation_params_.hFocusWindow : pParams->hDeviceWindow);
   swapchain_ = new MTLD3D9SwapChain(this, *pParams);
   HRESULT hr = swapchain_->Reset(pParams);
   if (FAILED(hr))
     return hr;
 
   return ResetState(pParams, true);
+}
+
+void
+MTLD3D9Device::AcquireFocusWindow(HWND Window) {
+  if (focus_window_ || !Window)
+    return;
+  if (!D3D9HookFocusWindow(Window, this))
+    return;
+  focus_window_ = Window;
+  SetWindowPos(Window, nullptr, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE);
+  BOOL screensaver = FALSE;
+  SystemParametersInfoW(SPI_GETSCREENSAVEACTIVE, 0, &screensaver, 0);
+  if ((restore_screensaver_ = screensaver))
+    SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, FALSE, nullptr, 0);
+}
+
+void
+MTLD3D9Device::ReleaseFocusWindow() {
+  if (!focus_window_)
+    return;
+  D3D9UnhookFocusWindow(focus_window_, this);
+  focus_window_ = nullptr;
+  if (restore_screensaver_)
+    SystemParametersInfoW(SPI_SETSCREENSAVEACTIVE, TRUE, nullptr, 0);
+  restore_screensaver_ = false;
+}
+
+// Runs on the window's thread, possibly inside a Reset's mode change, so it doesn't take the device lock.
+void
+MTLD3D9Device::ProcessFocusMessage(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, bool Unicode) {
+  if (Message == WM_ACTIVATEAPP) {
+    if (swapchain_)
+      swapchain_->Activate(wParam);
+  } else if (Message == WM_SYSCOMMAND && wParam == SC_RESTORE) {
+    if (Unicode)
+      DefWindowProcW(Window, Message, wParam, lParam);
+    else
+      DefWindowProcA(Window, Message, wParam, lParam);
+  }
+}
+
+void
+MTLD3D9Device::SetActive(bool Active) {
+  DeviceState lost = DeviceState::Lost, ok = DeviceState::Ok;
+  if (!Active)
+    state_.compare_exchange_strong(ok, DeviceState::Lost);
+  else
+    state_.compare_exchange_strong(lost, extended_ ? DeviceState::Ok : DeviceState::NotReset);
 }
 
 HRESULT
@@ -142,7 +195,7 @@ MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams, bool Initial) {
   }
   recording_ = nullptr;
   in_scene_ = false;
-  lost_ = false;
+  state_ = DeviceState::Ok;
   // D3D9Ex Reset keeps the rest of the device state, bound resources included (Wine's d3d9ex test_reset)
   if (extended_ && !Initial)
     return D3D_OK;
@@ -292,7 +345,16 @@ MTLD3D9Device::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::TestCooperativeLevel() {
-  return lost_ ? D3DERR_DEVICENOTRESET : D3D_OK;
+  if (extended_)
+    return D3D_OK;
+  switch (state_.load()) {
+  case DeviceState::Lost:
+    return D3DERR_DEVICELOST;
+  case DeviceState::NotReset:
+    return D3DERR_DEVICENOTRESET;
+  default:
+    return D3D_OK;
+  }
 }
 
 UINT STDMETHODCALLTYPE
@@ -411,6 +473,8 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
   auto lock = Lock();
   if (!pPresentationParameters)
     return D3DERR_INVALIDCALL;
+  if (!extended_ && state_ == DeviceState::Lost)
+    return D3DERR_DEVICELOST;
 
   WaitUntilGPUIdle();
   render_targets_ = {};
@@ -421,9 +485,13 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
   if (SUCCEEDED(hr))
     hr = ResetState(pPresentationParameters, false);
   if (FAILED(hr)) {
-    lost_ = true;
+    state_ = DeviceState::NotReset;
     return D3DERR_INVALIDCALL;
   }
+  if (pPresentationParameters->Windowed)
+    ReleaseFocusWindow();
+  else
+    AcquireFocusWindow(creation_params_.hFocusWindow ? creation_params_.hFocusWindow : pPresentationParameters->hDeviceWindow);
   return D3D_OK;
 }
 

@@ -182,6 +182,38 @@ MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
   return D3D_OK;
 }
 
+// Follows wined3d: an activated fullscreen window covers its monitor again (Guild Wars 1 resumes drawing on that
+// WM_WINDOWPOSCHANGED) and D3D9Ex reapplies its display mode; deactivation restores the desktop mode, loses the
+// device and minimizes the window.
+void
+MTLD3D9SwapChain::Activate(bool Active) {
+  if (!fullscreen_)
+    return;
+  bool window_changes = !(parent_->BehaviorFlags() & D3DCREATE_NOWINDOWCHANGES);
+  if (Active) {
+    if (window_changes) {
+      RECT desktop;
+      if (wsi::getDesktopCoordinates(monitor_, &desktop))
+        SetWindowPos(
+            window_, nullptr, desktop.left, desktop.top, params_.BackBufferWidth, params_.BackBufferHeight,
+            SWP_NOACTIVATE | SWP_NOZORDER
+        );
+    }
+    if (parent_->IsExtended()) {
+      wsi::WsiMode mode = {
+          params_.BackBufferWidth, params_.BackBufferHeight, {params_.FullScreen_RefreshRateInHz, 1}, 32, false
+      };
+      wsi::setWindowMode(monitor_, window_, mode);
+    }
+    parent_->SetActive(true);
+  } else {
+    wsi::restoreDisplayMode(monitor_);
+    parent_->SetActive(false);
+    if (window_changes && IsWindowVisible(window_))
+      ShowWindow(window_, SW_MINIMIZE);
+  }
+}
+
 // Exclusive fullscreen switches the display to the back buffer size and covers the monitor with the window.
 HRESULT
 MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
@@ -297,6 +329,8 @@ MTLD3D9SwapChain::Present(
 ) {
   if (backbuffers_.empty())
     return D3DERR_INVALIDCALL;
+  if (HRESULT state = parent_->PresentState(); state != D3D_OK)
+    return state;
 
   HWND target = hDestWindowOverride ? hDestWindowOverride : window_;
   Rc<Presenter> presenter = target == window_ ? presenter_ : OverridePresenter(target);

@@ -52,6 +52,9 @@ public:
   HRESULT STDMETHODCALLTYPE GetPresentStats(D3DPRESENTSTATS *pPresentationStatistics) final;
   HRESULT STDMETHODCALLTYPE GetDisplayModeEx(D3DDISPLAYMODEEX *pMode, D3DDISPLAYROTATION *pRotation) final;
 
+  // focus change of a fullscreen app (WM_ACTIVATEAPP on the focus window)
+  void Activate(bool Active);
+
   HRESULT Reset(D3DPRESENT_PARAMETERS *pParams);
 
   MTLD3D9Surface *
