@@ -295,9 +295,11 @@ MTLD3D9Device::BeginRenderPass() {
     auto rt = render_targets_[i].ptr();
     if (!rt)
       continue;
-    if (rt->texture())
-      targets[i] = {rt->texture(), RenderTargetView(rt), RenderTargetFormat(rt)};
     count = i + 1;
+    // draws to a D3DFMT_NULL target cover the depth buffer
+    if (!rt->texture())
+      continue;
+    targets[i] = {rt->texture(), RenderTargetView(rt), RenderTargetFormat(rt)};
     if (!width) {
       width = rt->Desc().Width;
       height = rt->Desc().Height;
@@ -925,7 +927,8 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
     WMTViewport viewport = {
         viewport_.X + 0.5, viewport_.Y + 0.5, (double)viewport_.Width, (double)viewport_.Height, min_z, max_z
     };
-    MTLD3D9Surface *target = render_targets_[0] ? render_targets_[0].ptr() : depth_stencil_.ptr();
+    MTLD3D9Surface *target =
+        render_targets_[0] && (render_targets_[0]->texture() || !depth_stencil_) ? render_targets_[0].ptr() : depth_stencil_.ptr();
     LONG width = target->Desc().Width, height = target->Desc().Height;
     WMTScissorRect scissor = {0, 0, (uint64_t)width, (uint64_t)height};
     if (render_states_[D3DRS_SCISSORTESTENABLE]) {
