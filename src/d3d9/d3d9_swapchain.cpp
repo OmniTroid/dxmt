@@ -577,6 +577,8 @@ MTLD3D9SwapChain::GetPresentStats(D3DPRESENTSTATS *pPresentationStatistics) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9SwapChain::GetDisplayModeEx(D3DDISPLAYMODEEX *pMode, D3DDISPLAYROTATION *pRotation) {
+  if (pMode && pMode->Size != sizeof(*pMode))
+    return D3DERR_INVALIDCALL;
   return parent_->GetAdapter()->GetDisplayMode(pMode, pRotation);
 }
 

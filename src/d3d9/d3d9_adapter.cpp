@@ -38,14 +38,19 @@ IsBackBufferFormat(D3DFORMAT AdapterFormat, D3DFORMAT BackBufferFormat) {
     return BackBufferFormat == D3DFMT_X8R8G8B8 || BackBufferFormat == D3DFMT_A8R8G8B8;
   case D3DFMT_A2R10G10B10:
     return BackBufferFormat == D3DFMT_A2R10G10B10;
+  case D3DFMT_R5G6B5:
+    return BackBufferFormat == D3DFMT_R5G6B5;
+  case D3DFMT_X1R5G5B5:
+    return BackBufferFormat == D3DFMT_X1R5G5B5 || BackBufferFormat == D3DFMT_A1R5G5B5;
   default:
     return false;
   }
 }
 
-static D3DFORMAT
-GetDisplayFormat(D3DFORMAT Format) {
-  return Format == D3DFMT_A8R8G8B8 ? D3DFMT_X8R8G8B8 : Format;
+// modes are only enumerated in these formats, as in wined3d
+static bool
+IsEnumerableFormat(D3DFORMAT Format) {
+  return Format == D3DFMT_X8R8G8B8 || Format == D3DFMT_R5G6B5;
 }
 
 MTLD3D9Adapter::MTLD3D9Adapter(UINT Ordinal, IMTLDXGIAdapter *pAdapter, HMONITOR Monitor) :
@@ -162,9 +167,9 @@ MatchesFilter(const D3DDISPLAYMODEEX &Mode, const D3DDISPLAYMODEFILTER *pFilter)
 
 UINT
 MTLD3D9Adapter::GetModeCount(const D3DDISPLAYMODEFILTER *pFilter) {
-  if (!pFilter)
+  if (!pFilter || !IsEnumerableFormat(pFilter->Format))
     return 0;
-  CacheModes(GetDisplayFormat(pFilter->Format));
+  CacheModes(pFilter->Format);
   return std::count_if(modes_.begin(), modes_.end(), [&](const D3DDISPLAYMODEEX &m) {
     return MatchesFilter(m, pFilter);
   });
@@ -175,8 +180,8 @@ MTLD3D9Adapter::EnumModes(const D3DDISPLAYMODEFILTER *pFilter, UINT Mode, D3DDIS
   if (!pFilter || !pMode)
     return D3DERR_INVALIDCALL;
 
-  D3DFORMAT format = GetDisplayFormat(pFilter->Format);
-  if (!D3D9IsDisplayFormat(format))
+  D3DFORMAT format = pFilter->Format;
+  if (!IsEnumerableFormat(format))
     return D3DERR_INVALIDCALL;
 
   CacheModes(format);
@@ -226,7 +231,19 @@ MTLD3D9Adapter::CheckDeviceType(D3DDEVTYPE DevType, D3DFORMAT AdapterFormat, D3D
   if (!D3D9IsDisplayFormat(AdapterFormat))
     return D3DERR_NOTAVAILABLE;
 
-  if (!IsBackBufferFormat(AdapterFormat, BackBufferFormat))
+  // windowed back buffers are converted to the desktop format, which can't be A2R10G10B10; fullscreen ones must
+  // match a display mode (Wine's test_display_formats)
+  if (Windowed) {
+    if (AdapterFormat == D3DFMT_A2R10G10B10)
+      return D3DERR_NOTAVAILABLE;
+    if (FAILED(CheckDeviceFormat(DevType, AdapterFormat, D3DUSAGE_RENDERTARGET, D3DRTYPE_SURFACE, BackBufferFormat)) ||
+        FAILED(CheckDeviceFormatConversion(DevType, BackBufferFormat, AdapterFormat)))
+      return D3DERR_NOTAVAILABLE;
+    return D3D_OK;
+  }
+
+  D3DDISPLAYMODEFILTER filter = {sizeof(filter), AdapterFormat, D3DSCANLINEORDERING_UNKNOWN};
+  if (!GetModeCount(&filter) || !IsBackBufferFormat(AdapterFormat, BackBufferFormat))
     return D3DERR_NOTAVAILABLE;
 
   return D3D_OK;

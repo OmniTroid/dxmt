@@ -198,7 +198,9 @@ MTLD3D9Device::ResetState(D3DPRESENT_PARAMETERS *pParams, bool Initial) {
     viewport_.MaxZ = max_z;
   }
   recording_ = nullptr;
-  in_scene_ = false;
+  // a D3D9Ex Reset keeps an open scene (Wine's d3d9ex test_scene)
+  if (!extended_ || Initial)
+    in_scene_ = false;
   state_ = DeviceState::Ok;
   // D3D9Ex Reset keeps the rest of the device state, bound resources included (Wine's d3d9ex test_reset)
   if (extended_ && !Initial)
@@ -819,10 +821,11 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
     BOOL Discard, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
   auto lock = Lock();
-  InitReturnPtr(ppSurface);
-  // only the D3D9Ex restriction flags are usages here (Wine's d3d9ex test_resource_access)
+  // an invalid usage leaves *ppSurface untouched, other failures clear it (Wine's d3d9ex
+  // test_create_depth_stencil_surface_ex and test_format_unknown); only the D3D9Ex restriction flags are usages here
   if (Usage & ~kExSurfaceUsages)
     return D3DERR_INVALIDCALL;
+  InitReturnPtr(ppSurface);
   if (pSharedHandle) {
     ERR("IDirect3DDevice9::CreateDepthStencilSurface: shared surfaces are not implemented");
     return D3DERR_INVALIDCALL;
@@ -837,7 +840,7 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
   D3DSURFACE_DESC desc = {};
   desc.Format = Format;
   desc.Type = D3DRTYPE_SURFACE;
-  desc.Usage = D3DUSAGE_DEPTHSTENCIL;
+  desc.Usage = D3DUSAGE_DEPTHSTENCIL | (Usage & D3DUSAGE_RESTRICTED_CONTENT);
   desc.Pool = D3DPOOL_DEFAULT;
   desc.MultiSampleType = MultiSample;
   desc.MultiSampleQuality = MultisampleQuality;
@@ -1421,7 +1424,7 @@ MTLD3D9Device::CheckResourceResidency(IDirect3DResource9 **pResourceArray, UINT3
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetMaximumFrameLatency(UINT MaxLatency) {
   auto lock = Lock();
-  if (MaxLatency > 20)
+  if (MaxLatency > 30)
     return D3DERR_INVALIDCALL;
   max_frame_latency_ = MaxLatency ? MaxLatency : 3;
   queue().SetMaxLatency(max_frame_latency_);
@@ -1447,6 +1450,8 @@ MTLD3D9Device::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLA
   if (pPresentationParameters && !pPresentationParameters->Windowed &&
       (!pFullscreenDisplayMode || pPresentationParameters->BackBufferWidth != pFullscreenDisplayMode->Width ||
        pPresentationParameters->BackBufferHeight != pFullscreenDisplayMode->Height))
+    return D3DERR_INVALIDCALL;
+  if (pPresentationParameters && pPresentationParameters->Windowed && pFullscreenDisplayMode)
     return D3DERR_INVALIDCALL;
   return Reset(pPresentationParameters);
 }
