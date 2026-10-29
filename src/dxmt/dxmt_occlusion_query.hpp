@@ -164,6 +164,8 @@ public:
       seq_id(seq_id),
       num_results(num_results),
       queries(queries) {
+        if (!num_results)
+          return;
         visibility_result_heap_info.options = WMTResourceHazardTrackingModeUntracked;
         visibility_result_heap_info.memory.set(nullptr);
 #ifdef __i386__
@@ -187,7 +189,7 @@ public:
   uint64_t seq_id;
   uint64_t num_results;
   std::vector<Rc<VisibilityResultQuery>> queries;
-  WMTBufferInfo visibility_result_heap_info;
+  WMTBufferInfo visibility_result_heap_info = {};
   WMT::Reference<WMT::Buffer> visibility_result_heap;
 };
 

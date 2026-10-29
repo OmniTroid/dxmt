@@ -897,7 +897,12 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 
   QueryReadbacks readbacks{};
 
-  if (auto count = vro_state_.reset()) {
+  // a chunk without visibility writes still has to finish the queries that end in it, in completion order
+  auto count = vro_state_.reset();
+  bool ending = std::any_of(pending_queries_.begin(), pending_queries_.end(), [=](auto &query) {
+    return query->queryEndAt() == seqId;
+  });
+  if (count || ending) {
     readbacks.visibility = std::make_unique<VisibilityResultReadback>(
         device_, seqId, count, pending_queries_
     );

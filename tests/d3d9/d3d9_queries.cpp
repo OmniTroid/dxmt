@@ -119,6 +119,22 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   check("occlusion restarted by a second BEGIN", wait(fresh, samples) == S_OK && samples == 64 * 64);
   fresh->Release();
 
+  // Wine's order: END on a fresh query and two BEGINs outside a scene, then a scene with the draw
+  device->EndScene();
+  IDirect3DQuery9 *outside = nullptr;
+  device->CreateQuery(D3DQUERYTYPE_OCCLUSION, &outside);
+  outside->Issue(D3DISSUE_END);
+  outside->Issue(D3DISSUE_BEGIN);
+  outside->Issue(D3DISSUE_BEGIN);
+  device->BeginScene();
+  quad(0, 0, 64, 64, 0.15f);
+  device->EndScene();
+  outside->Issue(D3DISSUE_END);
+  samples = 0;
+  check("occlusion begun outside a scene", wait(outside, samples) == S_OK && samples == 64 * 64);
+  outside->Release();
+  device->BeginScene();
+
   quad(0, 0, 64, 64, 0.1f);
   ts1->Issue(D3DISSUE_END);
   disjoint->Issue(D3DISSUE_END);

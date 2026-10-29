@@ -56,6 +56,39 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     }
   }
 
+  check("device usable while active", device->TestCooperativeLevel() == D3D_OK);
+
+  // GPU work completes in fullscreen (Wine's test_occlusion_query never saw its queries finish)
+  IDirect3DQuery9 *event = nullptr, *occlusion = nullptr;
+  device->CreateQuery(D3DQUERYTYPE_EVENT, &event);
+  device->CreateQuery(D3DQUERYTYPE_OCCLUSION, &occlusion);
+  struct Vertex {
+    float x, y, z, rhw;
+  } quad[4] = {{0, 0, 0.5f, 1}, {(float)pp.BackBufferWidth, 0, 0.5f, 1}, {0, (float)pp.BackBufferHeight, 0.5f, 1},
+               {(float)pp.BackBufferWidth, (float)pp.BackBufferHeight, 0.5f, 1}};
+  device->SetFVF(D3DFVF_XYZRHW);
+  device->BeginScene();
+  occlusion->Issue(D3DISSUE_BEGIN);
+  device->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
+  occlusion->Issue(D3DISSUE_END);
+  device->EndScene();
+  event->Issue(D3DISSUE_END);
+  auto wait = [](IDirect3DQuery9 *query, void *data, DWORD size) {
+    DWORD start = GetTickCount();
+    HRESULT hr;
+    while ((hr = query->GetData(data, size, D3DGETDATA_FLUSH)) == S_FALSE && GetTickCount() - start < 5000)
+      Sleep(10);
+    return hr;
+  };
+  BOOL done = FALSE;
+  DWORD samples = 0;
+  check("event query completes", wait(event, &done, sizeof(done)) == S_OK && done);
+  check("occlusion query completes", wait(occlusion, &samples, sizeof(samples)) == S_OK);
+  check("occlusion counts the screen", samples == pp.BackBufferWidth * pp.BackBufferHeight);
+  printf("occlusion samples %lu\n", samples);
+  event->Release();
+  occlusion->Release();
+
   pp.Windowed = TRUE;
   pp.BackBufferWidth = 0;
   pp.BackBufferHeight = 0;
