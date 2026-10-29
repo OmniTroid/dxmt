@@ -54,6 +54,10 @@ public:
 
   // focus change of a fullscreen app (WM_ACTIVATEAPP on the focus window)
   void Activate(bool Active);
+  bool
+  IsFullscreen() const {
+    return fullscreen_;
+  }
 
   HRESULT Reset(D3DPRESENT_PARAMETERS *pParams);
 

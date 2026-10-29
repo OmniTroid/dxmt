@@ -406,7 +406,11 @@ MTLD3D9Device::SetCursorProperties(UINT XHotSpot, UINT YHotSpot, IDirect3DSurfac
     return D3DERR_INVALIDCALL;
   D3DSURFACE_DESC desc;
   pCursorBitmap->GetDesc(&desc);
-  if (desc.Format != D3DFMT_A8R8G8B8 || XHotSpot >= desc.Width || YHotSpot >= desc.Height)
+  bool pow2 = desc.Width && !(desc.Width & (desc.Width - 1)) && desc.Height && !(desc.Height & (desc.Height - 1));
+  if (desc.Format != D3DFMT_A8R8G8B8 || !pow2 || XHotSpot >= desc.Width || YHotSpot >= desc.Height)
+    return D3DERR_INVALIDCALL;
+  D3DDISPLAYMODE mode;
+  if (SUCCEEDED(swapchain_->GetDisplayMode(&mode)) && (desc.Width > mode.Width || desc.Height > mode.Height))
     return D3DERR_INVALIDCALL;
   D3DLOCKED_RECT lr;
   if (FAILED(pCursorBitmap->LockRect(&lr, nullptr, D3DLOCK_READONLY)))
@@ -448,7 +452,7 @@ BOOL STDMETHODCALLTYPE
 MTLD3D9Device::ShowCursor(BOOL bShow) {
   auto lock = Lock();
   BOOL previous = cursor_visible_;
-  cursor_visible_ = bShow;
+  cursor_visible_ = bShow && cursor_;
   if (cursor_)
     SetCursor(bShow ? cursor_ : nullptr);
   return previous;

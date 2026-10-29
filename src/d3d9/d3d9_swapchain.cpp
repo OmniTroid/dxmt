@@ -501,7 +501,7 @@ MTLD3D9SwapChain::GetFrontBufferData(IDirect3DSurface9 *pDestSurface) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9SwapChain::GetBackBuffer(UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9 **ppBackBuffer) {
-  InitReturnPtr(ppBackBuffer);
+  // a failing call leaves *ppBackBuffer untouched
   if (!ppBackBuffer || iBackBuffer >= backbuffers_.size())
     return D3DERR_INVALIDCALL;
   *ppBackBuffer = ref(backbuffers_[iBackBuffer].ptr());

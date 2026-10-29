@@ -125,6 +125,9 @@ MTLD3D9Device::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *pPresentationPar
   InitReturnPtr(ppSwapChain);
   if (!pPresentationParameters || !ppSwapChain)
     return D3DERR_INVALIDCALL;
+  // additional swap chains are windowed, and none exist beside a fullscreen one (Wine's test_swapchain)
+  if (!pPresentationParameters->Windowed || swapchain_->IsFullscreen())
+    return D3DERR_INVALIDCALL;
   D3DPRESENT_PARAMETERS params = *pPresentationParameters;
   if (!params.hDeviceWindow)
     params.hDeviceWindow = creation_params_.hFocusWindow;
@@ -134,7 +137,10 @@ MTLD3D9Device::CreateAdditionalSwapChain(D3DPRESENT_PARAMETERS *pPresentationPar
   HRESULT hr = swapchain->Reset(&params);
   if (FAILED(hr))
     return hr;
+  // the app's parameters come back filled in, but a NULL device window stays NULL (Wine's test_swapchain)
+  HWND window = pPresentationParameters->hDeviceWindow;
   *pPresentationParameters = params;
+  pPresentationParameters->hDeviceWindow = window;
   *ppSwapChain = swapchain.ref();
   return D3D_OK;
 }
