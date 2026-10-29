@@ -243,6 +243,9 @@ MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
       return D3DERR_NOTAVAILABLE;
     if (!fullscreen_ && !wsi::enterFullscreenMode(monitor_, window_, &window_state_, true))
       return D3DERR_NOTAVAILABLE;
+    // a Reset covers the monitor again however the app moved the window (Wine's test_window_position)
+    if (fullscreen_ && !(parent_->BehaviorFlags() & D3DCREATE_NOWINDOWCHANGES))
+      wsi::updateFullscreenWindow(monitor_, window_, true);
     fullscreen_ = true;
   }
   wsi::WsiMode current;

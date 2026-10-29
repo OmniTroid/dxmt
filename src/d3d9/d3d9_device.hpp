@@ -207,6 +207,11 @@ public:
   }
 
   void ProcessFocusMessage(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam, bool Unicode);
+  // the app's focus window procedure doesn't see the messages a Reset causes (Wine's test_reset_fullscreen)
+  bool
+  FiltersMessages() const {
+    return filter_messages_;
+  }
   // focus changes of a fullscreen app: lost when deactivated, needing a Reset (D3D9Ex: fine) when back
   void SetActive(bool Active);
   // what Present returns while the device isn't usable
@@ -361,6 +366,7 @@ private:
   enum class DeviceState { Ok, Lost, NotReset };
   std::atomic<DeviceState> state_ = DeviceState::Ok;
   std::atomic<int> default_resources_ = 0;
+  std::atomic<bool> filter_messages_ = false;
   friend void D3D9CountDefaultResource(IDirect3DDevice9Ex *pDevice, int Delta);
   HWND focus_window_ = nullptr;
   bool restore_screensaver_ = false;

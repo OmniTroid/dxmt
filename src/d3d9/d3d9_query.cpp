@@ -189,7 +189,7 @@ MTLD3D9Query::GetData(void *pData, DWORD dwSize, DWORD dwGetDataFlags) {
     break;
   case D3DQUERYTYPE_OCCLUSION:
     occlusion_->getValue(&value);
-    result.dword = (DWORD)value;
+    result.u64 = value;
     break;
   case D3DQUERYTYPE_TIMESTAMP:
     timestamp_->getValue(&value);
@@ -201,7 +201,9 @@ MTLD3D9Query::GetData(void *pData, DWORD dwSize, DWORD dwGetDataFlags) {
   default:
     break;
   }
-  std::memcpy(pData, &result, std::min<DWORD>(dwSize, GetDataSize()));
+  // an occlusion query reports a DWORD but fills a larger buffer with the full 64-bit count (Wine's test_occlusion_query)
+  DWORD size = type_ == D3DQUERYTYPE_OCCLUSION ? sizeof(UINT64) : GetDataSize();
+  std::memcpy(pData, &result, std::min<DWORD>(dwSize, size));
   return S_OK;
 }
 

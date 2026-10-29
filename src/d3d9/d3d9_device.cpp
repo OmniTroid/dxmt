@@ -506,7 +506,9 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
   auto_depth_stencil_ = nullptr;
 
   HWND app_window = pPresentationParameters->hDeviceWindow;
+  filter_messages_ = true;
   HRESULT hr = swapchain_->Reset(pPresentationParameters);
+  filter_messages_ = false;
   if (SUCCEEDED(hr))
     hr = ResetState(pPresentationParameters, false);
   if (FAILED(hr)) {

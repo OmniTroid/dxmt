@@ -49,6 +49,9 @@ FocusWindowProc(HWND Window, UINT Message, WPARAM wParam, LPARAM lParam) {
     return IsWindowUnicode(Window) ? DefWindowProcW(Window, Message, wParam, lParam)
                                    : DefWindowProcA(Window, Message, wParam, lParam);
 
+  if (hook.device && hook.device->FiltersMessages())
+    return hook.unicode ? DefWindowProcW(Window, Message, wParam, lParam)
+                        : DefWindowProcA(Window, Message, wParam, lParam);
   if (Message == WM_DESTROY && hook.device)
     D3D9UnhookFocusWindow(Window, hook.device);
   else if (hook.device)
