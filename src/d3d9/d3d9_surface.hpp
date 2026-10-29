@@ -140,10 +140,13 @@ public:
     std::swap(view_, Other.view_);
   }
 
-  // only lockable back buffers are GDI compatible (Wine's test_lockable_backbuffer)
   void
-  RequireLockableForDC() {
-    dc_needs_lockable_ = true;
+  MarkBackBuffer() {
+    back_buffer_ = true;
+  }
+  bool
+  IsBackBuffer() const {
+    return back_buffer_;
   }
 
   void
@@ -171,7 +174,7 @@ private:
   TextureViewKey view_;
   IUnknown *container_;
   bool forward_refs_ = true;
-  bool dc_needs_lockable_ = false;
+  bool back_buffer_ = false;
   bool lockable_;
   uint32_t level_;
   uint32_t slice_;

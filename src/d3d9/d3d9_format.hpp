@@ -78,6 +78,12 @@ struct D3D9_FORMAT_LAYOUT {
   }
 };
 
+inline bool
+D3D9HasNoAlpha(D3DFORMAT Format) {
+  return Format == D3DFMT_X8R8G8B8 || Format == D3DFMT_X1R5G5B5 || Format == D3DFMT_R5G6B5 ||
+         Format == D3DFMT_X4R4G4B4 || Format == D3DFMT_X8B8G8R8;
+}
+
 bool D3D9GetFormatLayout(WMT::Device Device, D3DFORMAT Format, D3D9_FORMAT_LAYOUT &Layout);
 
 inline bool

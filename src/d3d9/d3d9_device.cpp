@@ -965,7 +965,9 @@ MTLD3D9Device::UpdateSurface(
   uint32_t x = pDestPoint ? pDestPoint->x : box.Left;
   uint32_t y = pDestPoint ? pDestPoint->y : box.Top;
   uint32_t width = box.Right - box.Left, height = box.Bottom - box.Top;
-  if (x + width > padded(dd).Width || y + height > padded(dd).Height)
+  // the part of the source inside the surface must fit the destination (Wine's visual update_surface_test)
+  uint32_t real_width = std::min(box.Right, sd.Width) - box.Left, real_height = std::min(box.Bottom, sd.Height) - box.Top;
+  if (x + real_width > dd.Width || y + real_height > dd.Height)
     return D3DERR_INVALIDCALL;
   auto edge_ok = [&](uint32_t end, uint32_t size) { return !(end & mask) || end >= size; };
   if ((box.Left | box.Top | x | y) & mask || !edge_ok(box.Right, sd.Width) || !edge_ok(box.Bottom, sd.Height) ||

@@ -393,11 +393,19 @@ MTLD3D9Device::GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Functio
     info.raster_sample_count = std::max<uint32_t>(1, rt->Desc().MultiSampleType);
     bool blendable = int(adapter_->GetFormatCapability(rt->Desc().Format)) & int(FormatCapability::Blend);
     if (blend && blendable) {
+      // render targets without alpha read it as 1, back buffers aside (Wine's visual test_blend)
+      auto no_alpha = [&](WMTBlendFactor f) {
+        if (rt->IsBackBuffer() || !D3D9HasNoAlpha(rt->Desc().Format))
+          return f;
+        return f == WMTBlendFactorDestinationAlpha           ? WMTBlendFactorOne
+               : f == WMTBlendFactorOneMinusDestinationAlpha ? WMTBlendFactorZero
+                                                             : f;
+      };
       color.blending_enabled = true;
-      color.src_rgb_blend_factor = src;
-      color.dst_rgb_blend_factor = dst;
-      color.src_alpha_blend_factor = src_alpha;
-      color.dst_alpha_blend_factor = dst_alpha;
+      color.src_rgb_blend_factor = no_alpha(src);
+      color.dst_rgb_blend_factor = no_alpha(dst);
+      color.src_alpha_blend_factor = no_alpha(src_alpha);
+      color.dst_alpha_blend_factor = no_alpha(dst_alpha);
       color.rgb_blend_operation = op;
       color.alpha_blend_operation = op_alpha;
     }
@@ -615,7 +623,8 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const flo
       TextureViewKey view;
       DWORD lod = 0;
       if (auto bound = textures_[index].texture) {
-        bool srgb = sampler_states_[index][D3DSAMP_SRGBTEXTURE];
+        // only the low bit counts, as on AMD (Wine's visual srgbtexture_test)
+        bool srgb = sampler_states_[index][D3DSAMP_SRGBTEXTURE] & 1;
         WithTexture(bound, [&](auto *t) {
           texture = t->texture();
           if (texture.ptr()) {
