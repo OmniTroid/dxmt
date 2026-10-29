@@ -59,7 +59,7 @@ MTLD3D9BufferStorage::Lock(UINT Offset, UINT Size, void **ppData, DWORD Flags) {
     return D3DERR_INVALIDCALL;
 
   auto &queue = device_->queue();
-  if (!discardable_)
+  if (!discardable_ || (Flags & D3DLOCK_NOOVERWRITE))
     Flags &= ~D3DLOCK_DISCARD;
   if ((Flags & D3DLOCK_DISCARD) && !lock_count_) {
     if (auto next = dynamic_->nextSuballocation()) {
