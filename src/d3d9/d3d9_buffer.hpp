@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "d3d9_device_child.hpp"
 #include "dxmt_buffer.hpp"
 #include "dxmt_dynamic.hpp"
@@ -28,7 +30,8 @@ class MTLD3D9Device;
 
 class MTLD3D9BufferStorage {
 public:
-  MTLD3D9BufferStorage(MTLD3D9Device *pDevice, UINT Length, DWORD Usage);
+  // Pool is the app buffer's; the device's own rings pass none
+  MTLD3D9BufferStorage(MTLD3D9Device *pDevice, UINT Length, DWORD Usage, std::optional<D3DPOOL> Pool = std::nullopt);
 
   HRESULT Lock(UINT Offset, UINT Size, void **ppData, DWORD Flags);
   HRESULT Unlock();
@@ -54,6 +57,9 @@ private:
   Rc<Buffer> buffer_;
   Rc<DynamicBuffer> dynamic_;
   uint32_t lock_count_ = 0;
+  // only dynamic DEFAULT pool buffers of hardware vertex processing devices get fresh memory on DISCARD; the rest
+  // are pinned and keep their pointer and contents (Wine's test_pinned_buffers)
+  bool discardable_;
   uint64_t last_used_seq_ = 0;
 };
 

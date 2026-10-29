@@ -23,9 +23,15 @@
 
 namespace dxmt {
 
-MTLD3D9BufferStorage::MTLD3D9BufferStorage(MTLD3D9Device *pDevice, UINT Length, DWORD Usage) :
+MTLD3D9BufferStorage::MTLD3D9BufferStorage(
+    MTLD3D9Device *pDevice, UINT Length, DWORD Usage, std::optional<D3DPOOL> Pool
+) :
     device_(pDevice),
-    length_(Length) {
+    length_(Length),
+    discardable_(
+        !Pool || ((Usage & D3DUSAGE_DYNAMIC) && *Pool == D3DPOOL_DEFAULT &&
+                  !(pDevice->BehaviorFlags() & D3DCREATE_SOFTWARE_VERTEXPROCESSING))
+    ) {
   buffer_ = new Buffer(Length, pDevice->GetMTLDevice());
 
   Flags<BufferAllocationFlag> flags;
@@ -53,6 +59,8 @@ MTLD3D9BufferStorage::Lock(UINT Offset, UINT Size, void **ppData, DWORD Flags) {
     return D3DERR_INVALIDCALL;
 
   auto &queue = device_->queue();
+  if (!discardable_)
+    Flags &= ~D3DLOCK_DISCARD;
   if ((Flags & D3DLOCK_DISCARD) && !lock_count_) {
     if (auto next = dynamic_->nextSuballocation()) {
       device_->Emit([allocation = dynamic_->immediateName(), next](ArgumentEncodingContext &enc) mutable {
@@ -88,7 +96,7 @@ MTLD3D9BufferStorage::Unlock() {
 MTLD3D9VertexBuffer::MTLD3D9VertexBuffer(MTLD3D9Device *pDevice, const D3DVERTEXBUFFER_DESC &Desc) :
     MTLD3D9Resource(pDevice, Desc.Pool),
     desc_(Desc),
-    storage_(pDevice, Desc.Size, Desc.Usage) {}
+    storage_(pDevice, Desc.Size, Desc.Usage, Desc.Pool) {}
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::QueryInterface(REFIID riid, void **ppvObject) {
@@ -130,7 +138,7 @@ MTLD3D9VertexBuffer::GetDesc(D3DVERTEXBUFFER_DESC *pDesc) {
 MTLD3D9IndexBuffer::MTLD3D9IndexBuffer(MTLD3D9Device *pDevice, const D3DINDEXBUFFER_DESC &Desc) :
     MTLD3D9Resource(pDevice, Desc.Pool),
     desc_(Desc),
-    storage_(pDevice, Desc.Size, Desc.Usage) {}
+    storage_(pDevice, Desc.Size, Desc.Usage, Desc.Pool) {}
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::QueryInterface(REFIID riid, void **ppvObject) {

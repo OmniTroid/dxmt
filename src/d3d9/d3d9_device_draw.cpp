@@ -1065,6 +1065,9 @@ MTLD3D9Device::DrawWithIndices(
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) {
   auto lock = Lock();
+  // without a declaration (FVF or explicit) nothing can be drawn (Wine's test_draw_primitive)
+  if (!vertex_declaration_)
+    return D3DERR_INVALIDCALL;
   if (!PrimitiveCount)
     return D3D_OK;
 
@@ -1104,6 +1107,8 @@ MTLD3D9Device::DrawIndexedPrimitive(
     UINT PrimitiveCount
 ) {
   auto lock = Lock();
+  if (!vertex_declaration_)
+    return D3DERR_INVALIDCALL;
   if (!PrimitiveCount)
     return D3D_OK;
   if (!index_buffer_)
@@ -1137,6 +1142,8 @@ MTLD3D9Device::DrawPrimitiveUP(
     UINT VertexStreamZeroStride
 ) {
   auto lock = Lock();
+  if (!vertex_declaration_)
+    return D3DERR_INVALIDCALL;
   if (!pVertexStreamZeroData || !VertexStreamZeroStride)
     return D3DERR_INVALIDCALL;
   if (!PrimitiveCount)
@@ -1163,6 +1170,8 @@ MTLD3D9Device::DrawIndexedPrimitiveUP(
     D3DFORMAT IndexDataFormat, const void *pVertexStreamZeroData, UINT VertexStreamZeroStride
 ) {
   auto lock = Lock();
+  if (!vertex_declaration_)
+    return D3DERR_INVALIDCALL;
   if (!pIndexData || !pVertexStreamZeroData || !VertexStreamZeroStride)
     return D3DERR_INVALIDCALL;
   if (IndexDataFormat != D3DFMT_INDEX16 && IndexDataFormat != D3DFMT_INDEX32)
