@@ -222,6 +222,7 @@ MTLD3D9SwapChain::CreateBackBuffers() {
     backbuffers_.emplace_back(new MTLD3D9Surface(
         parent_, desc, std::move(texture), this, params_.Flags & D3DPRESENTFLAG_LOCKABLE_BACKBUFFER
     ));
+    backbuffers_.back()->KeepOwnRefcount();
   }
   return D3D_OK;
 }
