@@ -59,8 +59,9 @@ D3D9QueryFormat(D3DFORMAT Format, D3D9_FORMAT_DESC &Desc) {
     // stored as BGR10A2, which has no DXGI equivalent; see D3D9GetPixelFormat
     Desc = {DXGI_FORMAT_R10G10B10A2_UNORM, WMTPixelFormatInvalid, D3D9_FORMAT_BACKBUFFER | D3D9_FORMAT_DISPLAY};
     return true;
+  // D3D9 samples the channels a format lacks as 1
   case D3DFMT_G16R16:
-    Desc = {DXGI_FORMAT_R16G16_UNORM};
+    Desc = {DXGI_FORMAT_R16G16_UNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 3, 1, 1))};
     return true;
   case D3DFMT_A16B16G16R16:
     Desc = {DXGI_FORMAT_R16G16B16A16_UNORM};
@@ -78,31 +79,31 @@ D3D9QueryFormat(D3DFORMAT Format, D3D9_FORMAT_DESC &Desc) {
     Desc = {DXGI_FORMAT_R16_UNORM, WMTPixelFormatRRR1Swizzle};
     return true;
   case D3DFMT_V8U8:
-    Desc = {DXGI_FORMAT_R8G8_SNORM};
+    Desc = {DXGI_FORMAT_R8G8_SNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 3, 1, 1))};
     return true;
   case D3DFMT_Q8W8V8U8:
     Desc = {DXGI_FORMAT_R8G8B8A8_SNORM};
     return true;
   case D3DFMT_V16U16:
-    Desc = {DXGI_FORMAT_R16G16_SNORM};
+    Desc = {DXGI_FORMAT_R16G16_SNORM, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 3, 1, 1))};
     return true;
   case D3DFMT_Q16W16V16U16:
     Desc = {DXGI_FORMAT_R16G16B16A16_SNORM};
     return true;
   case D3DFMT_R16F:
-    Desc = {DXGI_FORMAT_R16_FLOAT};
+    Desc = {DXGI_FORMAT_R16_FLOAT, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 1, 1, 1))};
     return true;
   case D3DFMT_G16R16F:
-    Desc = {DXGI_FORMAT_R16G16_FLOAT};
+    Desc = {DXGI_FORMAT_R16G16_FLOAT, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 3, 1, 1))};
     return true;
   case D3DFMT_A16B16G16R16F:
     Desc = {DXGI_FORMAT_R16G16B16A16_FLOAT};
     return true;
   case D3DFMT_R32F:
-    Desc = {DXGI_FORMAT_R32_FLOAT};
+    Desc = {DXGI_FORMAT_R32_FLOAT, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 1, 1, 1))};
     return true;
   case D3DFMT_G32R32F:
-    Desc = {DXGI_FORMAT_R32G32_FLOAT};
+    Desc = {DXGI_FORMAT_R32G32_FLOAT, (WMTPixelFormat)(ENCODE_FORMAT_SWIZZLE(0, 2, 3, 1, 1))};
     return true;
   case D3DFMT_A32B32G32R32F:
     Desc = {DXGI_FORMAT_R32G32B32A32_FLOAT};
