@@ -571,6 +571,7 @@ convert_shader(
     options.ps1_texture_types = data.version.major == 1 ? d3d9->ps1_texture_types : 0;
     options.shadow_samplers = d3d9->shadow_samplers;
     options.fetch4_samplers = d3d9->fetch4_samplers & ~d3d9->shadow_samplers;
+    options.unbound_samplers = d3d9->unbound_samplers;
   }
   if (!data.pixel_tokens.empty() && options != data.options) {
     std::string error;

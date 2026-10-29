@@ -254,12 +254,15 @@ MTLD3D9Device::PreAllocateArgumentBuffer(size_t Size, size_t Alignment) {
 
 WMTPixelFormat
 MTLD3D9Device::RenderTargetFormat(MTLD3D9Surface *pSurface) {
+  // a D3DFMT_NULL render target has no storage and no color attachment
+  if (!pSurface->texture())
+    return WMTPixelFormatInvalid;
   return pSurface->texture()->pixelFormat(RenderTargetView(pSurface));
 }
 
 TextureViewKey
 MTLD3D9Device::RenderTargetView(MTLD3D9Surface *pSurface) {
-  if (!render_states_[D3DRS_SRGBWRITEENABLE] || pSurface->IsDepthStencil())
+  if (!render_states_[D3DRS_SRGBWRITEENABLE] || pSurface->IsDepthStencil() || !pSurface->texture())
     return pSurface->viewKey();
   auto texture = pSurface->texture();
   auto format = texture->pixelFormat(pSurface->viewKey());
@@ -292,12 +295,13 @@ MTLD3D9Device::BeginRenderPass() {
     auto rt = render_targets_[i].ptr();
     if (!rt)
       continue;
-    targets[i] = {rt->texture(), RenderTargetView(rt), RenderTargetFormat(rt)};
+    if (rt->texture())
+      targets[i] = {rt->texture(), RenderTargetView(rt), RenderTargetFormat(rt)};
     count = i + 1;
     if (!width) {
       width = rt->Desc().Width;
       height = rt->Desc().Height;
-      samples = rt->texture()->sampleCount();
+      samples = std::max<uint32_t>(1, rt->Desc().MultiSampleType);
     }
   }
   Target depth;
@@ -377,7 +381,7 @@ MTLD3D9Device::GetPipelineState(WMTPrimitiveTopologyClass Topology, WMT::Functio
     auto &color = info.colors[i];
     color.pixel_format = RenderTargetFormat(rt);
     color.write_mask = ToWriteMask(render_states_[write_masks[i]]);
-    info.raster_sample_count = rt->texture()->sampleCount();
+    info.raster_sample_count = std::max<uint32_t>(1, rt->Desc().MultiSampleType);
     bool blendable = int(adapter_->GetFormatCapability(rt->Desc().Format)) & int(FormatCapability::Blend);
     if (blend && blendable) {
       color.blending_enabled = true;
@@ -809,6 +813,9 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
       break;
     }
   }
+  for (uint32_t i = 0; i < caps::MaxSamplersPS; i++)
+    if (!textures_[i].texture && (ps_code->reflection().SamplerSlotMask & (1u << i)))
+      ps_d3d9.unbound_samplers |= 1u << i;
   ps_d3d9.flags |= SM30_SHADER_FLAG_VS_OUTPUTS;
   std::copy(vs_code->outputs().begin(), vs_code->outputs().end(), ps_d3d9.vs_outputs);
   if (ps_code->bytecode()[0] < 0xFFFF0200) {
@@ -853,6 +860,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
                     .update(ps_d3d9.vs_outputs)
                     .update(ps_d3d9.shadow_samplers)
                     .update(ps_d3d9.fetch4_samplers)
+                    .update(ps_d3d9.unbound_samplers)
                     .final();
   auto ps = ps_code->GetFunction(
       GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version

@@ -465,7 +465,9 @@ CreateStandaloneSurface(
     return D3DERR_INVALIDCALL;
 
   Rc<Texture> texture;
-  if (Desc.Pool != D3DPOOL_SYSTEMMEM && Desc.Pool != D3DPOOL_SCRATCH) {
+  D3D9_FORMAT_DESC format;
+  bool null_target = D3D9QueryFormat(Desc.Format, format) && (format.Flags & D3D9_FORMAT_NULL_RT);
+  if (Desc.Pool != D3DPOOL_SYSTEMMEM && Desc.Pool != D3DPOOL_SCRATCH && !null_target) {
     HRESULT hr = CreateD3D9SurfaceTexture(pDevice, Desc, texture);
     if (FAILED(hr))
       return hr;
@@ -870,7 +872,10 @@ MTLD3D9Device::StretchRect(
   dst->MarkWritten();
   bool depth = (sd.Usage | dd.Usage) & D3DUSAGE_DEPTHSTENCIL;
   // depth copies are whole-surface only
-  if (depth && (pSourceRect || pDestRect || sd.Width != dd.Width || sd.Height != dd.Height || sd.Format != dd.Format))
+  auto whole = [](const D3DBOX &b, const D3DSURFACE_DESC &d) {
+    return b.Left == 0 && b.Top == 0 && b.Right == d.Width && b.Bottom == d.Height;
+  };
+  if (depth && (!whole(sbox, sd) || !whole(dbox, dd) || sd.Width != dd.Width || sd.Height != dd.Height || sd.Format != dd.Format))
     return D3DERR_INVALIDCALL;
 
   bool same_size = sbox.Right - sbox.Left == dbox.Right - dbox.Left && sbox.Bottom - sbox.Top == dbox.Bottom - dbox.Top;
@@ -1028,7 +1033,7 @@ IntersectRect(RECT &Dst, const RECT &A, const RECT &B) {
 
 void
 MTLD3D9Device::ClearSurface(
-    MTLD3D9Surface *pSurface, const RECT &Rect, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil
+    MTLD3D9Surface *pSurface, const RECT &Rect, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil, bool Srgb
 ) {
   EndRenderPass();
   auto &desc = pSurface->Desc();
@@ -1041,14 +1046,16 @@ MTLD3D9Device::ClearSurface(
         ((Color >> 16) & 0xFF) / 255.0, ((Color >> 8) & 0xFF) / 255.0, (Color & 0xFF) / 255.0,
         ((Color >> 24) & 0xFF) / 255.0
     };
+    // Clear writes through D3DRS_SRGBWRITEENABLE like a draw; ColorFill doesn't
+    TextureViewKey target_view = Srgb ? RenderTargetView(pSurface) : pSurface->viewKey();
     if (full) {
-      Emit([texture = pSurface->texture(), view = pSurface->viewKey(), color](ArgumentEncodingContext &enc) mutable {
+      Emit([texture = pSurface->texture(), view = target_view, color](ArgumentEncodingContext &enc) mutable {
         enc.clearColor(std::move(texture), view, 1, color);
       });
       return;
     }
     std::array<float, 4> rgba = {(float)color.r, (float)color.g, (float)color.b, (float)color.a};
-    Emit([texture = pSurface->texture(), view = pSurface->viewKey(), x, y, width, height,
+    Emit([texture = pSurface->texture(), view = target_view, x, y, width, height,
           rgba](ArgumentEncodingContext &enc) {
       enc.clear_rt_cmd.begin(texture, view, 0);
       enc.clear_rt_cmd.clear(x, y, width, height, 1, rgba);
@@ -1081,11 +1088,11 @@ MTLD3D9Device::ClearSurface(
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::Clear(DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil) {
   auto lock = Lock();
-  if (Count && !pRects)
-    return D3DERR_INVALIDCALL;
-  // rects with a zero count clear nothing
+  // rects with a zero count clear nothing, and a count without rects clears everything
   if (!Count && pRects)
     return D3D_OK;
+  if (!pRects)
+    Count = 0;
 
   if (Flags & (D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)) {
     if (!depth_stencil_)
@@ -1102,19 +1109,21 @@ MTLD3D9Device::Clear(DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR C
     return D3D_OK;
 
   auto clear = [&](MTLD3D9Surface *surface, DWORD flags) {
+    if (!surface->texture())
+      return;
     auto &desc = surface->Desc();
     RECT bounds = {0, 0, (LONG)desc.Width, (LONG)desc.Height};
     RECT target;
     if (!IntersectRect(target, area, bounds))
       return;
     if (!Count) {
-      ClearSurface(surface, target, flags, Color, Z, Stencil);
+      ClearSurface(surface, target, flags, Color, Z, Stencil, true);
       return;
     }
     for (DWORD i = 0; i < Count; i++) {
       RECT rect = {pRects[i].x1, pRects[i].y1, pRects[i].x2, pRects[i].y2};
       if (IntersectRect(rect, rect, target))
-        ClearSurface(surface, rect, flags, Color, Z, Stencil);
+        ClearSurface(surface, rect, flags, Color, Z, Stencil, true);
     }
   };
 

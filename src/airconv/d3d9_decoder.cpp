@@ -163,7 +163,8 @@ public:
       ps14_(ps1_ && version.minor >= 4),
       ps1_texture_types_(options.ps1_texture_types),
       shadow_samplers_(options.shadow_samplers),
-      fetch4_samplers_(options.fetch4_samplers) {}
+      fetch4_samplers_(options.fetch4_samplers),
+      unbound_samplers_(options.unbound_samplers) {}
 
   std::optional<std::string>
   run(Reader &reader) {
@@ -972,6 +973,10 @@ private:
     SrcOperandSampler sampler{.range_id = s, .index = s, .gather_channel = 0};
 
     auto emit_sample = [&](DstOperand o, bool) {
+      if (ps_ && (unbound_samplers_ & (1u << s))) {
+        emit(InstMov{ic(), o, with_swizzle(imm_f(0.0f, 0.0f, 0.0f, 1.0f), read_swizzle(sampler_token))});
+        return;
+      }
       if (shadow_samplers_ & (1u << s)) {
         SrcOperand at = coord;
         if ((inst.controls & 0x3) == kTexLdProject) {
@@ -988,7 +993,7 @@ private:
           emit(InstFloatBinaryOp{ic(), FloatBinaryOp::Div, temp_dst(t), coord, component(coord, 3)});
           at = temp_src(t);
         }
-        return fetch4(s, at, o);
+        return fetch4(s, at, o, read_swizzle(sampler_token));
       }
       switch (inst.opcode) {
       case Opcode::TexLdl:
@@ -1084,7 +1089,7 @@ private:
   // (x+1, y), (x, y+1), (x+1, y+1), (x, y); gather picks the footprint around the nearest texel corner, so the
   // coordinate moves half a texel first
   void
-  fetch4(uint32_t stage, SrcOperand coord, DstOperand out) {
+  fetch4(uint32_t stage, SrcOperand coord, DstOperand out, Swizzle swz = swizzle_identity) {
     auto resource = use_sampler(stage, swizzle_identity);
     uint32_t size = scratch(), at = scratch(), r = scratch();
     emit(InstResourceInfo{temp_dst(size, 0x3), imm_u(0), resource, InstResourceInfo::M::rcp});
@@ -1092,11 +1097,15 @@ private:
     emit(InstFloatMAD{ic(), temp_dst(at, 0x3), temp_src(size), imm_f(0.5f), coord});
     SrcOperandSampler sampler{.range_id = stage, .index = stage, .gather_channel = 0};
     emit(InstGather{temp_dst(r), temp_src(at), resource, sampler, imm_u(0), std::nullopt});
-    emit(InstMov{ic(), out, temp_src(r, {2, 0, 1, 3})});
+    emit(InstMov{ic(), out, temp_src(r, compose({2, 0, 1, 3}, {swz.x, swz.y, swz.z, swz.w}))});
   }
 
   void
   ps1_sample(uint32_t stage, SrcOperand coord, DstOperand out) {
+    if (unbound_samplers_ & (1u << stage)) {
+      emit(InstMov{ic(), out, imm_f(0.0f, 0.0f, 0.0f, 1.0f)});
+      return;
+    }
     if (shadow_samplers_ & (1u << stage))
       return shadow_compare(stage, coord, out);
     if (fetch4_samplers_ & (1u << stage))
@@ -1324,7 +1333,7 @@ private:
       sampler_types_[n] = TextureType((usage_token >> 27) & 0xF);
       break;
     case RegisterType::Input:
-      if (ps_ && ver_.atLeast(3, 0) && usage == Usage::Position) {
+      if (ps_ && ver_.atLeast(3, 0) && usage == Usage::Position && usage_index == 0) {
         fail("d3d9: ps_3_0 can't declare a position input");
         return;
       }
@@ -1600,6 +1609,7 @@ private:
   uint32_t ps1_texture_types_;
   uint32_t shadow_samplers_;
   uint32_t fetch4_samplers_;
+  uint32_t unbound_samplers_;
   uint32_t matrix_row_ = 0;
   uint32_t matrix_stages_[3] = {};
   BasicBlock *cur_ = nullptr;

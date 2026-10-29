@@ -311,7 +311,9 @@ private:
   void ClearBindings();
   HRESULT CreateAutoDepthStencil(const D3DPRESENT_PARAMETERS &Params);
   void SetDefaultViewport(MTLD3D9Surface *pTarget);
-  void ClearSurface(MTLD3D9Surface *pSurface, const RECT &Rect, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil);
+  void ClearSurface(
+      MTLD3D9Surface *pSurface, const RECT &Rect, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil, bool Srgb = false
+  );
 
   Com<MTLD3D9> parent_;
   MTLD3D9Adapter *adapter_;

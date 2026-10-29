@@ -293,6 +293,8 @@ struct SM30_SHADER_D3D9_DATA {
   uint32_t shadow_samplers;
   /* pixel shaders: AMD's FETCH4, samplers that return the 2x2 footprint's first channel instead of filtering */
   uint32_t fetch4_samplers;
+  /* pixel shaders: samplers with no texture bound, which D3D9 samples as (0, 0, 0, 1) */
+  uint32_t unbound_samplers;
 };
 
 struct SM30_RUNTIME_CONSTANTS {

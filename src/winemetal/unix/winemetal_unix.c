@@ -1969,6 +1969,7 @@ struct SM30_SHADER_D3D9_DATA32 {
   uint32_t vs_outputs[7];
   uint32_t shadow_samplers;
   uint32_t fetch4_samplers;
+  uint32_t unbound_samplers;
 };
 
 struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
@@ -2082,6 +2083,7 @@ sm50_compilation_argument32_convert(
       memcpy(data->vs_outputs, src->vs_outputs, sizeof(data->vs_outputs));
       data->shadow_samplers = src->shadow_samplers;
       data->fetch4_samplers = src->fetch4_samplers;
+      data->unbound_samplers = src->unbound_samplers;
       break;
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
