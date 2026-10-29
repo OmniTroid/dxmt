@@ -74,12 +74,28 @@ MTLD3D9ShaderCode::Create(const DWORD *pFunction, bool Pixel, std::unique_ptr<MT
   SM50GetArgumentsInfo(code->handle_, code->cbuffers_.data(), code->arguments_.data());
 
   if (!Pixel) {
+    auto set_output = [&](d3d9bc::Usage usage, uint32_t index) {
+      uint32_t bit = (uint32_t)usage * 16 + index;
+      if (bit < 224)
+        code->outputs_[bit / 32] |= 1u << (bit % 32);
+    };
+    // airconv fills colors 0-1, texture coordinates 0-7 and fog for every vertex shader
+    for (uint32_t i = 0; i < 2; i++)
+      set_output(d3d9bc::Usage::Color, i);
+    for (uint32_t i = 0; i < 8; i++)
+      set_output(d3d9bc::Usage::TexCoord, i);
+    set_output(d3d9bc::Usage::Fog, 0);
+    set_output(d3d9bc::Usage::Position, 0);
     d3d9bc::Reader reader((const uint32_t *)pFunction, count);
     d3d9bc::Instruction inst;
     while (reader.next(inst)) {
       if (inst.opcode != d3d9bc::Opcode::Dcl)
         continue;
       uint32_t reg_token = inst.operands[1];
+      if (d3d9bc::register_type(reg_token) == d3d9bc::RegisterType::Output) {
+        set_output(d3d9bc::Usage(inst.operands[0] & 0x1F), (inst.operands[0] >> 16) & 0xF);
+        continue;
+      }
       if (d3d9bc::register_type(reg_token) != d3d9bc::RegisterType::Input)
         continue;
       code->inputs_.push_back(

@@ -270,6 +270,8 @@ enum SM30_SHADER_FLAG {
   SM30_SHADER_FLAG_FLAT_SHADING = 1 << 0,
   SM30_SHADER_FLAG_POINT_SPRITE = 1 << 1,
   SM30_SHADER_FLAG_POINT_SIZE = 1 << 2,
+  /* pixel shaders: vs_outputs lists what the vertex shader writes; other inputs read zero */
+  SM30_SHADER_FLAG_VS_OUTPUTS = 1 << 3,
 };
 
 /*
@@ -285,6 +287,7 @@ struct SM30_SHADER_D3D9_DATA {
   uint32_t flags; /* SM30_SHADER_FLAG */
   /* ps_1_x declares no samplers: 2 bits per stage, 0 2D, 1 cube, 2 volume */
   uint32_t ps1_texture_types;
+  uint32_t vs_outputs[7]; /* bit usage * 16 + usage index */
 };
 
 struct SM30_RUNTIME_CONSTANTS {

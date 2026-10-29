@@ -22,6 +22,12 @@ tests/d3d9/run.sh toolchains/wine-cx/install
 
 Syncs the Wine install to `toolchains/test/wine`, installs this tree's DLLs for both architectures, creates a fresh prefix and runs every `tests/d3d9` test. Each test prints `PASS`/`FAIL` lines and exits with its failure count. `D3D9_TEST_FULLSCREEN=1` adds `d3d9_fullscreen`, which takes over the display.
 
+Wine's own d3d9 conformance tests run against DXMT in the prefix `run.sh` leaves behind (`stateblock`, `visual`, `device`, `d3d9ex`); they found behavior our tests missed:
+
+```sh
+WINEPREFIX=$PWD/toolchains/test/pfx toolchains/test/wine/bin/wine toolchains/wine-cx/build/dlls/d3d9/tests/x86_64-windows/d3d9_test.exe stateblock
+```
+
 The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU and compare it with a Python reference; see the README there.
 
 ## Rules

@@ -725,6 +725,12 @@ RectToBox(const RECT *pRect, const D3DSURFACE_DESC &Desc) {
 }
 
 static bool
+IsTextureLevel(MTLD3D9Surface *pSurface) {
+  Com<IDirect3DBaseTexture9> texture;
+  return SUCCEEDED(pSurface->GetContainer(__uuidof(IDirect3DBaseTexture9), (void **)&texture));
+}
+
+static bool
 BoxInside(const D3DBOX &Box, const D3DSURFACE_DESC &Desc) {
   return Box.Left < Box.Right && Box.Top < Box.Bottom && Box.Right <= Desc.Width && Box.Bottom <= Desc.Height;
 }
@@ -771,16 +777,28 @@ MTLD3D9Device::UpdateSurface(
   if (sd.Format != dd.Format || dd.MultiSampleType != D3DMULTISAMPLE_NONE)
     return D3DERR_INVALIDCALL;
 
+  // Block-compressed rects may reach the block-padded size, and must end on a block boundary or a surface edge.
+  uint32_t block = src->layout().BlockSize, mask = block - 1;
+  auto padded = [&](const D3DSURFACE_DESC &d) {
+    D3DSURFACE_DESC p = d;
+    p.Width = (d.Width + mask) & ~mask;
+    p.Height = (d.Height + mask) & ~mask;
+    return p;
+  };
   D3DBOX box = RectToBox(pSourceRect, sd);
-  if (!BoxInside(box, sd))
+  if (!BoxInside(box, padded(sd)))
     return D3DERR_INVALIDCALL;
   uint32_t x = pDestPoint ? pDestPoint->x : box.Left;
   uint32_t y = pDestPoint ? pDestPoint->y : box.Top;
-  if (x + (box.Right - box.Left) > dd.Width || y + (box.Bottom - box.Top) > dd.Height)
+  uint32_t width = box.Right - box.Left, height = box.Bottom - box.Top;
+  if (x + width > padded(dd).Width || y + height > padded(dd).Height)
     return D3DERR_INVALIDCALL;
-  uint32_t mask = src->layout().BlockSize - 1;
-  if ((box.Left | box.Top | x | y) & mask)
+  auto edge_ok = [&](uint32_t end, uint32_t size) { return !(end & mask) || end >= size; };
+  if ((box.Left | box.Top | x | y) & mask || !edge_ok(box.Right, sd.Width) || !edge_ok(box.Bottom, sd.Height) ||
+      !edge_ok(x + width, dd.Width) || !edge_ok(y + height, dd.Height))
     return D3DERR_INVALIDCALL;
+  box.Right = std::min(box.Right, std::min(sd.Width, box.Left + (dd.Width - x)));
+  box.Bottom = std::min(box.Bottom, std::min(sd.Height, box.Top + (dd.Height - y)));
 
   CopyBufferToTexture(src->EnsureShadow(), src->layout(), dst->texture(), dst->level(), dst->slice(), box, x, y);
   return D3D_OK;
@@ -791,6 +809,9 @@ MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLO
   auto lock = Lock();
   auto surface = static_cast<MTLD3D9Surface *>(pSurface);
   if (!surface || surface->Desc().Pool != D3DPOOL_DEFAULT || !surface->texture() || surface->IsDepthStencil())
+    return D3DERR_INVALIDCALL;
+  // texture levels need D3DUSAGE_RENDERTARGET; offscreen plain surfaces don't
+  if (IsTextureLevel(surface) && !(surface->Desc().Usage & D3DUSAGE_RENDERTARGET))
     return D3DERR_INVALIDCALL;
   if (!(surface->texture()->usage() & WMTTextureUsageRenderTarget)) {
     ERR_ONCE("IDirect3DDevice9::ColorFill: non-renderable format ", surface->Desc().Format);
@@ -824,6 +845,12 @@ MTLD3D9Device::StretchRect(
   D3DBOX sbox = RectToBox(pSourceRect, sd);
   D3DBOX dbox = RectToBox(pDestRect, dd);
   if (!BoxInside(sbox, sd) || !BoxInside(dbox, dd))
+    return D3DERR_INVALIDCALL;
+  if (IsTextureLevel(dst) && !(dd.Usage & D3DUSAGE_RENDERTARGET))
+    return D3DERR_INVALIDCALL;
+  bool depth = (sd.Usage | dd.Usage) & D3DUSAGE_DEPTHSTENCIL;
+  // depth copies are whole-surface only
+  if (depth && (pSourceRect || pDestRect || sd.Width != dd.Width || sd.Height != dd.Height || sd.Format != dd.Format))
     return D3DERR_INVALIDCALL;
 
   bool same_size = sbox.Right - sbox.Left == dbox.Right - dbox.Left && sbox.Bottom - sbox.Top == dbox.Bottom - dbox.Top;
@@ -859,7 +886,7 @@ MTLD3D9Device::StretchRect(
     return D3D_OK;
   }
 
-  if (dst_ms || (sd.Usage & D3DUSAGE_DEPTHSTENCIL) || (dd.Usage & D3DUSAGE_DEPTHSTENCIL))
+  if (depth)
     return D3DERR_INVALIDCALL;
   if (!(dst->texture()->usage() & WMTTextureUsageRenderTarget)) {
     ERR_ONCE("IDirect3DDevice9::StretchRect: destination format ", dd.Format, " is not renderable");
@@ -1033,6 +1060,9 @@ MTLD3D9Device::Clear(DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR C
   auto lock = Lock();
   if (Count && !pRects)
     return D3DERR_INVALIDCALL;
+  // rects with a zero count clear nothing
+  if (!Count && pRects)
+    return D3D_OK;
 
   if (Flags & (D3DCLEAR_ZBUFFER | D3DCLEAR_STENCIL)) {
     if (!depth_stencil_)

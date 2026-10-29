@@ -1240,6 +1240,10 @@ private:
       sampler_types_[n] = TextureType((usage_token >> 27) & 0xF);
       break;
     case RegisterType::Input:
+      if (ps_ && ver_.atLeast(3, 0) && usage == Usage::Position) {
+        fail("d3d9: ps_3_0 can't declare a position input");
+        return;
+      }
       if (ps_ && !ver_.atLeast(3, 0)) {
         usage = Usage::Color;
         usage_index = n;

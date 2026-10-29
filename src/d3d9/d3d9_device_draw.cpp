@@ -746,6 +746,8 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
     ps_d3d9.flags |= SM30_SHADER_FLAG_FLAT_SHADING;
   if (points && render_states_[D3DRS_POINTSPRITEENABLE])
     ps_d3d9.flags |= SM30_SHADER_FLAG_POINT_SPRITE;
+  ps_d3d9.flags |= SM30_SHADER_FLAG_VS_OUTPUTS;
+  std::copy(vs_code->outputs().begin(), vs_code->outputs().end(), ps_d3d9.vs_outputs);
   if (ps_code->bytecode()[0] < 0xFFFF0200) {
     for (uint32_t i = 0; i < 8; i++) {
       auto texture = textures_[i].texture;
@@ -785,6 +787,7 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, uint32_t &Instanc
                     .update(ps_d3d9.fog_mode)
                     .update(ps_d3d9.flags)
                     .update(ps_d3d9.ps1_texture_types)
+                    .update(ps_d3d9.vs_outputs)
                     .final();
   auto ps = ps_code->GetFunction(
       GetMTLDevice(), ps_key, (SM50_SHADER_COMPILATION_ARGUMENT_DATA *)&ps_data, metal_version
@@ -1412,7 +1415,7 @@ MTLD3D9Device::SetStreamSourceFreq(UINT StreamNumber, UINT Setting) {
   if (StreamNumber >= caps::MaxStreams)
     return D3DERR_INVALIDCALL;
   bool indexed = Setting & D3DSTREAMSOURCE_INDEXEDDATA, instanced = Setting & D3DSTREAMSOURCE_INSTANCEDATA;
-  if ((indexed && instanced) || (StreamNumber == 0 && instanced))
+  if ((indexed && instanced) || (StreamNumber == 0 && instanced) || !(Setting & 0x3FFFFFFF))
     return D3DERR_INVALIDCALL;
   if (recording_) {
     recording_->SetStreamSourceFreq(StreamNumber, Setting);

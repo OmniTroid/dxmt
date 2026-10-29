@@ -220,8 +220,13 @@ struct Driver {
   definePixelInputs() {
     bool flat = variant.flags & SM30_SHADER_FLAG_FLAT_SHADING;
     bool point_sprite = variant.flags & SM30_SHADER_FLAG_POINT_SPRITE;
+    bool known = variant.flags & SM30_SHADER_FLAG_VS_OUTPUTS;
     for (auto &input : data.inputs) {
       uint32_t reg = input.reg;
+      // Metal can't link an input nothing writes; the zero-initialized register stands in, as in D3D9
+      uint32_t bit = (uint32_t)input.usage * 16 + input.usage_index;
+      if (known && bit < 224 && !(variant.vs_outputs[bit / 32] & (1u << (bit % 32))))
+        continue;
       if (point_sprite && input.usage == Usage::TexCoord) {
         auto index = func_signature.DefineInput(InputPointCoord{});
         prologue.Add([=](IOHelper &io) -> llvm::Error { return io.InitializeInput(index, reg, 0x3); });

@@ -46,7 +46,8 @@ public:
       TextureViewKey dst_view, const WMTScissorRect &dst_rect, bool linear
   ) {
     auto format = dst->pixelFormat(dst_view);
-    uint64_t key = (uint64_t)format << 1 | linear;
+    uint32_t samples = dst->sampleCount();
+    uint64_t key = (uint64_t)format << 8 | samples << 1 | linear;
     auto it = psos_.find(key);
     if (it == psos_.end()) {
       WMTRenderPipelineInfo info;
@@ -54,6 +55,7 @@ public:
       info.vertex_function = vs_;
       info.fragment_function = linear ? fs_linear_ : fs_nearest_;
       info.colors[0].pixel_format = format;
+      info.raster_sample_count = samples;
       info.rasterization_enabled = true;
       info.input_primitive_topology = WMTPrimitiveTopologyClassTriangle;
       WMT::Reference<WMT::Error> err;

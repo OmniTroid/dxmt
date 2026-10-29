@@ -24,6 +24,7 @@
 #include "Metal.hpp"
 #include "sha1/sha1_util.hpp"
 #include "thread.hpp"
+#include <array>
 #include <unordered_map>
 #include <vector>
 
@@ -69,6 +70,12 @@ public:
     return inputs_;
   }
 
+  // vertex shaders: the semantics written, as SM30_SHADER_D3D9_DATA::vs_outputs bits
+  const std::array<uint32_t, 7> &
+  outputs() const {
+    return outputs_;
+  }
+
   const std::vector<DWORD> &
   bytecode() const {
     return bytecode_;
@@ -92,6 +99,7 @@ private:
   std::vector<MTL_SM50_SHADER_ARGUMENT> cbuffers_;
   std::vector<MTL_SM50_SHADER_ARGUMENT> arguments_;
   std::vector<D3D9ShaderInput> inputs_;
+  std::array<uint32_t, 7> outputs_ = {};
   Sha1Digest sha1_;
   dxmt::mutex mutex_;
   std::unordered_map<Sha1Digest, WMT::Reference<WMT::Function>> variants_;
