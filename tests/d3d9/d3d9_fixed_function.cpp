@@ -413,11 +413,23 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
     float x, y, z, weight;
     DWORD indices, color;
   };
-  for (DWORD fvf : {D3DFVF_LASTBETA_UBYTE4, D3DFVF_LASTBETA_D3DCOLOR}) {
-    device->SetFVF(D3DFVF_XYZB2 | fvf | D3DFVF_DIFFUSE);
+  // XYZB2 | LASTBETA_D3DCOLOR declares a D3DCOLOR weight on Windows, so D3DCOLOR indices need a declaration
+  D3DVERTEXELEMENT9 color_index_elements[] = {
+      {0, 0, D3DDECLTYPE_FLOAT3, 0, D3DDECLUSAGE_POSITION, 0},
+      {0, 12, D3DDECLTYPE_FLOAT1, 0, D3DDECLUSAGE_BLENDWEIGHT, 0},
+      {0, 16, D3DDECLTYPE_D3DCOLOR, 0, D3DDECLUSAGE_BLENDINDICES, 0},
+      {0, 20, D3DDECLTYPE_D3DCOLOR, 0, D3DDECLUSAGE_COLOR, 0},
+      D3DDECL_END(),
+  };
+  IDirect3DVertexDeclaration9 *color_index_decl = nullptr;
+  device->CreateVertexDeclaration(color_index_elements, &color_index_decl);
+  for (bool d3dcolor : {false, true}) {
+    if (d3dcolor)
+      device->SetVertexDeclaration(color_index_decl);
+    else
+      device->SetFVF(D3DFVF_XYZB2 | D3DFVF_LASTBETA_UBYTE4 | D3DFVF_DIFFUSE);
     // byte 0 is the first index for both encodings
     DWORD indices = 3 | 7 << 8;
-    bool d3dcolor = fvf == D3DFVF_LASTBETA_D3DCOLOR;
     for (float weight : {1.0f, 0.0f}) {
       IndexedVertex v[4] = {
           {-0.2f, -0.2f, 0.5f, weight, indices, 0xFFFFFFFF}, {-0.2f, 0.2f, 0.5f, weight, indices, 0xFFFFFFFF},
@@ -430,6 +442,8 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
       expect(name, weight ? 16 : 48, 32, 0xFFFFFFFF);
     }
   }
+  if (color_index_decl)
+    color_index_decl->Release();
   device->SetRenderState(D3DRS_INDEXEDVERTEXBLENDENABLE, FALSE);
   device->SetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
   device->SetTransform(D3DTS_WORLDMATRIX(0), &identity);
