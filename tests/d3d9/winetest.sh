@@ -25,7 +25,8 @@ if (($#)); then
   # a copy of the suite that runs only the functions in WINETEST_ONLY, linked with Wine's other test objects
   one="$work/one"
   mkdir -p "$one"
-  exe="$one/d3d9_test.exe"
+  # one exe per suite: the others are linked unfiltered
+  exe="$one/d3d9_test-$suite.exe"
   objs="$build/dlls/d3d9/tests/x86_64-windows"
   if [[ ! -f "$one/$suite.o" || "$source/dlls/d3d9/tests/$suite.c" -nt "$one/$suite.o" || "$filter" -nt "$one/$suite.o" ]]; then
     python3 -I "$filter" "$source/dlls/d3d9/tests/$suite.c" "$one/$suite.c" || exit 1

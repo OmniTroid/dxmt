@@ -41,6 +41,15 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 
 ## Traps
 
+**Stale files**
+
+Leftover artifacts have produced wrong conclusions more than any other trap. Before trusting a result, confirm it came from this run: the log's mtime is after the run started, the DLL or exe was rebuilt from the current sources, the cache key covers every input. Seen so far:
+
+- A previous run's `winetest-visual.out`, copied or read while the next run started, made a real hang look like progress.
+- `winetest.sh` cached its filtered exe at one path for every suite; after switching suites, a "single test" run ran the whole device suite, display mode changes included. Each suite now has its own exe.
+- A watchdog compared against the old log's mtime before the run rewrote it and reported a stall that wasn't one.
+- Prefix DLL copies and airconv outputs, below.
+
 **Wine runtime**
 
 - A prefix keeps its own copies of builtin DLLs in `drive_c/windows/system32`, and Wine may load either that copy or the one in `lib/wine/<arch>-windows`; both have been seen to win. After rebuilding, replace both, or rerun `run.sh` (fresh prefix). Updating only one silently tested the old DLL twice, once in each direction.
