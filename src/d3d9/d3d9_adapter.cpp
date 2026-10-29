@@ -302,6 +302,10 @@ MTLD3D9Adapter::CheckDeviceFormat(
     return D3DERR_NOTAVAILABLE;
   }
 
+  // YUY2/UYVY plain surfaces live in CPU memory and are converted by StretchRect
+  if (desc.Flags & D3D9_FORMAT_CPU_ONLY)
+    return RType == D3DRTYPE_SURFACE && !(Usage & ~D3DUSAGE_DYNAMIC) ? D3D_OK : D3DERR_NOTAVAILABLE;
+
   FormatCapability caps = GetFormatCapability(CheckFormat);
   if (caps == FormatCapability::None)
     return D3DERR_NOTAVAILABLE;
@@ -435,6 +439,12 @@ MTLD3D9Adapter::CheckDeviceFormatConversion(D3DDEVTYPE DevType, D3DFORMAT Source
   D3D9_FORMAT_DESC src, dst;
   if (!D3D9QueryFormat(SourceFormat, src) || !D3D9QueryFormat(TargetFormat, dst))
     return D3DERR_NOTAVAILABLE;
+  // video playback converts YUY2/UYVY into the back buffer formats (Wine's visual test_format_conversion)
+  if (src.Flags & D3D9_FORMAT_CPU_ONLY)
+    return (dst.Flags & D3D9_FORMAT_BACKBUFFER) || TargetFormat == D3DFMT_R5G6B5 || TargetFormat == D3DFMT_X1R5G5B5 ||
+                   TargetFormat == D3DFMT_A1R5G5B5
+               ? D3D_OK
+               : D3DERR_NOTAVAILABLE;
 
   if (!(dst.Flags & D3D9_FORMAT_BACKBUFFER) && TargetFormat != D3DFMT_A8B8G8R8 && TargetFormat != D3DFMT_X8B8G8R8 &&
       TargetFormat != D3DFMT_A16B16G16R16F)

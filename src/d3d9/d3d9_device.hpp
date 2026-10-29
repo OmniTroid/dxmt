@@ -345,6 +345,11 @@ private:
 
   Com<MTLD3D9> parent_;
   MTLD3D9Adapter *adapter_;
+  HRESULT StretchFromYUV(
+      MTLD3D9Surface *pSource, const RECT *pSourceRect, MTLD3D9Surface *pDest, const RECT *pDestRect,
+      D3DTEXTUREFILTERTYPE Filter
+  );
+  HRESULT FillYUV(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color);
   HRESULT FillBlocks(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color);
   bool ValidMultisampleQuality(D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD Quality);
   D3DDEVICE_CREATION_PARAMETERS creation_params_;

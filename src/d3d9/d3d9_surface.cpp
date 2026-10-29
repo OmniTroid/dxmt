@@ -208,6 +208,9 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
     bool aligned = !(pRect->left & mask) && !(pRect->top & mask) &&
                    ((pRect->right & mask) == 0 || pRect->right == rect.right) &&
                    ((pRect->bottom & mask) == 0 || pRect->bottom == rect.bottom);
+    // YUY2/UYVY pixels come in horizontal pairs (Wine's test_surface_blocks)
+    if (desc_.Format == D3DFMT_YUY2 || desc_.Format == D3DFMT_UYVY)
+      aligned = aligned && !(pRect->left & 1) && (!(pRect->right & 1) || pRect->right == rect.right);
     if (desc_.Pool == D3DPOOL_DEFAULT && (!valid || !aligned))
       return D3DERR_INVALIDCALL;
     if (valid)

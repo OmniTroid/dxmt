@@ -113,6 +113,27 @@ WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int) {
   check("GDI fill reaches the render target", (read(rt_sys, 5, 5) & 0xFFFFFF) == 0x102030);
   DeleteObject(brush);
 
+  // YUY2 video frames reach RGB targets through StretchRect
+  check("YUY2 converts to X8R8G8B8",
+        d3d->CheckDeviceFormatConversion(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, D3DFMT_YUY2, D3DFMT_X8R8G8B8) == D3D_OK);
+  IDirect3DSurface9 *yuy2 = nullptr;
+  device->CreateOffscreenPlainSurface(16, 16, D3DFMT_YUY2, D3DPOOL_DEFAULT, &yuy2, nullptr);
+  D3DLOCKED_RECT yuv_lr = {};
+  if (yuy2 && SUCCEEDED(yuy2->LockRect(&yuv_lr, nullptr, 0))) {
+    // BT.601 red: Y 81, U 90, V 240
+    for (int y = 0; y < 16; y++)
+      for (int x = 0; x < 8; x++)
+        ((DWORD *)((BYTE *)yuv_lr.pBits + y * yuv_lr.Pitch))[x] = 81 | 90 << 8 | 81 << 16 | 240u << 24;
+    yuy2->UnlockRect();
+  }
+  device->ColorFill(rt, nullptr, 0xFF000000);
+  check("StretchRect from YUY2", yuy2 && device->StretchRect(yuy2, nullptr, rt, nullptr, D3DTEXF_LINEAR) == D3D_OK);
+  device->GetRenderTargetData(rt, rt_sys);
+  DWORD red = read(rt_sys, 8, 8);
+  check("YUY2 red arrives as red", ((red >> 16) & 0xFF) >= 0xF0 && ((red >> 8) & 0xFF) <= 0x08 && (red & 0xFF) <= 0x08);
+  if (yuy2)
+    yuy2->Release();
+
   // the front buffer holds the last presented frame
   IDirect3DSurface9 *front = nullptr;
   device->CreateOffscreenPlainSurface(64, 64, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &front, nullptr);

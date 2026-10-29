@@ -576,9 +576,10 @@ CreateStandaloneSurface(
   Rc<Texture> texture;
   D3D9_FORMAT_DESC format;
   bool null_target = D3D9QueryFormat(Desc.Format, format) && (format.Flags & D3D9_FORMAT_NULL_RT);
-  if ((format.Flags & D3D9_FORMAT_CPU_ONLY) && Desc.Pool != D3DPOOL_SCRATCH)
+  bool cpu_only = format.Flags & D3D9_FORMAT_CPU_ONLY;
+  if (cpu_only && (Desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL)))
     return D3DERR_INVALIDCALL;
-  if (Desc.Pool != D3DPOOL_SYSTEMMEM && Desc.Pool != D3DPOOL_SCRATCH && !null_target) {
+  if (Desc.Pool != D3DPOOL_SYSTEMMEM && Desc.Pool != D3DPOOL_SCRATCH && !null_target && !cpu_only) {
     HRESULT hr = CreateD3D9SurfaceTexture(pDevice, Desc, texture);
     if (FAILED(hr))
       return hr;
@@ -1003,6 +1004,25 @@ MTLD3D9Device::UpdateSurface(
   return D3D_OK;
 }
 
+// YUY2/UYVY fills take the color as packed (Y << 16 | U << 8 | V) and write whole pixel pairs
+HRESULT
+MTLD3D9Device::FillYUV(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color) {
+  auto &desc = pSurface->Desc();
+  D3DBOX box = RectToBox(pRect, desc);
+  if (!BoxInside(box, desc) || (box.Left & 1) || ((box.Right & 1) && box.Right != desc.Width))
+    return D3DERR_INVALIDCALL;
+  uint8_t y = Color >> 16, u = Color >> 8, v = Color;
+  DWORD pair = desc.Format == D3DFMT_YUY2 ? y | u << 8 | y << 16 | (DWORD)v << 24 : u | y << 8 | v << 16 | (DWORD)y << 24;
+  D3DLOCKED_RECT lr;
+  if (FAILED(pSurface->LockRect(&lr, nullptr, 0)))
+    return D3DERR_INVALIDCALL;
+  for (UINT row = box.Top; row < box.Bottom; row++)
+    for (UINT x = box.Left; x < box.Right; x += 2)
+      *(DWORD *)((uint8_t *)lr.pBits + row * lr.Pitch + x * 2) = pair;
+  pSurface->UnlockRect();
+  return D3D_OK;
+}
+
 // DXTn surfaces are filled with solid blocks written through the CPU shadow, in whole blocks only
 HRESULT
 MTLD3D9Device::FillBlocks(MTLD3D9Surface *pSurface, const RECT *pRect, D3DCOLOR Color) {
@@ -1043,7 +1063,11 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLOR Color) {
   auto lock = Lock();
   auto surface = static_cast<MTLD3D9Surface *>(pSurface);
-  if (!surface || surface->Desc().Pool != D3DPOOL_DEFAULT || !surface->texture() || surface->IsDepthStencil())
+  if (!surface || surface->Desc().Pool != D3DPOOL_DEFAULT || surface->IsDepthStencil())
+    return D3DERR_INVALIDCALL;
+  if (surface->Desc().Format == D3DFMT_YUY2 || surface->Desc().Format == D3DFMT_UYVY)
+    return FillYUV(surface, pRect, Color);
+  if (!surface->texture())
     return D3DERR_INVALIDCALL;
   // texture levels need D3DUSAGE_RENDERTARGET; offscreen plain surfaces don't
   if (IsTextureLevel(surface) && !(surface->Desc().Usage & D3DUSAGE_RENDERTARGET))
@@ -1064,6 +1088,51 @@ MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLO
   return D3D_OK;
 }
 
+// YUY2/UYVY sources are converted on the CPU (BT.601, studio range, as drivers do) into a temporary
+// A8R8G8B8 surface, which is then stretched like any other
+HRESULT
+MTLD3D9Device::StretchFromYUV(
+    MTLD3D9Surface *pSource, const RECT *pSourceRect, MTLD3D9Surface *pDest, const RECT *pDestRect,
+    D3DTEXTUREFILTERTYPE Filter
+) {
+  auto &sd = pSource->Desc();
+  if (sd.Pool != D3DPOOL_DEFAULT || pDest->Desc().Pool != D3DPOOL_DEFAULT)
+    return D3DERR_INVALIDCALL;
+  D3DBOX box = RectToBox(pSourceRect, sd);
+  if (!BoxInside(box, sd))
+    return D3DERR_INVALIDCALL;
+  UINT width = box.Right - box.Left, height = box.Bottom - box.Top;
+
+  D3DLOCKED_RECT in;
+  if (FAILED(pSource->LockRect(&in, nullptr, D3DLOCK_READONLY)))
+    return D3DERR_INVALIDCALL;
+  Com<IDirect3DSurface9> temp;
+  D3DSURFACE_DESC td = {D3DFMT_A8R8G8B8, D3DRTYPE_SURFACE, 0, D3DPOOL_DEFAULT, D3DMULTISAMPLE_NONE, 0, width, height};
+  D3DLOCKED_RECT out;
+  if (FAILED(CreateStandaloneSurface(this, td, true, &temp)) || FAILED(temp->LockRect(&out, nullptr, 0))) {
+    pSource->UnlockRect();
+    return D3DERR_INVALIDCALL;
+  }
+  bool uyvy = sd.Format == D3DFMT_UYVY;
+  auto clamp = [](float v) { return (DWORD)std::clamp(v + 0.5f, 0.0f, 255.0f); };
+  for (UINT y = 0; y < height; y++) {
+    auto row = (const uint8_t *)in.pBits + (box.Top + y) * in.Pitch;
+    auto dst_row = (DWORD *)((uint8_t *)out.pBits + y * out.Pitch);
+    for (UINT x = 0; x < width; x++) {
+      UINT sx = box.Left + x;
+      const uint8_t *pair = row + (sx & ~1u) * 2;
+      float luma = pair[uyvy ? 1 + (sx & 1) * 2 : (sx & 1) * 2];
+      float u = pair[uyvy ? 0 : 1], v = pair[uyvy ? 2 : 3];
+      float c = 1.164f * (luma - 16.0f), d = u - 128.0f, e = v - 128.0f;
+      dst_row[x] = 0xFF000000 | clamp(c + 1.596f * e) << 16 | clamp(c - 0.391f * d - 0.813f * e) << 8 |
+                   clamp(c + 2.018f * d);
+    }
+  }
+  temp->UnlockRect();
+  pSource->UnlockRect();
+  return StretchRect(temp.ptr(), nullptr, pDest, pDestRect, Filter);
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::StretchRect(
     IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestSurface,
@@ -1072,6 +1141,8 @@ MTLD3D9Device::StretchRect(
   auto lock = Lock();
   auto src = static_cast<MTLD3D9Surface *>(pSourceSurface);
   auto dst = static_cast<MTLD3D9Surface *>(pDestSurface);
+  if (src && dst && src != dst && dst->texture() && (src->Desc().Format == D3DFMT_YUY2 || src->Desc().Format == D3DFMT_UYVY))
+    return StretchFromYUV(src, pSourceRect, dst, pDestRect, Filter);
   if (!src || !dst || src == dst || !src->texture() || !dst->texture())
     return D3DERR_INVALIDCALL;
 
