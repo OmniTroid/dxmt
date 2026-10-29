@@ -166,10 +166,15 @@ MTLD3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD F
     if (pBox->Left >= pBox->Right || pBox->Top >= pBox->Bottom || pBox->Front >= pBox->Back ||
         pBox->Right > desc_.Width || pBox->Bottom > desc_.Height || pBox->Back > desc_.Depth)
       return D3DERR_INVALIDCALL;
-    // volumes enforce DXTn block locks in every pool, unlike surfaces (Wine's test_volume_blocks)
-    if (D3D9IsDXTn(desc_.Format) &&
-        ((pBox->Left & 3) || (pBox->Top & 3) || ((pBox->Right & 3) && pBox->Right != desc_.Width) ||
-         ((pBox->Bottom & 3) && pBox->Bottom != desc_.Height)))
+    // volumes enforce block-aligned locks in every pool, unlike surfaces (Wine's test_volume_blocks)
+    UINT bw = 1, bh = 1;
+    if (D3D9IsDXTn(desc_.Format) || desc_.Format == (D3DFORMAT)MAKEFOURCC('A', 'T', 'I', '1') ||
+        desc_.Format == (D3DFORMAT)MAKEFOURCC('A', 'T', 'I', '2'))
+      bw = bh = 4;
+    else if (desc_.Format == D3DFMT_YUY2 || desc_.Format == D3DFMT_UYVY)
+      bw = 2;
+    if ((pBox->Left % bw) || (pBox->Top % bh) || ((pBox->Right % bw) && pBox->Right != desc_.Width) ||
+        ((pBox->Bottom % bh) && pBox->Bottom != desc_.Height))
       return D3DERR_INVALIDCALL;
     box = *pBox;
   }
@@ -666,7 +671,7 @@ CreateD3D9Texture(MTLD3D9Device *pDevice, const D3D9_TEXTURE_DESC &Desc, IDirect
   bool gpu_output = Desc.Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL);
   if (gpu_output && Desc.Pool != D3DPOOL_DEFAULT)
     return D3DERR_INVALIDCALL;
-  if ((Desc.Usage & D3DUSAGE_DYNAMIC) && Desc.Pool == D3DPOOL_MANAGED)
+  if ((Desc.Usage & D3DUSAGE_DYNAMIC) && (Desc.Pool == D3DPOOL_MANAGED || Desc.Pool == D3DPOOL_SCRATCH))
     return D3DERR_INVALIDCALL;
   if ((Desc.Usage & D3DUSAGE_DEPTHSTENCIL) && !(format.Flags & D3D9_FORMAT_DEPTH))
     return D3DERR_INVALIDCALL;
