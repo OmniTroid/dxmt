@@ -1,6 +1,6 @@
 # Testing the D3D9 frontend
 
-How to build and test `src/d3d9` and airconv's D3D9 front end, and the traps found so far. Add to this whenever something costs time.
+How to build and test `src/d3d9` and airconv's D3D9 front end, and the traps found so far. Add to this whenever something costs time. Metal behavior goes in [METAL_NOTES.md](METAL_NOTES.md).
 
 ## Setup
 
