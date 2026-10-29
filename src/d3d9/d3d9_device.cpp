@@ -63,6 +63,7 @@ MTLD3D9Device::Initialize(D3DPRESENT_PARAMETERS *pParams, D3DDISPLAYMODEEX *pFul
   if (!pParams)
     return D3DERR_INVALIDCALL;
 
+  HWND app_window = pParams->hDeviceWindow;
   if (!pParams->hDeviceWindow)
     pParams->hDeviceWindow = creation_params_.hFocusWindow;
   if (!pParams->hDeviceWindow && !pParams->Windowed) {
@@ -78,7 +79,10 @@ MTLD3D9Device::Initialize(D3DPRESENT_PARAMETERS *pParams, D3DDISPLAYMODEEX *pFul
   if (FAILED(hr))
     return hr;
 
-  return ResetState(pParams, true);
+  hr = ResetState(pParams, true);
+  // the parameters come back filled in, but a NULL device window stays NULL (Wine's test_swapchain_parameters)
+  pParams->hDeviceWindow = app_window;
+  return hr;
 }
 
 void
@@ -476,6 +480,11 @@ MTLD3D9Device::GetNumberOfSwapChains() {
   return 1;
 }
 
+void
+D3D9CountDefaultResource(IDirect3DDevice9Ex *pDevice, int Delta) {
+  static_cast<MTLD3D9Device *>(pDevice)->default_resources_ += Delta;
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
   auto lock = Lock();
@@ -484,11 +493,17 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
   if (!extended_ && state_ == DeviceState::Lost)
     return D3DERR_DEVICELOST;
 
+  if (!extended_ && default_resources_) {
+    state_ = DeviceState::NotReset;
+    return D3DERR_INVALIDCALL;
+  }
+
   WaitUntilGPUIdle();
   render_targets_ = {};
   depth_stencil_ = nullptr;
   auto_depth_stencil_ = nullptr;
 
+  HWND app_window = pPresentationParameters->hDeviceWindow;
   HRESULT hr = swapchain_->Reset(pPresentationParameters);
   if (SUCCEEDED(hr))
     hr = ResetState(pPresentationParameters, false);
@@ -500,6 +515,7 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
     ReleaseFocusWindow();
   else
     AcquireFocusWindow(creation_params_.hFocusWindow ? creation_params_.hFocusWindow : pPresentationParameters->hDeviceWindow);
+  pPresentationParameters->hDeviceWindow = app_window;
   return D3D_OK;
 }
 

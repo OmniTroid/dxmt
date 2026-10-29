@@ -119,12 +119,32 @@ private:
   ConcurrentComPrivateData private_data_;
 };
 
+// DEFAULT pool resources the app holds references to; a non-Ex Reset refuses while any exist
+void D3D9CountDefaultResource(IDirect3DDevice9Ex *pDevice, int Delta);
+
 template <typename... Base> class MTLD3D9Resource : public MTLD3D9PrivateDataObject<Base...> {
 public:
-  // only managed resources keep a priority (Wine's test_resource_priority)
-  MTLD3D9Resource(IDirect3DDevice9Ex *pDevice, D3DPOOL Pool) :
+  // only managed textures and buffers keep a priority (Wine's test_resource_priority)
+  MTLD3D9Resource(IDirect3DDevice9Ex *pDevice, D3DPOOL Pool, bool KeepsPriority = true) :
       MTLD3D9PrivateDataObject<Base...>(pDevice),
-      keeps_priority_(Pool == D3DPOOL_MANAGED) {}
+      keeps_priority_(KeepsPriority && Pool == D3DPOOL_MANAGED),
+      default_pool_(Pool == D3DPOOL_DEFAULT) {}
+
+  ULONG STDMETHODCALLTYPE
+  AddRef() override {
+    ULONG count = MTLD3D9PrivateDataObject<Base...>::AddRef();
+    if (default_pool_ && count == 1)
+      D3D9CountDefaultResource(this->device_, 1);
+    return count;
+  }
+
+  ULONG STDMETHODCALLTYPE
+  Release() override {
+    // before the base release, which may drop the last device reference
+    if (default_pool_ && this->m_refCount == 1)
+      D3D9CountDefaultResource(this->device_, -1);
+    return MTLD3D9PrivateDataObject<Base...>::Release();
+  }
 
   DWORD STDMETHODCALLTYPE
   SetPriority(DWORD PriorityNew) override {
@@ -144,6 +164,7 @@ public:
 private:
   DWORD priority_ = 0;
   bool keeps_priority_;
+  bool default_pool_;
 };
 
 } // namespace dxmt

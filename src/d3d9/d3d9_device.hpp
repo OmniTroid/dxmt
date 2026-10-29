@@ -358,6 +358,8 @@ private:
   // lost while a fullscreen app is inactive; NotReset once it's back (or when a Reset failed) until a Reset succeeds
   enum class DeviceState { Ok, Lost, NotReset };
   std::atomic<DeviceState> state_ = DeviceState::Ok;
+  std::atomic<int> default_resources_ = 0;
+  friend void D3D9CountDefaultResource(IDirect3DDevice9Ex *pDevice, int Delta);
   HWND focus_window_ = nullptr;
   bool restore_screensaver_ = false;
   void AcquireFocusWindow(HWND Window);
