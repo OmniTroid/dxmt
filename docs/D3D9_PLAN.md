@@ -95,6 +95,15 @@ New VS/PS variant structs, each with an `IOHelper` prologue/epilogue:
 ### 8. Remaining API surface
 - Queries (occlusion via existing counter pool, event, timestamp), state blocks, `ProcessVertices` (CPU fallback), `D3DCREATE_MULTITHREADED` locking, Ex features (`WaitForVBlank`, `SetMaximumFrameLatency` onto `PresentBoundary`), `D3D9Options` from `Config` with `d3d9.*` keys.
 
+## Status
+
+All eight phases are implemented and covered by `tests/d3d9` and `tests/airconv_d3d9`. Not implemented, by choice:
+
+- Indexed vertex blending (the caps report `MaxVertexBlendMatrixIndex = 0`).
+- `ProcessVertices` with a vertex shader (fixed-function only).
+- Shared resources (`pSharedHandle`) and `D3DFMT_A1`, so `ComposeRects` fails.
+- Not yet run against a real game; `d3d9_fullscreen` needs an unlocked screen (`D3D9_TEST_FULLSCREEN=1`).
+
 ## Testing
 - `tests/d3d9/`: sample apps like `tests/dx11` (clear, triangle, FF lights, SM3 shading, UP draws, fans, point sprites, lock/discard).
 - apitrace d3d9 traces from real games, replayed for regressions.
