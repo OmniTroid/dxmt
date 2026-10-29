@@ -42,8 +42,16 @@ static int winetest_only(const char *name)
     return included || !includes;
 }
 
+/* tells winetest.sh which test is running, so it can resume after one that hangs or crashes */
+static int winetest_mark(const char *name)
+{
+    printf("### %s\\n", name);
+    fflush(stdout);
+    return 1;
+}
+
 '''
-body = call.sub(lambda m: f'{m.group(1)}if (winetest_only("{m.group(2)}")) {m.group(2)}();', body)
+body = call.sub(lambda m: f'{m.group(1)}if (winetest_only("{m.group(2)}") && winetest_mark("{m.group(2)}")) {m.group(2)}();', body)
 with open(out, 'w') as f:
     f.write(f'#line 1 "{source}"\n')
     line = text.count('\n', 0, start.start()) + 1

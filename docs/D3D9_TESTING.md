@@ -28,7 +28,7 @@ Wine's own d3d9 conformance tests (`stateblock`, `visual`, `device`, `d3d9ex`) r
 tests/d3d9/winetest.sh toolchains/wine-cx/build ~/code/wine/wine visual test_fog cnd_test
 ```
 
-It installs freshly built DLLs first (`tests/d3d9/install.sh`), so rebuild and rerun takes seconds; `--list` prints the suite's functions, and no names runs the whole suite (about 20 minutes for `visual`). One of our own tests runs alone with `WINEPREFIX=$PWD/toolchains/test/pfx toolchains/test/wine/bin/wine build/tests/d3d9/d3d9_ps1.exe`.
+It installs freshly built DLLs first (`tests/d3d9/install.sh`), so rebuild and rerun takes seconds; `--list` prints the suite's functions, `-name` skips one, and no names runs the whole suite (about 25 s for `visual`, 50 s for `device`). The tests share one process; a test that stalls or crashes is reported, its stacks kept in `<log>.<test>.stall.txt`, and a new process resumes after it. `--each` runs every test in its own process instead (about 2.5 minutes per suite). One of our own tests runs alone with `WINEPREFIX=$PWD/toolchains/test/pfx toolchains/test/wine/bin/wine build/tests/d3d9/d3d9_ps1.exe`.
 
 The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU and compare it with a Python reference; see the README there.
 
