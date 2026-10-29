@@ -259,9 +259,9 @@ DCBitsPerPixel(D3DFORMAT Format) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::GetDC(HDC *phdc) {
+  // a failing call leaves *phdc untouched
   if (!phdc)
     return D3DERR_INVALIDCALL;
-  *phdc = nullptr;
   UINT bpp = DCBitsPerPixel(desc_.Format);
   if (!bpp || locked_ || dc_)
     return D3DERR_INVALIDCALL;

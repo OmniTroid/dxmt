@@ -521,13 +521,20 @@ MTLD3D9Device::CreateVolumeTexture(
   return CreateD3D9Texture(this, desc, reinterpret_cast<IDirect3DBaseTexture9 **>(ppVolumeTexture));
 }
 
+// buffers can't be scratch, render targets, depth stencils or autogen mipmaps (Wine's test_resource_access)
+static bool
+ValidBufferPoolAndUsage(D3DPOOL Pool, DWORD Usage) {
+  return Pool != D3DPOOL_SCRATCH &&
+         !(Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_AUTOGENMIPMAP | D3DUSAGE_DMAP));
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVertexBuffer(
     UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9 **ppVertexBuffer, HANDLE *pSharedHandle
 ) {
   auto lock = Lock();
   InitReturnPtr(ppVertexBuffer);
-  if (!ppVertexBuffer || !Length || pSharedHandle)
+  if (!ppVertexBuffer || !Length || pSharedHandle || !ValidBufferPoolAndUsage(Pool, Usage))
     return D3DERR_INVALIDCALL;
   D3DVERTEXBUFFER_DESC desc = {D3DFMT_VERTEXDATA, D3DRTYPE_VERTEXBUFFER, Usage, Pool, Length, FVF};
   *ppVertexBuffer = ref(new MTLD3D9VertexBuffer(this, desc));
@@ -541,7 +548,7 @@ MTLD3D9Device::CreateIndexBuffer(
 ) {
   auto lock = Lock();
   InitReturnPtr(ppIndexBuffer);
-  if (!ppIndexBuffer || !Length || pSharedHandle)
+  if (!ppIndexBuffer || !Length || pSharedHandle || !ValidBufferPoolAndUsage(Pool, Usage))
     return D3DERR_INVALIDCALL;
   if (Format != D3DFMT_INDEX16 && Format != D3DFMT_INDEX32)
     return D3DERR_INVALIDCALL;

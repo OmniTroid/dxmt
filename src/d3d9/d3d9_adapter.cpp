@@ -291,7 +291,8 @@ MTLD3D9Adapter::CheckDeviceFormat(
     // like native drivers, lockable depth formats aren't offered as textures
     if ((desc.Flags & D3D9_FORMAT_LOCKABLE) && RType != D3DRTYPE_SURFACE)
       return D3DERR_NOTAVAILABLE;
-  } else if (is_depth && RType != D3DRTYPE_SURFACE && RType != D3DRTYPE_TEXTURE && RType != D3DRTYPE_CUBETEXTURE) {
+  } else if (is_depth && RType != D3DRTYPE_TEXTURE && RType != D3DRTYPE_CUBETEXTURE) {
+    // depth formats aren't offered as offscreen plain surfaces, which CreateOffscreenPlainSurface refuses
     return D3DERR_NOTAVAILABLE;
   }
 
