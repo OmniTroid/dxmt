@@ -253,10 +253,11 @@ MTLD3D9StateBlock::Apply() {
     d->SetVertexShader(vertex_shader_.ptr());
   if (pixel_shader_set_)
     d->SetPixelShader(pixel_shader_.ptr());
+  // a captured NULL declaration leaves the device's alone (Wine's test_vdecl_apply)
   if (declaration_set_) {
     if (fvf_)
       d->SetFVF(fvf_);
-    else
+    else if (declaration_)
       d->SetVertexDeclaration(declaration_.ptr());
   }
   for (uint32_t i = 0; i < caps::MaxStreams; i++) {

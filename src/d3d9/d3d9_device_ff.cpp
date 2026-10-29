@@ -473,7 +473,7 @@ MTLD3D9Device::BeginStateBlock() {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::EndStateBlock(IDirect3DStateBlock9 **ppSB) {
   auto lock = Lock();
-  InitReturnPtr(ppSB);
+  // a failing call leaves *ppSB untouched
   if (!ppSB || !recording_)
     return D3DERR_INVALIDCALL;
   *ppSB = ref(recording_.ptr());
