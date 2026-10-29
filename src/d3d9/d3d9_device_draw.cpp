@@ -675,8 +675,10 @@ MTLD3D9Device::UpdateRuntimeConstants(bool Pretransformed) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetClipPlane(DWORD Index, const float *pPlane) {
   auto lock = Lock();
-  if (Index >= caps::MaxClipPlanes || !pPlane)
+  if (!pPlane)
     return D3DERR_INVALIDCALL;
+  // indices past the last plane address the last one (Wine's test_clip_planes_limits)
+  Index = std::min<DWORD>(Index, caps::MaxClipPlanes - 1);
   if (recording_) {
     recording_->SetClipPlane(Index, pPlane);
     return D3D_OK;
@@ -687,8 +689,9 @@ MTLD3D9Device::SetClipPlane(DWORD Index, const float *pPlane) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetClipPlane(DWORD Index, float *pPlane) {
-  if (Index >= caps::MaxClipPlanes || !pPlane)
+  if (!pPlane)
     return D3DERR_INVALIDCALL;
+  Index = std::min<DWORD>(Index, caps::MaxClipPlanes - 1);
   std::memcpy(pPlane, clip_planes_[Index].data(), sizeof(float) * 4);
   return D3D_OK;
 }
