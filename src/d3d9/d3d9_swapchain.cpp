@@ -156,6 +156,12 @@ MTLD3D9SwapChain::Reset(D3DPRESENT_PARAMETERS *pParams) {
 
   if (params.BackBufferCount > D3DPRESENT_BACK_BUFFERS_MAX)
     return D3DERR_INVALIDCALL;
+  // FLIPEX is a D3D9Ex swap effect, and COPY allows one back buffer (Wine's test_swapchain_parameters)
+  bool flipex = params.SwapEffect == D3DSWAPEFFECT_FLIPEX && parent_->IsExtended();
+  if ((params.SwapEffect < D3DSWAPEFFECT_DISCARD || params.SwapEffect > D3DSWAPEFFECT_COPY) && !flipex)
+    return D3DERR_INVALIDCALL;
+  if (params.SwapEffect == D3DSWAPEFFECT_COPY && params.BackBufferCount > 1)
+    return D3DERR_INVALIDCALL;
   if (params.BackBufferCount == 0)
     params.BackBufferCount = 1;
 
