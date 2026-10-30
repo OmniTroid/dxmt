@@ -37,12 +37,13 @@ key = cf.CFStringCreateWithCString(None, b"CGSSessionScreenIsLocked", 0x08000100
 sys.exit(0 if session and cf.CFDictionaryGetValue(session, key) else 1)
 ' && echo "warning: the screen is locked; tests may time out"
 
-timeout="${D3D9_TEST_TIMEOUT:-180}"
+timeout="${D3D9_TEST_TIMEOUT:-30}"
 failed=0
 for build in ${D3D9_TEST_BUILDS:-build build32}; do
   for exe in "$root/$build"/tests/d3d9/d3d9_*.exe; do
     name="$(basename "$exe" .exe)"
     [ "$name" = d3d9_clear ] && continue
+    [ -n "${D3D9_TESTS:-}" ] && [[ " $D3D9_TESTS " != *" $name "* ]] && continue
     # takes over the display
     [ "$name" = d3d9_fullscreen ] && [ "${D3D9_TEST_FULLSCREEN:-0}" != 1 ] && continue
     out="$work/logs/$build-$name.out"
