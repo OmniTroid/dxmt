@@ -22,6 +22,8 @@ tests/d3d9/run.sh toolchains/wine-cx/install
 
 Syncs the Wine install to `toolchains/test/wine`, installs this tree's DLLs for both architectures, creates a fresh prefix and runs every `tests/d3d9` test. Each test prints `PASS`/`FAIL` lines and exits with its failure count. `D3D9_TEST_FULLSCREEN=1` adds `d3d9_fullscreen`, which takes over the display.
 
+`tests/d3d9/tart.sh <wine-install>` runs the same in a throwaway [Tart](https://tart.run) macOS VM, fullscreen test included, and copies the logs to `toolchains/test/tart-logs` (about 2.5 minutes). The VM's GPU takes DXMT's non-Apple path, so a failure there needs a run on the host before it counts.
+
 Wine's own d3d9 conformance tests (`stateblock`, `visual`, `device`, `d3d9ex`) run against DXMT in the prefix `run.sh` leaves behind; they found behavior our tests missed. Name test functions to run only those, the way you would with any test framework:
 
 ```sh
