@@ -60,12 +60,17 @@ TDynamicLinearTexture(
     D3D11_ASSERT(_.ptr() == nullptr);
 
     if (pInitialData) {
-      if (pInitialData->SysMemPitch != bytes_per_row_) {
+      size_t row_bytes =
+          std::min(bytes_per_row_, (size_t)MTLGetTexelSize(this->texture_->pixelFormat()) * this->texture_->width());
+      // D3D11 ignores SysMemPitch for 1D textures
+      size_t src_pitch =
+          tag_texture::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE1D ? row_bytes : pInitialData->SysMemPitch;
+      if (src_pitch != bytes_per_row_) {
         for (unsigned row = 0; row < this->texture_->height(); row++) {
           memcpy(
               ptr_add(allocation->mappedMemory, row * bytes_per_row_),
-              ptr_add(pInitialData->pSysMem, row * pInitialData->SysMemPitch),
-              pInitialData->SysMemPitch);
+              ptr_add(pInitialData->pSysMem, row * src_pitch),
+              std::min(src_pitch, row_bytes));
         }
       } else {
         memcpy(allocation->mappedMemory, pInitialData->pSysMem, bytes_per_image);

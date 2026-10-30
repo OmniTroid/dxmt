@@ -262,12 +262,14 @@ ResourceInitializer::initWithData(
     break;
   }
 
-  bool is_1d_tex = (texture->textureType() == WMTTextureType1D) || (texture->textureType() == WMTTextureType1DArray);
+  // D3D11 ignores the row pitch of 1D textures, which d3d11 creates as 2D textures one row high
+  bool single_row = (texture->textureType() == WMTTextureType1D) ||
+                    (texture->textureType() == WMTTextureType1DArray) || align(height_sub, block_size) == block_size;
   bool is_3d_tex = texture->textureType() == WMTTextureType3D;
   size_t texel_size = MTLGetTexelSize(texture->pixelFormat());
   size_t bytes_per_row_needed = texel_size * align(width_sub, block_size) / block_size;
-  size_t bytes_per_row_increment = is_1d_tex ? bytes_per_row_needed : row_pitch;
-  size_t bytes_per_row_valid = is_1d_tex ? bytes_per_row_needed : std::min(row_pitch, bytes_per_row_needed);
+  size_t bytes_per_row_increment = single_row ? bytes_per_row_needed : row_pitch;
+  size_t bytes_per_row_valid = single_row ? bytes_per_row_needed : std::min(row_pitch, bytes_per_row_needed);
   size_t bytes_per_image_needed = bytes_per_row_needed * align(height_sub, block_size) / block_size;
   size_t bytes_per_image_increment = is_3d_tex ? depth_pitch : bytes_per_image_needed;
   size_t bytes_per_image_valid = is_3d_tex ? std::min(depth_pitch, bytes_per_image_needed) : bytes_per_image_needed;

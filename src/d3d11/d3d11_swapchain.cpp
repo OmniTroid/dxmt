@@ -1106,8 +1106,13 @@ CreateSwapChain(
 
   DWORD window_process_id;
   GetWindowThreadProcessId(hWnd, &window_process_id);
-  if (GetProcessId(GetCurrentProcess()) != window_process_id) {
-    ERR("CreateSwapChain: cross-process swapchain not supported yet");
+  if (GetProcessId(GetCurrentProcess()) != window_process_id &&
+      env::getEnvVar("DXMT_ALLOW_CROSS_PROCESS_SWAPCHAIN") != "1") {
+    // The window's Cocoa view lives in the process that created the window; presenting into
+    // it from here needs a driver that hands out a surface for a foreign HWND. Opt in only
+    // on such a driver (Highball's winemac.drv overlay window), otherwise fail early and
+    // clearly rather than dereference a missing view below.
+    ERR("CreateSwapChain: cross-process swapchain not supported yet (set DXMT_ALLOW_CROSS_PROCESS_SWAPCHAIN=1 on a driver that supports it)");
     return E_FAIL;
   }
 
