@@ -5,6 +5,8 @@ airconv_src = files([
  'dxbc_binding_sm50.cpp',
  'dxbc_binding_rootsig.cpp',
  'dxbc_converter.cpp',
+ 'd3d9_converter.cpp',
+ 'd3d9_decoder.cpp',
  'dxbc_converter_gs.cpp',
  'dxbc_converter_ts.cpp',
  'dxbc_converter_basicblock.cpp',

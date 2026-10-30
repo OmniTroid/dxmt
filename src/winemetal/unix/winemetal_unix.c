@@ -443,6 +443,12 @@ _MTLCommandBuffer_renderCommandEncoder(void *obj) {
     descriptor.depthAttachment.texture = (id<MTLTexture>)info->depth.texture;
     descriptor.depthAttachment.loadAction = (MTLLoadAction)info->depth.load_action;
     descriptor.depthAttachment.storeAction = (MTLStoreAction)info->depth.store_action;
+    if (info->depth.resolve_texture) {
+      descriptor.depthAttachment.resolveTexture = (id<MTLTexture>)info->depth.resolve_texture;
+      descriptor.depthAttachment.resolveLevel = info->depth.resolve_level;
+      descriptor.depthAttachment.resolveSlice = info->depth.resolve_slice;
+      descriptor.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+    }
   }
 
   if (info->stencil.texture) {
@@ -1754,6 +1760,16 @@ thunk_SM50Initialize(void *args) {
 }
 
 static NTSTATUS
+thunk_SM30Initialize(void *args) {
+  struct sm50_initialize_params *params = args;
+
+  params->ret =
+      SM30Initialize(params->bytecode, params->bytecode_size, params->shader, params->reflection, params->error);
+
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 thunk_SM50Destroy(void *args) {
   struct sm50_destroy_params *params = args;
 
@@ -1891,6 +1907,18 @@ thunk32_SM50Initialize(void *args) {
   return STATUS_SUCCESS;
 }
 
+static NTSTATUS
+thunk32_SM30Initialize(void *args) {
+  struct sm50_initialize_params32 *params = args;
+
+  params->ret = SM30Initialize(
+      UInt32ToPtr(params->bytecode), params->bytecode_size, UInt32ToPtr(params->shader),
+      UInt32ToPtr(params->reflection), UInt32ToPtr(params->error)
+  );
+
+  return STATUS_SUCCESS;
+}
+
 struct SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT_DATA32 {
   uint32_t next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
@@ -1940,6 +1968,20 @@ struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
     uint32_t DataEncoded;
   };
   bool RasterizationDisabled;
+};
+
+struct SM30_SHADER_D3D9_DATA32 {
+  uint32_t next;
+  enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
+  uint32_t alpha_func;
+  uint32_t fog_mode;
+  uint32_t clip_plane_mask;
+  uint32_t flags;
+  uint32_t ps1_texture_types;
+  uint32_t vs_outputs[7];
+  uint32_t shadow_samplers;
+  uint32_t fetch4_samplers;
+  uint32_t unbound_samplers;
 };
 
 struct SM50_SHADER_PSO_GEOMETRY_SHADER_DATA32 {
@@ -2036,6 +2078,24 @@ sm50_compilation_argument32_convert(
       data->type = src->type;
       data->Data = src->Data;
       data->RasterizationDisabled = src->RasterizationDisabled;
+      break;
+    }
+    case SM30_SHADER_D3D9: {
+      struct SM30_SHADER_D3D9_DATA32 *src = (void *)args32;
+      struct SM30_SHADER_D3D9_DATA *data = malloc(sizeof(struct SM30_SHADER_D3D9_DATA));
+      last_arg->next = data;
+      last_arg = (void *)data;
+      last_arg->next = NULL;
+      data->type = src->type;
+      data->alpha_func = src->alpha_func;
+      data->fog_mode = src->fog_mode;
+      data->clip_plane_mask = src->clip_plane_mask;
+      data->flags = src->flags;
+      data->ps1_texture_types = src->ps1_texture_types;
+      memcpy(data->vs_outputs, src->vs_outputs, sizeof(data->vs_outputs));
+      data->shadow_samplers = src->shadow_samplers;
+      data->fetch4_samplers = src->fetch4_samplers;
+      data->unbound_samplers = src->unbound_samplers;
       break;
     }
     case SM50_SHADER_PSO_GEOMETRY_SHADER: {
@@ -3334,6 +3394,7 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLDevice_newIndirectCommandBuffer,
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
+    &thunk_SM30Initialize,
 };
 
 #ifndef DXMT_NATIVE
@@ -3484,5 +3545,6 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLDevice_newIndirectCommandBuffer,
     &_MTLDevice_newLibraryWithSource,
     &_MTLTexture_getBytes,
+    &thunk32_SM30Initialize,
 };
 #endif

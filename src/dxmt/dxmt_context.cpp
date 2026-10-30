@@ -34,6 +34,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
     lib(lib),
     emulated_cmd(device, lib, *this),
     clear_rt_cmd(device, *this),
+    blit_color_cmd(device, *this),
     blit_depth_stencil_cmd(device, lib, *this),
     clear_uav_cmd(device, *this),
     mv_scale_cmd(device, lib, *this),
@@ -523,6 +524,7 @@ ArgumentEncodingContext::resolveTexture(
   encoder_info->fence_update = {encoder_info->id};
   encoder_current = encoder_info;
 
+  encoder_info->depth = DepthStencilPlanarFlags(src->pixelFormat()) & 1;
   encoder_info->src = access(src, src_view, ResourceAccess::Read);
   encoder_info->dst = access(dst, dst_view, ResourceAccess::Write);
 
@@ -896,7 +898,12 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 
   QueryReadbacks readbacks{};
 
-  if (auto count = vro_state_.reset()) {
+  // a chunk without visibility writes still has to finish the queries that end in it, in completion order
+  auto count = vro_state_.reset();
+  bool ending = std::any_of(pending_queries_.begin(), pending_queries_.end(), [=](auto &query) {
+    return query->queryEndAt() == seqId;
+  });
+  if (count || ending) {
     readbacks.visibility = std::make_unique<VisibilityResultReadback>(
         device_, seqId, count, pending_queries_
     );
@@ -1146,10 +1153,18 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       {
         WMTRenderPassInfo info;
         WMT::InitializeRenderPassInfo(info);
-        info.colors[0].texture = data->src.texture();
-        info.colors[0].load_action = WMTLoadActionLoad;
-        info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
-        info.colors[0].resolve_texture = data->dst.texture();
+        if (data->depth) {
+          info.depth.texture = data->src.texture();
+          info.depth.load_action = WMTLoadActionLoad;
+          info.depth.store_action = WMTStoreActionStoreAndMultisampleResolve;
+          info.depth.resolve_texture = data->dst.texture();
+          info.colors[0].store_action = WMTStoreActionDontCare;
+        } else {
+          info.colors[0].texture = data->src.texture();
+          info.colors[0].load_action = WMTLoadActionLoad;
+          info.colors[0].store_action = WMTStoreActionStoreAndMultisampleResolve;
+          info.colors[0].resolve_texture = data->dst.texture();
+        }
 
         auto encoder = cmdbuf.renderCommandEncoder(info);
         encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
@@ -1298,6 +1313,9 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       auto clear = reinterpret_cast<ClearEncoderData *>(former);
 
       if (render->render_target_array_length != clear->array_length)
+        break;
+      // a load action only clears the render area, which a smaller attachment can shrink
+      if (render->render_target_width < clear->width || render->render_target_height < clear->height)
         break;
 
       if (clear->clear_dsv) {
@@ -1794,6 +1812,18 @@ SimpleCommandContext<ArgumentEncodingContext>::setFragmentBytes(uint32_t index, 
   setmeta.length = length;
   setmeta.index = index;
   return temp;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setFragmentTexture(
+    uint32_t index, const Rc<Texture> &texture, uint64_t viewId
+) {
+  auto &src = ctx.access<PipelineStage::Pixel>(texture, viewId, ResourceAccess::Read);
+  auto &settex = ctx.encodeRenderCommand<wmtcmd_render_settexture>();
+  settex.type = WMTRenderCommandSetFragmentTexture;
+  settex.texture = src.texture;
+  settex.index = index;
 }
 
 template <>

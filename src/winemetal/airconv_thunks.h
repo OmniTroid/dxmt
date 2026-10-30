@@ -18,6 +18,7 @@ enum airconv_unixcalls {
   unix_sm50_compile_tessellation_hull,
   unix_sm50_compile_tessellation_domain,
   unix_sm50_get_arguments_info = 88,
+  unix_sm30_initialize = 146,
 };
 
 struct sm50_initialize_params {

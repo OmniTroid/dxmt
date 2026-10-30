@@ -33,6 +33,9 @@ public:
       SM50_IA_INPUT_ELEMENT ElementInfo, uint32_t SlotMask
   );
 
+  // Applies an SM30_IA_FORMAT_FIXUP to an input register written by PullVertexInput.
+  llvm::Error FixupVertexInput(uint32_t Register, uint32_t Fixup);
+
   llvm::Error InitializeVertexIDInput(uint32_t ToRegister, uint32_t Mask);
 
   llvm::Error InitializeInstanceIDInput(uint32_t ToRegister, uint32_t Mask);

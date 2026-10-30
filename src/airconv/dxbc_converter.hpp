@@ -22,6 +22,10 @@
 
 #include "airconv_public.h"
 
+namespace dxmt::d3d9 {
+struct ShaderData;
+}
+
 namespace dxmt::dxbc {
 
 struct ResourceRange {
@@ -352,6 +356,7 @@ public:
   std::unique_ptr<llvm::LLVMContext> dxil_context;
   std::unique_ptr<llvm::Module> dxil;
   dxil::EntryPoint dxil_entry;
+  std::shared_ptr<d3d9::ShaderData> d3d9;
   std::vector<std::function<void(SignatureContext &)>> signature_handlers;
   microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE shader_type;
   /* for domain shader, it refers to patch constant input count */
@@ -407,6 +412,23 @@ void handle_signature(
 std::vector<std::unique_ptr<BasicBlock>> read_control_flow(
     microsoft::D3D10ShaderBinary::CShaderCodeParser &Parser, SM50ShaderInternal *sm50_shader,
     microsoft::CSignatureParser &inputParser, microsoft::CSignatureParser5 &outputParser
+);
+
+struct BindingSlotMasks {
+  uint16_t cbuffer = 0;
+  uint16_t sampler = 0;
+  uint64_t uav = 0;
+  uint64_t srv_hi = 0;
+  uint64_t srv_lo = 0;
+};
+
+// Defines argument-table entries for every cbuffer, sampler, SRV and UAV in shader_info and fills args_reflection.
+BindingSlotMasks define_argument_bindings(SM50ShaderInternal *sm50_shader);
+
+// Replaces each BasicBlockCall with a clone of the callee, up to 32 levels deep.
+void inline_calls(
+    std::vector<std::pair<BasicBlock *, BasicBlockCall *>> call_targets,
+    const std::map<uint32_t, BasicBlock *> &func_entries, const std::function<BasicBlock *(const char *)> &fresh_bb
 );
 
 uint32_t next_pow2(uint32_t x);
