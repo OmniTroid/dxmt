@@ -223,6 +223,22 @@ MTLD3D9SwapChain::Activate(bool Active) {
   }
 }
 
+// Exclusive fullscreen shows on the adapter's monitor wherever the window is, but here the window's position is where
+// it shows, so a fullscreen window moved off that monitor goes back (Source centers it on the primary after Reset).
+void
+MTLD3D9SwapChain::KeepOnMonitor(HWND Window, WINDOWPOS *pPos) {
+  if (!fullscreen_ || Window != window_ || (pPos->flags & SWP_NOMOVE) ||
+      (parent_->BehaviorFlags() & D3DCREATE_NOWINDOWCHANGES))
+    return;
+  if (MonitorFromPoint({pPos->x, pPos->y}, MONITOR_DEFAULTTONULL) == monitor_)
+    return;
+  RECT desktop;
+  if (!wsi::getDesktopCoordinates(monitor_, &desktop))
+    return;
+  pPos->x = desktop.left;
+  pPos->y = desktop.top;
+}
+
 // Exclusive fullscreen switches the display to the back buffer size and covers the monitor with the window.
 HRESULT
 MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
@@ -245,7 +261,8 @@ MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
     }
     fullscreen_ = false;
   } else {
-    monitor_ = wsi::getWindowMonitor(window_);
+    // the device's adapter picks the monitor, wherever the window is (Source's -adapter)
+    monitor_ = parent_->GetAdapter()->GetMonitor();
     wsi::WsiMode mode = {
         Params.BackBufferWidth, Params.BackBufferHeight, {Params.FullScreen_RefreshRateInHz, 1}, 32, false
     };

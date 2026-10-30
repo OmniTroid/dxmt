@@ -116,6 +116,9 @@ MTLD3D9Device::ProcessFocusMessage(HWND Window, UINT Message, WPARAM wParam, LPA
   if (Message == WM_ACTIVATEAPP) {
     if (swapchain_)
       swapchain_->Activate(wParam);
+  } else if (Message == WM_WINDOWPOSCHANGING) {
+    if (swapchain_)
+      swapchain_->KeepOnMonitor(Window, reinterpret_cast<WINDOWPOS *>(lParam));
   } else if (Message == WM_SYSCOMMAND && wParam == SC_RESTORE) {
     if (Unicode)
       DefWindowProcW(Window, Message, wParam, lParam);

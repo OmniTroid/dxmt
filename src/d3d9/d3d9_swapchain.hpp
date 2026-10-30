@@ -54,6 +54,8 @@ public:
 
   // focus change of a fullscreen app (WM_ACTIVATEAPP on the focus window)
   void Activate(bool Active);
+  // WM_WINDOWPOSCHANGING on the focus window
+  void KeepOnMonitor(HWND Window, WINDOWPOS *pPos);
   bool
   IsFullscreen() const {
     return fullscreen_;
