@@ -245,7 +245,8 @@ MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
     }
     fullscreen_ = false;
   } else {
-    monitor_ = wsi::getWindowMonitor(window_);
+    // the device's adapter picks the monitor, wherever the window is (Source's -adapter)
+    monitor_ = parent_->GetAdapter()->GetMonitor();
     wsi::WsiMode mode = {
         Params.BackBufferWidth, Params.BackBufferHeight, {Params.FullScreen_RefreshRateInHz, 1}, 32, false
     };
