@@ -15,7 +15,7 @@ rsync -a --delete --exclude '*-windows/d3d9.dll' --exclude '*-windows/d3d11.dll'
   "$wine_install/" "$runtime/"
 "$(dirname "$0")/install.sh"
 
-export WINEPREFIX="$work/pfx" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" DXMT_LOG_PATH="$work/logs"
+export WINEPREFIX="$work/pfx" WINEDEBUG="${WINEDEBUG:--all}" WINEDLLOVERRIDES="mscoree,mshtml=" DXMT_LOG_PATH="$work/logs"
 "$runtime/bin/wine" wineboot -i > /dev/null 2>&1
 # a crash dialog would block the run forever
 "$runtime/bin/wine" reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f > /dev/null 2>&1
@@ -37,9 +37,9 @@ key = cf.CFStringCreateWithCString(None, b"CGSSessionScreenIsLocked", 0x08000100
 sys.exit(0 if session and cf.CFDictionaryGetValue(session, key) else 1)
 ' && echo "warning: the screen is locked; tests may time out"
 
-timeout=180
+timeout="${D3D9_TEST_TIMEOUT:-180}"
 failed=0
-for build in build build32; do
+for build in ${D3D9_TEST_BUILDS:-build build32}; do
   for exe in "$root/$build"/tests/d3d9/d3d9_*.exe; do
     name="$(basename "$exe" .exe)"
     [ "$name" = d3d9_clear ] && continue
