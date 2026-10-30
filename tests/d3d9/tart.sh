@@ -2,7 +2,7 @@
 # Runs the d3d9 tests in a throwaway macOS VM, so display-mode tests change the VM's display instead of this Mac's.
 # Usage: tests/d3d9/tart.sh <wine-install-prefix>   (from the repository root, after building build/ and build32/)
 # D3D9_TEST_BUILDS, D3D9_TESTS, D3D9_TEST_TIMEOUT and WINEDEBUG pass through to run.sh.
-# The VM's paravirtualized GPU isn't Apple7-family, so DXMT takes its non-Apple path there (Metal 3.1).
+# The VM's paravirtualized GPU is Mac2-only, so DXMT takes its non-Apple path; 32-bit results there are unreliable (docs/D3D9_TESTING.md).
 # Logs land in toolchains/test/tart-logs. TART_IMAGE picks the image (a Cirrus Labs one, for its guest agent).
 set -uo pipefail
 
