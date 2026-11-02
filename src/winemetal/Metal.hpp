@@ -1471,29 +1471,6 @@ public:
   };
 };
 
-class DeveloperHUDProperties : public Object {
-public:
-  static DeveloperHUDProperties
-  instance() {
-    return DeveloperHUDProperties{DeveloperHUDProperties_instance()};
-  };
-
-  bool
-  addLabel(String label, String after) {
-    return DeveloperHUDProperties_addLabel(handle, label, after);
-  }
-
-  void
-  updateLabel(String label, String value) {
-    DeveloperHUDProperties_updateLabel(handle, label, value);
-  }
-
-  void
-  remove(String label) {
-    DeveloperHUDProperties_remove(handle, label);
-  }
-};
-
 class CacheReader : public Object {
 public:
   static Reference<CacheReader>
@@ -1602,8 +1579,6 @@ InitializeRenderPipelineInfo(WMTRenderPipelineInfo &info) {
   info.raster_sample_count = 1;
   info.depth_pixel_format = WMTPixelFormatInvalid;
   info.stencil_pixel_format = WMTPixelFormatInvalid;
-  info.logic_operation_enabled = false;
-  info.logic_operation = WMTLogicOperationClear;
 
   info.input_primitive_topology = WMTPrimitiveTopologyClassUnspecified;
   info.max_tessellation_factor = 16.0f;
@@ -1652,8 +1627,6 @@ InitializeMeshRenderPipelineInfo(WMTMeshRenderPipelineInfo &info) {
   info.raster_sample_count = 1;
   info.depth_pixel_format = WMTPixelFormatInvalid;
   info.stencil_pixel_format = WMTPixelFormatInvalid;
-  info.logic_operation_enabled = false;
-  info.logic_operation = WMTLogicOperationClear;
 
   info.object_function = NULL_OBJECT_HANDLE;
   info.mesh_function = NULL_OBJECT_HANDLE;

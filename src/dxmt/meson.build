@@ -11,7 +11,6 @@ dxmt_src = [
   'dxmt_context.cpp',
   'dxmt_dynamic.cpp',
   'dxmt_staging.cpp',
-  'dxmt_hud_state.cpp',
   'dxmt_allocation.cpp',
   'dxmt_presenter.cpp',
   'dxmt_sampler.cpp',

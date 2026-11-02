@@ -1930,14 +1930,12 @@ MTLQueryDXGIFormatSupport(
         D3D11_FORMAT_SUPPORT2_SHAREABLE;
   }
 
-#ifndef DXMT_NO_PRIVATE_API
   // "Logic ops are supported only on renderable UINT formats", and then on all of them (D3D11.3 17.7.1): a typeless
   // format is none
   if (any_bit_set(Capability & FormatCapability::Color) && !(metal_format.Flag & MTL_DXGI_FORMAT_TYPELESS) &&
       IsIntegerFormat(metal_format.PixelFormat) &&
       MTLGetUnsignedIntegerFormat(metal_format.PixelFormat) == metal_format.PixelFormat)
     Support2 |= D3D11_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
-#endif
 
   if (any_bit_set(Capability & FormatCapability::Sparse)) {
     Support2 |= D3D11_FORMAT_SUPPORT2_TILED;

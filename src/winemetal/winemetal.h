@@ -755,25 +755,6 @@ enum WMTBlendOperation : uint8_t {
   WMTBlendOperationMax = 4,
 };
 
-enum WMTLogicOperation : uint8_t {
-  WMTLogicOperationClear = 0,
-  WMTLogicOperationSet = 1,
-  WMTLogicOperationCopy = 2,
-  WMTLogicOperationCopyInverted = 3,
-  WMTLogicOperationNoOp = 4,
-  WMTLogicOperationInvert = 5,
-  WMTLogicOperationAnd = 6,
-  WMTLogicOperationNand = 7,
-  WMTLogicOperationOr = 8,
-  WMTLogicOperationNor = 9,
-  WMTLogicOperationXor = 10,
-  WMTLogicOperationEquiv = 11,
-  WMTLogicOperationAndReverse = 12,
-  WMTLogicOperationAndInverted = 13,
-  WMTLogicOperationOrReverse = 14,
-  WMTLogicOperationOrInverted = 15,
-};
-
 enum WMTBlendFactor : uint8_t {
   WMTBlendFactorZero = 0,
   WMTBlendFactorOne = 1,
@@ -827,15 +808,11 @@ enum WMTPrimitiveTopologyClass {
 struct WMTRenderPipelineBlendInfo {
   struct WMTColorAttachmentBlendInfo colors[8];
   bool alpha_to_coverage_enabled;
-  bool logic_operation_enabled;
-  enum WMTLogicOperation logic_operation;
 };
 
 struct WMTRenderPipelineInfo {
   struct WMTColorAttachmentBlendInfo colors[8];
   bool alpha_to_coverage_enabled;
-  bool logic_operation_enabled;
-  enum WMTLogicOperation logic_operation;
   bool rasterization_enabled;
   uint8_t raster_sample_count;
   enum WMTPixelFormat depth_pixel_format;
@@ -860,8 +837,6 @@ struct WMTRenderPipelineInfo {
 struct WMTMeshRenderPipelineInfo {
   struct WMTColorAttachmentBlendInfo colors[8];
   bool alpha_to_coverage_enabled;
-  bool logic_operation_enabled;
-  enum WMTLogicOperation logic_operation;
   bool rasterization_enabled;
   uint8_t raster_sample_count;
   enum WMTPixelFormat depth_pixel_format;
@@ -1857,14 +1832,6 @@ WINEMETAL_API obj_handle_t NSString_string(const char *data, enum WMTStringEncod
 
 WINEMETAL_API obj_handle_t NSString_alloc_init(const char *data, enum WMTStringEncoding encoding);
 
-WINEMETAL_API obj_handle_t DeveloperHUDProperties_instance();
-
-WINEMETAL_API bool DeveloperHUDProperties_addLabel(obj_handle_t obj, obj_handle_t label, obj_handle_t after);
-
-WINEMETAL_API void DeveloperHUDProperties_updateLabel(obj_handle_t obj, obj_handle_t label, obj_handle_t value);
-
-WINEMETAL_API void DeveloperHUDProperties_remove(obj_handle_t obj, obj_handle_t label);
-
 WINEMETAL_API obj_handle_t MetalDrawable_texture(obj_handle_t drawable);
 
 WINEMETAL_API obj_handle_t MetalLayer_nextDrawable(obj_handle_t layer);
@@ -2112,7 +2079,6 @@ WINEMETAL_API obj_handle_t CacheWriter_alloc_init(const char *path, uint64_t ver
 
 WINEMETAL_API void CacheWriter_set(obj_handle_t writer, const void *key, uint64_t key_length, obj_handle_t value);
 
-WINEMETAL_API bool WMTSetMetalShaderCachePath(const char *path);
 
 WINEMETAL_API obj_handle_t MTLDevice_newSharedTexture(obj_handle_t device, struct WMTTextureInfo *info);
 

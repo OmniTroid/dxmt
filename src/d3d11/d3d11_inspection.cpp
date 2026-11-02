@@ -53,11 +53,7 @@ MTLD3D11Inspection::MTLD3D11Inspection(WMT::Device pDevice)
   m_d3d11Options.ExtendedResourceSharing = TRUE;
   m_d3d11Options.SAD4ShaderInstructions = TRUE;
   m_d3d11Options.FlagsForUpdateAndCopySeenByDriver = TRUE;
-#ifdef DXMT_NO_PRIVATE_API
-  m_d3d11Options.OutputMergerLogicOp = FALSE;
-#else
   m_d3d11Options.OutputMergerLogicOp = TRUE;
-#endif
 
   m_d3d11Options3.VPAndRTArrayIndexFromAnyShaderFeedingRasterizer = TRUE;
 

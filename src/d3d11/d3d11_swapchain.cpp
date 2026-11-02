@@ -9,7 +9,6 @@
 #include "dxgi_output.hpp"
 #include "d3d11_context.hpp"
 #include "dxmt_context.hpp"
-#include "dxmt_hud_state.hpp"
 #include "dxmt_statistics.hpp"
 #include "dxmt_presenter.hpp"
 #include "dxmt_format.hpp"
@@ -117,8 +116,7 @@ public:
       desc_(*pDesc),
       device_context_(pDevice->GetImmediateContextPrivate()),
       hWnd(hWnd),
-      monitor_(wsi::getWindowMonitor(hWnd)),
-      hud(WMT::DeveloperHUDProperties::instance()) {
+      monitor_(wsi::getWindowMonitor(hWnd)) {
 
     // frames can go to the window through GDI instead, as they do when a window gets no Metal view: slower, and
     // readable from the window
@@ -165,8 +163,6 @@ public:
     }
 
     handle_alt_tab_ = Config::getInstance().getOption<bool>("dxgi.handleAltTab", false);
-
-    hud.initialize(GetVersionDescriptionText(device_->GetDirectXVersion(), device_->GetFeatureLevel()));
 
     backbuffer_desc_ = D3D11_TEXTURE2D_DESC1 {
       .Width = desc_.Width,
@@ -878,7 +874,6 @@ public:
         if (diag::profile)
           diag::LatencyReleased(present_semaphore_);
         ReleaseSemaphore(present_semaphore_, 1, nullptr);
-        this->UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
       });
     } else {
       chunk->emitcc([
@@ -890,7 +885,6 @@ public:
         if (diag::profile)
           diag::LatencyReleased(present_semaphore_);
         ReleaseSemaphore(present_semaphore_, 1, nullptr);
-        this->UpdateStatistics(ctx.queue().statistics, ctx.currentFrameId());
       });
     }
     if (!(PresentFlags & DXGI_PRESENT_DO_NOT_SEQUENCE)) {
@@ -921,55 +915,6 @@ public:
 
     return hr;
   };
-
-  void UpdateStatistics(const FrameStatisticsContainer& statistics, uint64_t frame_id) {
-    hud.begin();
-    auto &frame = statistics.at(frame_id - 1); // show the previous one frame statistics
-    auto &average = statistics.average();
-    hud.printLine(std::format(
-        "Commit: {:2} -{:4.1f} -{:4.1f}", std::min(frame.command_buffer_count, 99u),
-        std::min(average.commit_interval.count() / 1000000.0, 99.9),
-        std::min(statistics.max().commit_interval.count() / 1000000.0, 99.9)
-    ));
-    hud.printLine(std::format(
-        "Sync:   {:2} {:4.1f}  {:2} {:4.1f} {:2}", std::min(frame.sync_count, 99u),
-        std::min(average.sync_interval.count() / 1000000.0, 99.9), std::min(statistics.max().event_stall, 99u),
-        std::min(average.present_latency_interval.count() / 1000000.0, 99.9), frame.latency
-    ));
-    hud.printLine(std::format(
-        "Encode: {:4.1f}+{:4.1f}+{:4.1f}={:4.1f}", std::min(average.encode_prepare_interval.count() / 1000000.0, 99.9),
-        std::min((average.encode_flush_interval - average.drawable_blocking_interval).count() / 1000000.0, 99.9),
-        std::min(average.drawable_blocking_interval.count() / 1000000.0, 99.9),
-        std::min((average.encode_prepare_interval + average.encode_flush_interval).count() / 1000000.0, 99.9)
-    ));
-    hud.printLine(std::format(
-        "Render:{:3}+{:<3} Clear:{:3}+{:<2}", std::min(frame.render_pass_count - frame.render_pass_optimized, 999u),
-        std::min(frame.render_pass_optimized, 999u),
-        std::min(frame.clear_pass_count - frame.clear_pass_optimized, 999u), std::min(frame.clear_pass_optimized, 99u)
-    ));
-    {
-      /* scaler info */
-      auto &info = frame.last_scaler_info;
-      if (info.type == ScalerType::Temporal) {
-        auto &info = frame.last_scaler_info;
-        hud.printLine(std::format(
-            "MetalFX: Temporal {} {}", info.auto_exposure ? "AEXP" : "", info.motion_vector_highres ? "HMV" : ""
-        ));
-        hud.printLine(std::format(
-            "Scale: {:4}x{:4}->{:4}x{:4}", info.input_width, info.input_height, info.output_width, info.output_height
-        ));
-      }
-      if (info.type == ScalerType::Spatial) {
-        hud.printLine(std::format(
-            "MetalFX: Spatial"
-        ));
-        hud.printLine(std::format(
-            "Scale: {:4}x{:4}->{:4}x{:4}", info.input_width, info.input_height, info.output_width, info.output_height
-        ));
-      }
-    }
-    hud.end();
-  }
 
   BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() final { return FALSE; };
 
@@ -1151,7 +1096,6 @@ private:
   DXGI_COLOR_SPACE_TYPE colorspace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
   double init_refresh_rate_ = DBL_MAX;
   int preferred_max_frame_rate = 0;
-  HUDState hud;
   Rc<Presenter> presenter;
   ModeSetGuard modeset_guard_;
   dxmt::mutex mutex_;

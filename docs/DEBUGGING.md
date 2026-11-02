@@ -132,7 +132,7 @@ whose output is unverified and is checked with the verifier before anything else
 **Caches.** DXMT keeps its converted shaders in a cache of its own
 ([`dxmt_shader_cache.cpp`](../src/dxmt/dxmt_shader_cache.cpp)). `DXMT_SHADER_CACHE=0` turns it off, and
 `DXMT_SHADER_CACHE_PATH` moves it to another absolute macOS directory. Metal keeps a separate cache of compiled
-pipelines, which `DXMT_USE_DEFAULT_METAL_CACHE=1` leaves at Metal's default ([`dxgi.cpp`](../src/dxgi/dxgi.cpp)).
+pipelines at its default location.
 Turning DXMT's cache off therefore does not make every compilation cold. A comparison uses a separate cache
 directory, so that shared caches are not deleted.
 

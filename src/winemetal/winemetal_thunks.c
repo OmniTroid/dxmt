@@ -859,42 +859,6 @@ NSString_alloc_init(const char *data, enum WMTStringEncoding encoding) {
 }
 
 WINEMETAL_API obj_handle_t
-DeveloperHUDProperties_instance() {
-  struct unixcall_generic_obj_ret params;
-  params.ret = NULL_OBJECT_HANDLE;
-  UNIX_CALL(62, &params);
-  return params.ret;
-}
-
-WINEMETAL_API bool
-DeveloperHUDProperties_addLabel(obj_handle_t obj, obj_handle_t label, obj_handle_t after) {
-  struct unixcall_generic_obj_obj_obj_uint64_ret params;
-  params.handle = obj;
-  params.arg0 = label;
-  params.arg1 = after;
-  params.ret = 0;
-  UNIX_CALL(63, &params);
-  return params.ret;
-}
-
-WINEMETAL_API void
-DeveloperHUDProperties_updateLabel(obj_handle_t obj, obj_handle_t label, obj_handle_t value) {
-  struct unixcall_generic_obj_obj_obj_noret params;
-  params.handle = obj;
-  params.arg0 = label;
-  params.arg1 = value;
-  UNIX_CALL(64, &params);
-}
-
-WINEMETAL_API void
-DeveloperHUDProperties_remove(obj_handle_t obj, obj_handle_t label) {
-  struct unixcall_generic_obj_obj_noret params;
-  params.handle = obj;
-  params.arg = label;
-  UNIX_CALL(65, &params);
-}
-
-WINEMETAL_API obj_handle_t
 MetalDrawable_texture(obj_handle_t drawable) {
   struct unixcall_generic_obj_obj_ret params;
   params.handle = drawable;
@@ -1287,15 +1251,6 @@ CacheWriter_set(
   params.key_length = key_length;
   params.value_data = value;
   UNIX_CALL(118, &params);
-}
-
-WINEMETAL_API bool
-WMTSetMetalShaderCachePath(const char *path) {
-  struct unixcall_setmetalcachepath params;
-  WMT_MEMPTR_SET(params.path, path);
-  params.ret_success = 0;
-  UNIX_CALL(119, &params);
-  return params.ret_success;
 }
 
 WINEMETAL_API obj_handle_t
