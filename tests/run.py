@@ -525,7 +525,7 @@ def options(parser):
     parser.add_argument("--jobs", type=int, default=1,
                         help="how many tests run at once; one that fails beside others runs again alone")
     parser.add_argument("--beside-vms", action="store_true",
-                        help="run while virtual machines are running, which share the GPU; not for heavy tests")
+                        help="run while macOS virtual machines are using the GPU; not for heavy tests")
     parser.add_argument("--late", type=int, help="delay each Metal command buffer's commit by this many milliseconds")
     parser.add_argument("--suite", action="append", default=[], help="only tests of this suite (may repeat)")
     parser.add_argument("--exact", action="store_true", help="match whole test names instead of prefixes")
@@ -652,9 +652,10 @@ def main():
     # a host GPU firmware hang panicked macOS with 5 tests running beside 3 VMs (docs/D3D9_TESTING.md, "The panic")
     if args.jobs != 1:
         sys.exit("--jobs: tests run one at a time on this machine")
-    if not args.beside_vms and subprocess.run(["pgrep", "-f", "com.apple.Virtualization.VirtualMachine"],
+    # macOS guests reach the GPU through these helpers; Docker's Linux VM has none
+    if not args.beside_vms and subprocess.run(["pgrep", "-f", "com.apple.gpusw.Paravirtualized"],
                                               capture_output=True).returncode == 0:
-        sys.exit("virtual machines are running, and they share the GPU: stop them, or pass --beside-vms")
+        sys.exit("macOS virtual machines are using the GPU: stop them, or pass --beside-vms")
     only_run = open(Path(tempfile.gettempdir()) / f"dxmt-test-run-{os.getuid()}.lock", "w")
     try:
         fcntl.flock(only_run, fcntl.LOCK_EX | fcntl.LOCK_NB)
