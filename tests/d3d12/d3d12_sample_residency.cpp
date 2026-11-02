@@ -436,8 +436,8 @@ main(int argc, char **argv) {
                 const bool texel = anisotropic ? value[0] <= (mapped ? mip + 1 : 0)
                                    : linear    ? value[0] >= std::floor(filtered) && value[0] <= std::ceil(filtered)
                                                : value[0] == wanted;
-                // not implemented: on M3 a writable reserved texture's status can't be trusted either way for a
-                // filtered footprint or a read of a coarser mip, which needs tile reads of the footprint in the shader
+                // not implemented: Metal's status for a writable reserved texture follows the coordinate scaled by
+                // the tile size (docs/METAL_NOTES.md), and only reads and the last mip work around it
                 const bool unknown = usage == 1 && (linear || (mip_count > 1 && clamped >= 0.5f));
                 const bool resident = !feedback      ? value[1] == 0
                                       : unknown      ? value[1] <= 1
