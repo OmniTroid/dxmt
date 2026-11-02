@@ -650,8 +650,8 @@ def main():
     options(parser)
     args = parser.parse_args()
     # a host GPU firmware hang panicked macOS with 5 tests running beside 3 VMs (docs/D3D9_TESTING.md, "The panic")
-    if args.jobs != 1:
-        sys.exit("--jobs: tests run one at a time on this machine")
+    if args.jobs > 2:
+        sys.exit("--jobs: at most 2 tests run at a time on this machine")
     # macOS guests reach the GPU through these helpers; Docker's Linux VM has none
     if not args.beside_vms and subprocess.run(["pgrep", "-f", "com.apple.gpusw.Paravirtualized"],
                                               capture_output=True).returncode == 0:
