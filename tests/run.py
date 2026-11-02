@@ -644,11 +644,9 @@ def own(args, tests, builds, binary, base):
     return len(new) + len(fixed)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    arguments(parser)
-    options(parser)
-    args = parser.parse_args()
+def guard(args):
+    """what keeps a run from taking the machine down: stops the run if it would be one too many"""
+    global only_run
     # a host GPU firmware hang panicked macOS with 5 tests running beside 3 VMs (docs/D3D9_TESTING.md, "The panic")
     if args.jobs > 2:
         sys.exit("--jobs: at most 2 tests run at a time on this machine")
@@ -664,6 +662,14 @@ def main():
         except BlockingIOError:
             sys.exit("another run of the tests is going: it has to end first")
         os.environ["DXMT_TEST_RUN"] = "1"
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    arguments(parser)
+    options(parser)
+    args = parser.parse_args()
+    guard(args)
     tests = chosen(args)
     with session(args) as runtime:
         sys.exit(own(args, tests, *runtime) != 0)

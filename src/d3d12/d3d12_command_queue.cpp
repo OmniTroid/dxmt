@@ -2077,8 +2077,14 @@ public:
     return scratch;
   }
 
-  // a marker is an instant, which no pass is named by
-  void STDMETHODCALLTYPE SetMarker(UINT metadata, const void *data, UINT size) {};
+  // a marker is an instant, which no pass is named by; this one ends a profiled frame where nothing presents
+  // (tests/perf/d3d12_render_bench.cpp)
+  void STDMETHODCALLTYPE
+  SetMarker(UINT metadata, const void *data, UINT size) {
+    static constexpr char kFrame[] = "dxmt.frame";
+    if (profile_ && data && size == sizeof(kFrame) && !memcmp(data, kFrame, size))
+      diag::Frame(device_->GetMTLDevice(), profile_->id, inflight_cmdbuf_seq_.load());
+  };
 
   // the queue's events hold the lists executed in them: the queue's thread keeps their path, in order with the lists
   void STDMETHODCALLTYPE
