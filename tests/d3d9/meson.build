@@ -65,3 +65,10 @@ executable('d3d9_fullscreen', ['d3d9_fullscreen.cpp'],
   dependencies: [ lib_d3d9 ],
   link_args: [ '-mwindows' ],
 )
+
+# a program from before DEP, which only exists as 32-bit
+if host_machine.cpu_family() == 'x86'
+  executable('d3d9_rosetta_memory', ['d3d9_rosetta_memory.c'],
+    link_args: [ '-Wl,--disable-nxcompat' ],
+  )
+endif
