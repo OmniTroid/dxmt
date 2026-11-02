@@ -21,6 +21,7 @@ import re
 import shutil
 import signal
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -28,8 +29,21 @@ from pathlib import Path
 
 # what a test's last word and exit status make of it (tests/*/..._test.hpp)
 RESULTS = {"passed": 0, "skipped": 77}
-# a runner that is told to end ends as one that is interrupted: through its finally clauses
-signal.signal(signal.SIGTERM, lambda *_: sys.exit("ended"))
+STARTING = threading.RLock()
+
+
+def ended(*_):
+    """a runner told to end stops its tests and itself now: sys.exit here would leave the executor's `with` waiting
+    while its workers start every test still queued"""
+    STARTING.acquire()
+    for group in list(RUNNING):
+        with contextlib.suppress(OSError):
+            os.killpg(group, signal.SIGKILL)
+    atexit._run_exitfuncs()
+    os._exit(143)
+
+
+signal.signal(signal.SIGTERM, ended)
 # how long a test waits for a machine short of memory before the run gives up
 PATIENCE = 1800
 # how long the machine's lock is left free for a job that waits for it
@@ -256,13 +270,14 @@ def finish(command, env, seconds, log):
                     ADMITTED.lone -= peak is None
                     out = open(log, "wb")
                     end = time.monotonic() + seconds
-                    process = subprocess.Popen(
-                        command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
-                    )
+                    with STARTING:
+                        process = subprocess.Popen(
+                            command, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True
+                        )
+                        RUNNING.add(process.pid)
                     ADMITTED.reserved[process.pid] = peak
             if start:
                 with out:
-                    RUNNING.add(process.pid)
                     taken = 0
                     # the test and what it started, which nothing else is in the session of, do not outlive their time
                     # or this runner: a test left behind would use the GPU without the lock
@@ -509,6 +524,8 @@ def options(parser):
     parser.add_argument("--repeat", type=int, default=1, help="how many times each test runs, giving the same answer each time")
     parser.add_argument("--jobs", type=int, default=1,
                         help="how many tests run at once; one that fails beside others runs again alone")
+    parser.add_argument("--beside-vms", action="store_true",
+                        help="run while virtual machines are running, which share the GPU; not for heavy tests")
     parser.add_argument("--late", type=int, help="delay each Metal command buffer's commit by this many milliseconds")
     parser.add_argument("--suite", action="append", default=[], help="only tests of this suite (may repeat)")
     parser.add_argument("--exact", action="store_true", help="match whole test names instead of prefixes")
@@ -632,6 +649,17 @@ def main():
     arguments(parser)
     options(parser)
     args = parser.parse_args()
+    # a host GPU firmware hang panicked macOS with 5 tests running beside 3 VMs (docs/D3D9_TESTING.md, "The panic")
+    if args.jobs != 1:
+        sys.exit("--jobs: tests run one at a time on this machine")
+    if not args.beside_vms and subprocess.run(["pgrep", "-f", "com.apple.Virtualization.VirtualMachine"],
+                                              capture_output=True).returncode == 0:
+        sys.exit("virtual machines are running, and they share the GPU: stop them, or pass --beside-vms")
+    only_run = open(Path(tempfile.gettempdir()) / f"dxmt-test-run-{os.getuid()}.lock", "w")
+    try:
+        fcntl.flock(only_run, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("another run of the tests is going: it has to end first")
     tests = chosen(args)
     with session(args) as runtime:
         sys.exit(own(args, tests, *runtime) != 0)
