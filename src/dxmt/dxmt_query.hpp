@@ -279,11 +279,18 @@ public:
             source.start_of_encoder_sample_index, count, results.data() + index, count * sizeof(uint64_t)
         );
       }
-    // a virtual machine's GPU has no counters; a later query still may not read an earlier time
+    // Metal writes no sample for a pass without work, and a virtual machine's GPU has no counters: such a query reads
+    // the time of the next sample, and a later query still may not read an earlier time
     thread_local uint64_t latest_end = 0;
-    if (!samples_.front() && cmdbuf_.status() == WMTCommandBufferStatusCompleted) {
+    if (cmdbuf_.status() == WMTCommandBufferStatusCompleted) {
       latest_end = std::max(cmdbuf_.gpuEndTime(), latest_end);
-      std::fill(results.begin(), results.end(), latest_end);
+      auto next = latest_end;
+      for (auto result = results.rbegin(); result != results.rend(); ++result) {
+        if (!*result || *result == TimestampQuery::kCounterErrorValue)
+          *result = next;
+        else
+          next = *result;
+      }
     }
     for (const auto &[query, sample_index] : queries_)
       query->issue(results[sample_index]);
