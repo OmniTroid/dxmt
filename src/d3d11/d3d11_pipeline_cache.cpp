@@ -4,10 +4,15 @@
 #include "d3d11_shader.hpp"
 #include "d3d11_pipeline.hpp"
 #include "dxmt_shader_cache.hpp"
+#include "dxmt_stream_output.hpp"
+#include "DXBCParser/BlobContainer.h"
+#include "DXBCParser/d3d12tokenizedprogramformat.hpp"
 #include "dxmt_tasks.hpp"
 #include "log/log.hpp"
 #include "sha1/sha1_util.hpp"
+#include "util_md5.hpp"
 #include "../d3d10/d3d10_shader.hpp"
+#include <optional>
 #include "../d3d10/d3d10_input_layout.hpp"
 #include <cstring>
 #include <shared_mutex>
@@ -74,6 +79,8 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     MTL_SHADER_REFLECTION reflection_;
     MTL_SM50_SHADER_ARGUMENT *arguments_info_buffer;
     std::unordered_map<ShaderVariant, std::unique_ptr<CompiledShader>> variants;
+    // a pipeline asks for variants where it is made, and again where it is built
+    dxmt::mutex variants_mutex;
 
   public:
     CachedSM50Shader(PipelineCache *cache, sm50_shader_t shader_transferred,
@@ -113,6 +120,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
       return arguments_info_buffer + reflection_.NumConstantBuffers;
     };
     virtual CompiledShader *get_shader(ShaderVariant variant) {
+      std::lock_guard<dxmt::mutex> lock(variants_mutex);
       auto c = variants.insert({variant, nullptr});
       if (c.second) {
         c.first->second = std::visit(
@@ -190,8 +198,6 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
 
   ShaderCache& scache_;
 
-  task_scheduler<ThreadpoolWork *> scheduler_;
-
   MTLD3D11Device *device;
   StateObjectCache<D3D11_BLEND_DESC1, IMTLD3D11BlendState> blend_states;
 
@@ -216,6 +222,8 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
 
   std::unordered_map<ManagedShader, std::unique_ptr<MTLCompiledComputePipeline>> pipelines_cs_;
   dxmt::mutex mutex_cs_;
+
+  task_scheduler<ThreadpoolWork *> scheduler_;
 
   CachedSM50Shader *CreateShader(const void *pBytecode,
                                  uint32_t BytecodeLength) {
@@ -251,13 +259,51 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     }
   }
 
+  // the stage a container's code is of, which each Create call takes its own of (Wine's test_stream_output has a
+  // geometry shader made of vertex bytecode refused on Windows)
+  std::optional<microsoft::D3D10_SB_TOKENIZED_PROGRAM_TYPE>
+  Stage(const void *pBytecode, uint32_t BytecodeLength) {
+    using namespace microsoft;
+    CDXBCParser parser;
+    // Direct3D refuses a container that is not what its hash says before it reads anything else of it
+    if (FAILED(parser.ReadDXBC(pBytecode, BytecodeLength)) ||
+        memcmp(parser.GetHash(), md5::hashDxbcBinary(pBytecode, BytecodeLength).data.data(), sizeof(DXBCHash)))
+      return {};
+    auto code = parser.FindNextMatchingBlob(DXBC_GenericShaderEx);
+    if (code == DXBC_BLOB_NOT_FOUND)
+      code = parser.FindNextMatchingBlob(DXBC_GenericShader);
+    if (code == DXBC_BLOB_NOT_FOUND)
+      return {};
+    auto token = *(const uint32_t *)parser.GetBlob(code);
+    auto stage = DECODE_D3D10_SB_TOKENIZED_PROGRAM_TYPE(token);
+    auto major = DECODE_D3D10_SB_TOKENIZED_PROGRAM_MAJOR_VERSION(token);
+    auto minor = DECODE_D3D10_SB_TOKENIZED_PROGRAM_MINOR_VERSION(token);
+    // Microsoft Learn, Specifying Compiler Targets: SM4.0/4.1/5.0 require FL10.0/10.1/11.0; FL9 uses level_9 code
+    if (major < 4 || major > 5 || minor > (major == 4 ? 1u : 0u) ||
+        (major < 5 && (stage == D3D11_SB_HULL_SHADER || stage == D3D11_SB_DOMAIN_SHADER)))
+      return {};
+    auto minimum = major == 5 ? D3D_FEATURE_LEVEL_11_0
+                   : minor    ? D3D_FEATURE_LEVEL_10_1
+                   : (stage == D3D10_SB_VERTEX_SHADER || stage == D3D10_SB_PIXEL_SHADER) &&
+                           parser.FindNextMatchingBlob(DXBC_FeatureLevel9Shader) != DXBC_BLOB_NOT_FOUND
+                       ? D3D_FEATURE_LEVEL_9_1
+                       : D3D_FEATURE_LEVEL_10_0;
+    if (device->GetFeatureLevel() < minimum)
+      return {};
+    return stage;
+  }
+
   virtual HRESULT AddVertexShader(const void *pBytecode,
                                   uint32_t BytecodeLength,
                                   ID3D11VertexShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D10_SB_VERTEX_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11VertexShader, MTLD3D10VertexShader>(device, managed_shader));
     return S_OK;
@@ -265,20 +311,28 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
 
   virtual HRESULT AddPixelShader(const void *pBytecode, uint32_t BytecodeLength,
                                  ID3D11PixelShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D10_SB_PIXEL_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader = ref(new TShaderBase<ID3D11PixelShader, MTLD3D10PixelShader>(device, managed_shader));
     return S_OK;
   }
 
   virtual HRESULT AddHullShader(const void *pBytecode, uint32_t BytecodeLength,
                                 ID3D11HullShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D11_SB_HULL_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader = ref(new TShaderBase<ID3D11HullShader>(device, managed_shader));
     return S_OK;
   }
@@ -286,10 +340,14 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   virtual HRESULT AddDomainShader(const void *pBytecode,
                                   uint32_t BytecodeLength,
                                   ID3D11DomainShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D11_SB_DOMAIN_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11DomainShader>(device, managed_shader));
     return S_OK;
@@ -298,10 +356,14 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   virtual HRESULT AddGeometryShader(const void *pBytecode,
                                     uint32_t BytecodeLength,
                                     ID3D11GeometryShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D10_SB_GEOMETRY_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11GeometryShader, MTLD3D10GeometryShader>(device, managed_shader));
     return S_OK;
@@ -310,10 +372,14 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   virtual HRESULT AddComputeShader(const void *pBytecode,
                                    uint32_t BytecodeLength,
                                    ID3D11ComputeShader **ppShader) override {
+    if (Stage(pBytecode, BytecodeLength) != microsoft::D3D11_SB_COMPUTE_SHADER)
+      return E_INVALIDARG;
     auto managed_shader = CreateShader(pBytecode, BytecodeLength);
     if (!managed_shader) {
-      return E_FAIL;
+      return E_INVALIDARG;
     }
+    if (!ppShader)
+      return S_FALSE;
     *ppShader =
         ref(new TShaderBase<ID3D11ComputeShader>(device, managed_shader));
     return S_OK;
@@ -332,6 +398,8 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
             NumElements, buffer.data(), &num_metal_ia_elements))) {
       return hr;
     }
+    if (!ppInputLayout)
+      return S_FALSE;
     buffer.resize(num_metal_ia_elements);
     if (!input_layouts.contains(buffer)) {
       uint32_t input_slot_mask = 0;
@@ -347,28 +415,33 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   }
 
   HRESULT
-  AddStreamOutputLayout(const void *pShaderBytecode, UINT NumEntries,
+  AddStreamOutputLayout(const void *pShaderBytecode, UINT BytecodeLength, UINT NumEntries,
                         const D3D11_SO_DECLARATION_ENTRY *pEntries,
                         UINT NumStrides, const UINT *pStrides,
                         UINT RasterizedStream,
                         IMTLD3D11StreamOutputLayout **ppSOLayout) override {
-    std::lock_guard<dxmt::mutex> lock(mutex_so_);
-    std::vector<MTL_SHADER_STREAM_OUTPUT_ELEMENT_DESC> buffer(NumEntries * 4);
-    std::array<uint32_t, 4> strides = {{}};
-    uint32_t num_metal_so_elements;
-    if (FAILED(ExtractMTLStreamOutputElements(
-            device, pShaderBytecode, NumEntries, pEntries, buffer.data(),
-            &num_metal_so_elements))) {
-      return E_FAIL;
-    }
-    buffer.resize(num_metal_so_elements);
-    for (unsigned i = 0; i < NumStrides; i++) {
-      strides[i] = pStrides[i];
-    }
-    MTL_STREAM_OUTPUT_DESC desc;
-    memcpy(desc.Strides, strides.data(), sizeof(strides));
-    desc.Elements = std::move(buffer);
+    using namespace microsoft;
+    MTL_STREAM_OUTPUT_DESC desc{};
+    // the bytecode is the geometry shader, or the stage whose output goes out without one
+    auto stage = Stage(pShaderBytecode, BytecodeLength);
+    if (!stage || device->GetFeatureLevel() < D3D_FEATURE_LEVEL_10_0)
+      return E_INVALIDARG;
+    if (*stage == D3D10_SB_GEOMETRY_SHADER && !(desc.GeometryShader = CreateShader(pShaderBytecode, BytecodeLength)))
+      return E_INVALIDARG;
+    if (HRESULT hr = ExtractStreamOutputElements(
+            pShaderBytecode, std::span(pEntries, NumEntries), std::span(pStrides, NumStrides), desc.Elements
+        );
+        FAILED(hr))
+      return hr;
+    for (unsigned i = 0; i < std::min<UINT>(NumStrides, std::size(desc.Strides)); i++)
+      desc.Strides[i] = pStrides[i];
+    // a slot without a stride takes what its elements, each a component, take
+    for (auto &element : desc.Elements)
+      if (element.output_slot >= NumStrides)
+        desc.Strides[element.output_slot] =
+            std::max<uint32_t>(desc.Strides[element.output_slot], element.offset + sizeof(uint32_t));
     desc.RasterizedStream = RasterizedStream;
+    std::lock_guard<dxmt::mutex> lock(mutex_so_);
     return so_layouts.CreateStateObject(&desc, ppSOLayout);
   };
 
@@ -389,6 +462,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     if (!inserted) {
       D3D11_ASSERT(0 && "duplicated graphics pipeline");
     } else {
+      iter->second->description = &iter->first;
       scheduler_.submit(iter->second.get());
     }
     *ppPipeline = iter->second.get();
@@ -407,6 +481,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     if (!inserted) {
       D3D11_ASSERT(0 && "duplicated geometry pipeline");
     } else {
+      iter->second->description = &iter->first;
       scheduler_.submit(iter->second.get());
     }
     *ppPipeline = iter->second.get();
@@ -425,6 +500,7 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
     if (!inserted) {
       D3D11_ASSERT(0 && "duplicated tessellation pipeline");
     } else {
+      iter->second->description = &iter->first;
       scheduler_.submit(iter->second.get());
     }
     *ppPipeline = iter->second.get();

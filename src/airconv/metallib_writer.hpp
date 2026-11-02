@@ -59,6 +59,7 @@ enum class FunctionType : uint8_t {
   Vertex = 0x00,
   Fragment = 0x01,
   Kernel = 0x02,
+  Visible = 0x04,
   Mesh = 0x07,
   Object = 0x08,
 };

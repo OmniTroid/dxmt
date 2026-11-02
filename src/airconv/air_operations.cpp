@@ -50,7 +50,8 @@ AIRBuilderResult load_from_device_buffer(
     ctx.builder.CreateConstGEP1_32(
       value_type,
       ctx.builder.CreateBitCast(
-        ctx.builder.CreateGEP(ctx.types._byte, base_addr, {aligned_offset}),
+        // an offset is unsigned: as a 32-bit index it would be taken as signed
+        ctx.builder.CreateGEP(ctx.types._byte, base_addr, {ctx.builder.CreateZExt(aligned_offset, ctx.types._long)}),
         value_type->getPointerTo((uint32_t)AddressSpace::device)
       ),
       element_offset
@@ -108,6 +109,7 @@ AIRBuilderResult unpack_fvec4_from_addr(
     break;
   case MTLAttributeFormat::UChar4Normalized:
   case MTLAttributeFormat::UChar4Normalized_BGRA:
+  case MTLAttributeFormat::UChar4Normalized_BGRX:
     op = "unorm4x8.v4f32";
     src_type = types._int;
     align = 1;
@@ -194,6 +196,11 @@ AIRBuilderResult unpack_fvec4_from_addr(
   if (format == MTLAttributeFormat::UChar4Normalized_BGRA) {
     ret = builder.CreateShuffleVector(ret, {2, 1, 0, 3});
   }
+  // X is no component, so alpha takes its default (D3D11.3 19.1.3.3)
+  if (format == MTLAttributeFormat::UChar4Normalized_BGRX) {
+    ret = builder.CreateShuffleVector(ret, {2, 1, 0, -1});
+    ret = builder.CreateInsertElement(ret, co_yield get_float(1), (int)3);
+  }
   if (dst_type == types._float) {
     ret = builder.CreateInsertElement(
       llvm::PoisonValue::get(types._float4), ret, (int)0
@@ -276,6 +283,15 @@ AIRBuilderResult pull_vec4_from_addr_checked(
     );
     value = builder.CreateZExt(value, types._int4);
     break;
+  case MTLAttributeFormat::UInt1010102: {
+    auto packed = builder.CreateVectorSplat(4, co_yield load_from_device_buffer(types._int, base_addr, byte_offset, 0, 4));
+    auto field = [&](uint32_t c) { return builder.getInt32(c); };
+    value = builder.CreateAnd(
+        builder.CreateLShr(packed, llvm::ConstantVector::get({field(0), field(10), field(20), field(30)})),
+        llvm::ConstantVector::get({field(0x3ff), field(0x3ff), field(0x3ff), field(0x3)})
+    );
+    break;
+  }
   case MTLAttributeFormat::Short:
     value = co_yield load_from_device_buffer(
       types._short, base_addr, byte_offset, 0, 2
@@ -427,6 +443,7 @@ AIRBuilderResult pull_vec4_from_addr_checked(
   case MTLAttributeFormat::UChar2Normalized:
   case MTLAttributeFormat::UChar4Normalized:
   case MTLAttributeFormat::UChar4Normalized_BGRA:
+  case MTLAttributeFormat::UChar4Normalized_BGRX:
   case MTLAttributeFormat::CharNormalized:
   case MTLAttributeFormat::Char2Normalized:
   case MTLAttributeFormat::Char4Normalized:
@@ -450,8 +467,11 @@ AIRBuilderResult pull_vec4_from_addr_checked(
   co_return value;
 };
 
+// an element of a vertex buffer of `length` bytes. a buffer that is not bound reads as 0 in every component (D3D11.3
+// 8.20); an element that does not lie in its buffer reads as 0 in the components its format has and as the defaults
+// in the others (8.19.2), which is what its decoding makes of zeros
 AIRBuilderResult pull_vec4_from_addr(
-  MTLAttributeFormat format, pvalue base_addr, pvalue byte_offset
+  MTLAttributeFormat format, pvalue base_addr, pvalue byte_offset, pvalue length
 ) {
   return make_op([=](struct AIRBuilderContext ctx) -> llvm::Expected<pvalue> {
     using namespace llvm;
@@ -472,12 +492,44 @@ AIRBuilderResult pull_vec4_from_addr(
     builder.CreateCondBr(is_null_binding, continuation, pull_vertex);
     builder.SetInsertPoint(pull_vertex);
 
+    // the decoding reads at the element's place, or at the buffer's start when the element is not inside, and what it
+    // loads is then zeros; whether it is inside is known once the decoding has said how far it reads
+    auto offset = SelectInst::Create(builder.getTrue(), byte_offset, builder.getInt32(0));
+    builder.Insert(offset);
     auto ret =
-      pull_vec4_from_addr_checked(format, base_addr, byte_offset).build(ctx);
+      pull_vec4_from_addr_checked(format, base_addr, offset).build(ctx);
     if (auto err = ret.takeError()) {
       return err;
     }
     auto value = ret.get();
+
+    auto &layout = ctx.module.getDataLayout();
+    uint64_t size = 0;
+    SmallVector<LoadInst *, 4> loads;
+    for (auto &inst : *pull_vertex) {
+      auto load = dyn_cast<LoadInst>(&inst);
+      if (!load)
+        continue;
+      APInt at(layout.getIndexTypeSizeInBits(load->getPointerOperandType()), 0);
+      load->getPointerOperand()->stripAndAccumulateConstantOffsets(layout, at, true);
+      size = std::max<uint64_t>(size, at.getZExtValue() + layout.getTypeStoreSize(load->getType()));
+      loads.push_back(load);
+    }
+    IRBuilder<> before(offset);
+    auto inside = before.CreateICmpULE(
+      before.CreateAdd(before.CreateZExt(byte_offset, ctx.types._long), before.getInt64(size)),
+      before.CreateZExt(length, ctx.types._long)
+    );
+    offset->setCondition(inside);
+    for (auto load : loads) {
+      auto loaded = SelectInst::Create(inside, load, Constant::getNullValue(load->getType()));
+      loaded->insertAfter(load);
+      load->replaceAllUsesWith(loaded);
+      loaded->setTrueValue(load);
+      // a format that is decoded by its load alone
+      if (value == load)
+        value = loaded;
+    }
 
     builder.CreateBr(continuation);
     builder.SetInsertPoint(continuation);

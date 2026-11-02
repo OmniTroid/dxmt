@@ -350,15 +350,18 @@ namespace dxmt {
   Config Config::getUserConfig() {
     Config config;
 
-    // Load either $DXMT_CONFIG_FILE or $PWD/dxmt.conf
+    // Load either $DXMT_CONFIG_FILE or $PWD/dxmt.conf (dxmt.conf, the name it had, when there is none)
     std::string filePath = env::getEnvVar("DXMT_CONFIG_FILE");
     std::string confLine = env::getEnvVar("DXMT_CONFIG");
 
-    if (filePath == "")
+    bool named = filePath != "";
+    if (!named)
       filePath = "dxmt.conf";
 
     // Open the file if it exists
     std::ifstream stream(str::topath(filePath.c_str()).c_str());
+    if (!stream && !named)
+      stream.open(str::topath((filePath = "dxmt.conf").c_str()).c_str());
 
     if (!stream && confLine.empty())
       return config;
@@ -384,6 +387,8 @@ namespace dxmt {
       // help when debugging configuration issues
       Logger::info(str::format("Found config env: ", confLine));
 
+      // the environment applies to this executable, whichever section the file ended in
+      ctx.active = true;
       for(auto l : str::split(confLine, ";"))
         parseUserConfigLine(config, ctx, std::string(l.data(), l.size()));
     }

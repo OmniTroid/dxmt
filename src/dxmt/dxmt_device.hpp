@@ -12,6 +12,10 @@ public:
   virtual CommandQueue& queue() = 0;
   virtual WMTMetalVersion metalVersion() = 0;
   virtual uint64_t maxObjectThreadgroups() = 0;
+
+  // the most threadgroups a mesh grid may have, which only a pipeline tells
+  // (MTLRenderPipelineState's maxTotalThreadgroupsPerMeshGrid); 0 until one was asked
+  std::atomic<uint32_t> max_mesh_threadgroups{0};
 };
 
 struct DEVICE_DESC {

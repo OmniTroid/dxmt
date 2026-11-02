@@ -8,13 +8,16 @@ airconv_src = files([
  'dxbc_converter.cpp',
  'dxbc_converter_gs.cpp',
  'dxbc_converter_ts.cpp',
+ 'dxbc_converter_vrs.cpp',
  'dxbc_converter_basicblock.cpp',
  'dxbc_converter_cfg.cpp',
  'dxbc_instructions.cpp',
  'dxbc_signature.cpp',
+ 'dxil_converter.cpp',
  'metallib_writer.cpp',
  'nt/air_builder.cpp',
  'nt/dxbc_converter_base.cpp',
+ 'transforms/guard_out_of_bounds.cpp',
  'transforms/lower_16bit_texread.cpp',
  'transforms/simdgroup_implicit_membarrier.cpp',
 ])
@@ -63,6 +66,7 @@ airconv_forward_dep = declare_dependency(
 )
 
 airconv_shaders = [
+  'shaders/air_denorm.metal',
   'shaders/air_msad.metal',
   'shaders/air_samplepos.metal',
   'shaders/air_tessellation.metal',

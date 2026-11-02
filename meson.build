@@ -139,8 +139,15 @@ endif
 
 add_project_arguments('-DDXMT_PAGE_SIZE=4096', language: 'cpp')
 
+# a build of a changed tree is numbered by the line of build_log that holds its commit and the hash of its diff (a new
+# file counts once meson.build or another tracked file names it); a clean tree's build is its commit
 dxmt_version = vcs_tag(
-  command: ['git', 'describe', '--always'],
+  command: ['sh', '-c', '''v=$(git -C "$1" describe --always --dirty)
+case $v in *-dirty) [ -n "$2" ] || { echo "$v"; exit; }
+  k="$v $(git -C "$1" diff HEAD | git hash-object --stdin)"
+  grep -qxF "$k" "$2" 2>/dev/null || echo "$k" >> "$2"
+  echo "${v%-dirty} dev $(grep -nxF "$k" "$2" | cut -d: -f1)";;
+*) echo "$v";; esac''', 'version', meson.project_source_root(), get_option('build_log')],
   input:  'version.h.in',
   output: 'version.h',
 )
@@ -200,6 +207,10 @@ if dxmt_crossbuild
   add_project_arguments(['-arch', native_compiler_arch], language: 'c',  native: true)
   add_project_arguments(['-arch', native_compiler_arch], language: 'cpp',  native: true)
   add_project_link_arguments(['-arch', native_compiler_arch], language: 'cpp',  native: true)
+  # the oldest macOS whose APIs the Metal bridge uses without asking whether they are there (residency sets, row-major
+  # matrices in acceleration structures); what is newer is asked for
+  add_project_arguments('-mmacosx-version-min=15.0', language: ['c', 'cpp'], native: true)
+  add_project_link_arguments('-mmacosx-version-min=15.0', language: ['c', 'cpp'], native: true)
 endif
 
 subdir('libs')

@@ -206,7 +206,7 @@ IREffect store_at_vec4_array_masked(
 
 IREffect init_input_reg(
   uint32_t with_fnarg_at, uint32_t to_reg, uint32_t mask,
-  bool fix_w_component
+  bool fix_w_component, uint32_t sample_index_at
 ) {
   // no it doesn't work like this
   // regular input can be masked like .zw
@@ -231,6 +231,16 @@ IREffect init_input_reg(
         ctx.resource.input.ptr_int4, const_index, arg, mask
       );
     } else if (arg->getType()->getScalarType()->isFloatTy()) {
+      if (~sample_index_at) {
+        // Metal's position is the pixel center. x, y, z and 1/w are all affine in screen space, so one step along
+        // each derivative moves the whole position to the sample
+        auto offset = ctx.air.CreateRasterizerSamplePos(ctx.function->getArg(sample_index_at));
+        auto ddx = ctx.air.CreateDerivative(arg, false), ddy = ctx.air.CreateDerivative(arg, true);
+        auto step = [&](pvalue d, uint64_t i) {
+          return ctx.builder.CreateFMul(d, ctx.builder.CreateVectorSplat(4, ctx.builder.CreateExtractElement(offset, i)));
+        };
+        arg = ctx.builder.CreateFAdd(arg, ctx.builder.CreateFAdd(step(ddx, 0), step(ddy, 1)));
+      }
       if (fix_w_component && isa<llvm::FixedVectorType>(arg->getType()) &&
           cast<llvm::FixedVectorType>(arg->getType())->getNumElements() == 4) {
         auto w_component = ctx.builder.CreateExtractElement(arg, 3);
@@ -249,6 +259,31 @@ IREffect init_input_reg(
     }
   });
 };
+
+IREffect init_input_reg_at_vertex(uint32_t with_fnarg_at, uint32_t to_reg, uint32_t mask, bool integer) {
+  return make_effect_bind([=](context ctx) {
+    auto value = ctx.air.CreateGetVertexValue(
+        ctx.function->getArg(with_fnarg_at), integer ? ctx.types._int : ctx.types._float, ctx.builder.getInt32(0)
+    );
+    return store_at_vec4_array_masked(
+        integer ? ctx.resource.input.ptr_int4 : ctx.resource.input.ptr_float4, ctx.builder.getInt32(to_reg), value, mask
+    );
+  });
+}
+
+llvm::Value *
+barycentrics_descriptor::At(llvm::IRBuilder<> &ir, llvm::Value *offset) const {
+  auto along = [&](unsigned i) { return ir.CreateVectorSplat(3, ir.CreateExtractElement(offset, i)); };
+  auto at = offset ? ir.CreateFAdd(center, ir.CreateFAdd(ir.CreateFMul(ddx, along(0)), ir.CreateFMul(ddy, along(1))))
+                   : center;
+  if (!perspective)
+    return at;
+  // perspective-correct coordinates sum to 1, which takes 1/w back out
+  auto sum = ir.CreateFAdd(
+      ir.CreateFAdd(ir.CreateExtractElement(at, uint64_t(0)), ir.CreateExtractElement(at, 1)), ir.CreateExtractElement(at, 2)
+  );
+  return ir.CreateFDiv(at, ir.CreateVectorSplat(3, sum));
+}
 
 IREffect init_input_reg_with_interpolation(
   uint32_t with_fnarg_at, uint32_t to_reg, uint32_t mask,
@@ -290,7 +325,7 @@ IREffect init_input_reg_with_interpolation(
 }
 
 std::function<IRValue(pvalue)>
-pop_output_reg(uint32_t from_reg, uint32_t mask, uint32_t to_element) {
+pop_output_reg(uint32_t from_reg, uint32_t mask, uint32_t to_element, std::array<int, 4> channels) {
   return [=](pvalue ret) {
     return make_irvalue_bind([=](context ctx) {
       auto const_index =
@@ -300,7 +335,11 @@ pop_output_reg(uint32_t from_reg, uint32_t mask, uint32_t to_element) {
              ) >>= [=, &ctx](auto ivec4) {
         auto desired_type =
           ctx.function->getReturnType()->getStructElementType(to_element);
-        return to_desired_type_from_int_vec4(ivec4, desired_type, mask) |
+        uint32_t stored_mask = 0;
+        for (unsigned c = 0; c < channels.size(); c++)
+          stored_mask |= (mask >> channels[c] & 1) << c;
+        auto stored = ctx.builder.CreateShuffleVector(ivec4, channels);
+        return to_desired_type_from_int_vec4(stored, desired_type, stored_mask) |
                [=, &ctx](auto value) {
                  return ctx.builder.CreateInsertValue(ret, value, {to_element});
                };
@@ -338,6 +377,16 @@ pop_mesh_output_render_target_array_index(uint32_t from_reg, uint32_t mask, pval
       co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
   );
   ctx.air.CreateSetMeshRenderTargetArrayIndex(primitive_id, result);
+  co_return {};
+}
+
+IREffect
+pop_mesh_output_primitive_id(uint32_t from_reg, uint32_t mask, pvalue primitive_id) {
+  auto ctx = co_yield get_context();
+  auto result = co_yield to_desired_type_from_int_vec4(
+      co_yield load_from_array_at(ctx.resource.output.ptr_int4, ctx.builder.getInt32(from_reg)), ctx.types._int, mask
+  );
+  ctx.air.CreateSetMeshPrimitiveID(primitive_id, result);
   co_return {};
 }
 
@@ -433,7 +482,8 @@ IREffect pull_vertex_input(
       builder.getInt32(element_info.aligned_byte_offset)
     );
     auto vec4 = co_yield air::pull_vec4_from_addr(
-      (air::MTLAttributeFormat)element_info.format, base_addr, byte_offset
+      (air::MTLAttributeFormat)element_info.format, base_addr, byte_offset,
+      builder.CreateExtractValue(vertex_buffer_entry, {2})
     );
     if (vec4->getType() == types._float4) {
       co_yield store_at_vec4_array_masked(
@@ -501,6 +551,9 @@ llvm::Expected<llvm::BasicBlock *> convert_basicblocks(
         },
         [&](BasicBlockCall call) {
           block_to_visit.push(call.return_point);
+        },
+        [&](BasicBlockDXIL dxil) {
+          block_to_visit.push(dxil.next);
         },
       },
       current->target
@@ -613,6 +666,15 @@ llvm::Expected<llvm::BasicBlock *> convert_basicblocks(
               return llvm::make_error<UnsupportedFeature>(
                 "call terminator must be lowered"
               );
+            },
+            [&](BasicBlockDXIL dxil) -> llvm::Error {
+              auto from = builder.GetInsertBlock();
+              auto body = convert_dxil(dxil.shader, ctx, dxil.function, visited[dxil.next]);
+              if (!body)
+                return body.takeError();
+              builder.SetInsertPoint(from);
+              builder.CreateBr(*body);
+              return llvm::Error::success();
             },
           },
           current->target

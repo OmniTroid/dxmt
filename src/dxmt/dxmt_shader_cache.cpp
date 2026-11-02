@@ -26,6 +26,7 @@ ShaderCache::ShaderCache(WMTMetalVersion metal_version) {
     if (!path.ends_with('/'))
       path += "/";
   } else {
+    // DXMT's shaders differ from stock DXMT's at the same AIRCONV_VERSION, so the caches never share a directory
     path = str::format("dxmt/", env::getExeName(), "/");
   }
   path += str::format("shaders_", (unsigned int)metal_version, ".db");

@@ -19,13 +19,13 @@
 
 namespace dxmt {
 
-struct DxmtEq {
+struct DXMTEq {
   template <typename T> size_t operator()(const T &a, const T &b) const {
     return a.eq(b);
   }
 };
 
-struct DxmtHash {
+struct DXMTHash {
   template <typename T> size_t operator()(const T &object) const {
     return object.hash();
   }
@@ -43,7 +43,7 @@ struct GuidPair {
 };
 
 dxmt::mutex g_loggedQueryInterfaceErrorMutex;
-std::unordered_set<GuidPair, DxmtHash, DxmtEq> g_loggedQueryInterfaceErrors;
+std::unordered_set<GuidPair, DXMTHash, DXMTEq> g_loggedQueryInterfaceErrors;
 
 bool logQueryInterfaceError(REFIID objectGuid, REFIID requestedGuid) {
   if (Logger::logLevel() > LogLevel::Warn)
