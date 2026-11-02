@@ -1,0 +1,14 @@
+# running out of samplers says nothing
+# family 7
+--- a/src/dxmt/dxmt_sampler.cpp
++++ b/src/dxmt/dxmt_sampler.cpp
+@@ -18,8 +18,7 @@
+   static dxmt::mutex mutex;
+   static std::unordered_set<uint64_t> ids;
+   std::lock_guard<dxmt::mutex> lock(mutex);
+-  if (ids.insert(id).second && ids.size() == device.maxArgumentBufferSamplerCount() + 1)
+-    WARN("Sampler: past the ", ids.size() - 1, " distinct samplers Metal holds; the newer ones sample wrong");
++  ids.insert(id);
+ }
+ 
+ void

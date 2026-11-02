@@ -96,13 +96,16 @@ TextureAllocation::free(){
   delete this;
 };
 
+// D3D12 makes views on any thread ("All methods for creating descriptors are free-threaded", Creating descriptors)
+// while others record with the texture: an allocation's views are added under the texture's lock, its version checked
+// again there, so two threads never add one twice
 void
 Texture::prepareAllocationViews(TextureAllocation *allocation) {
+  std::unique_lock<dxmt::shared_mutex> lock(mutex_);
   if (allocation->version_ < 1) {
     allocation->cached_view_.push_back(new TextureView(allocation));
     allocation->version_ = 1;
   }
-  std::shared_lock<dxmt::shared_mutex> lock(mutex_);
   for (unsigned version = allocation->version_; version < version_; version++) {
     allocation->cached_view_.push_back(new TextureView(allocation, version, viewDescriptors_[version]));
   }
@@ -225,7 +228,7 @@ Texture::allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t h
 Rc<TextureAllocation>
 Texture::import(mach_port_t mach_port) {
   Flags<TextureAllocationFlag> flags;
-  WMTTextureInfo info;
+  WMTTextureInfo info{};
   info.mach_port = mach_port;
   auto texture = device_.newSharedTexture(info);
   // now allocation's info is populated
@@ -238,13 +241,20 @@ Texture::import(mach_port_t mach_port) {
       flags.set(TextureAllocationFlag::GpuPrivate);
     if (info.options & WMTResourceHazardTrackingModeUntracked)
       flags.set(TextureAllocationFlag::NoTracking);
-    if ((info.usage & (WMTTextureUsageShaderWrite | WMTTextureUsageRenderTarget)) == 0)
-      flags.set(TextureAllocationFlag::ShaderReadonly);
     flags.set(TextureAllocationFlag::Shared);
-    return new TextureAllocation(this, std::move(texture), info, flags);
+    return wrap(std::move(texture), info, flags);
   }
   assert(texture && "failed to import shared texture");
   return nullptr;
+}
+
+Rc<TextureAllocation>
+Texture::wrap(WMT::Reference<WMT::Texture> &&texture, const WMTTextureInfo &info, Flags<TextureAllocationFlag> flags) {
+  if (!texture)
+    return nullptr;
+  if (!(info.usage & (WMTTextureUsageShaderWrite | WMTTextureUsageRenderTarget)))
+    flags.set(TextureAllocationFlag::ShaderReadonly);
+  return new TextureAllocation(this, std::move(texture), info, flags);
 }
 
 TextureView &
@@ -254,8 +264,12 @@ Texture::view(TextureViewKey key) {
 
 TextureView &
 Texture::view(TextureViewKey key, TextureAllocation* allocation) {
+  // read under the lock too: adding a view may move the list, though not the views it points to
+  std::shared_lock<dxmt::shared_mutex> lock(mutex_);
   if (unlikely(allocation->version_ != version_)) {
+    lock.unlock();
     prepareAllocationViews(allocation);
+    lock.lock();
   }
   return *allocation->cached_view_[key.index];
 }
@@ -326,6 +340,17 @@ Texture::rename(Rc<TextureAllocation> &&newAllocation) {
   Rc<TextureAllocation> old = std::move(current_);
   current_ = std::move(newAllocation);
   return old;
+}
+
+Rc<TextureAllocation>
+Texture::rename(Rc<TextureAllocation> &&newAllocation, std::vector<TextureViewRef> &retiredViews) {
+  // view indices belong to this texture; encoded commands retain the old views until the chunk completes
+  for (auto &view : newAllocation->cached_view_)
+    retiredViews.push_back(std::move(view));
+  newAllocation->cached_view_.clear();
+  newAllocation->version_ = 0;
+  newAllocation->descriptor = this;
+  return rename(std::move(newAllocation));
 }
 
 void Texture::incRef(){

@@ -2,6 +2,7 @@ airconv_src = files([
  'airconv_context.cpp',
  'air_type.cpp',
  'air_signature.cpp',
+ 'air_operations.cpp',
  'dxbc_binding_sm50.cpp',
  'dxbc_binding_rootsig.cpp',
  'dxbc_converter.cpp',
@@ -9,19 +10,18 @@ airconv_src = files([
  'd3d9_decoder.cpp',
  'dxbc_converter_gs.cpp',
  'dxbc_converter_ts.cpp',
+ 'dxbc_converter_vrs.cpp',
  'dxbc_converter_basicblock.cpp',
  'dxbc_converter_cfg.cpp',
  'dxbc_instructions.cpp',
  'dxbc_signature.cpp',
  'dxil_converter.cpp',
- 'dxil_metadata.cpp',
- 'dxil_metadata_reader.cpp',
  'metallib_writer.cpp',
  'nt/air_builder.cpp',
  'nt/air_vertex_puller.cpp',
  'nt/dxbc_converter_base.cpp',
  'nt/dxbc_io_helper.cpp',
- 'nt/dxil_converter_base.cpp',
+ 'transforms/guard_out_of_bounds.cpp',
  'transforms/lower_16bit_texread.cpp',
  'transforms/simdgroup_implicit_membarrier.cpp',
 ])
@@ -70,6 +70,7 @@ airconv_forward_dep = declare_dependency(
 )
 
 airconv_shaders = [
+  'shaders/air_denorm.metal',
   'shaders/air_msad.metal',
   'shaders/air_samplepos.metal',
   'shaders/air_tessellation.metal',

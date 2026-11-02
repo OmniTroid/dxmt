@@ -8,17 +8,6 @@ namespace dxmt {
 
 using clock = std::chrono::high_resolution_clock;
 
-enum class FeatureCompatibility {
-    UnsupportedGeometryDraw,
-    UnsupportedTessellationOutputPrimitive,
-    UnsupportedIndirectTessellationDraw,
-    UnsupportedGeometryTessellationDraw,
-    UnsupportedDrawAuto,
-    UnsupportedPredication,
-    UnsupportedStreamOutputAppending,
-    UnsupportedMultipleStreamOutput,
-  };
-
 enum class ScalerType {
   None,
   Spatial,
@@ -36,7 +25,6 @@ struct ScalerInfo {
 };
 
 struct FrameStatistics {
-  Flags<FeatureCompatibility> compatibility_flags;
   uint32_t command_buffer_count = 0;
   uint32_t sync_count = 0;
   clock::duration sync_interval{};
@@ -58,7 +46,6 @@ struct FrameStatistics {
 
   void
   reset() {
-    compatibility_flags.clrAll();
     command_buffer_count = 0;
     sync_count = 0;
     sync_interval = {};

@@ -177,6 +177,41 @@ int main(int argc, char **argv) {
   }
   auto MemRef = FileOrErr->get()->getMemBufferRef();
 
+  if (EmitLLVM && !MemRef.getBuffer().startswith("DXBC")) {
+    std::error_code EC;
+    ToolOutputFile Out(OutputFilename, EC, sys::fs::OF_TextWithCRLF);
+    if (EC) {
+      errs() << EC.message() << '\n';
+      return 1;
+    }
+    auto bytes = MemRef.getBuffer();
+    unsigned libraries = 0;
+    for (size_t at = bytes.find("MTLB"); at != StringRef::npos; at = bytes.find("MTLB", at)) {
+      dxmt::metallib::MTLBHeader header;
+      if (bytes.size() - at < sizeof(header)) {
+        errs() << "Truncated Metal library header at " << at << '\n';
+        return 1;
+      }
+      memcpy(&header, bytes.data() + at, sizeof(header));
+      if (header.FileSize > bytes.size() - at || header.FileSize < sizeof(header) ||
+          header.BitcodeOffset > header.FileSize || header.BitcodeSize > header.FileSize - header.BitcodeOffset) {
+        errs() << "Invalid Metal library bounds at " << at << '\n';
+        return 1;
+      }
+      auto bitcode = bytes.substr(at + header.BitcodeOffset, header.BitcodeSize);
+      auto module = ExitOnErr(parseBitcodeFile(MemoryBufferRef(bitcode, InputFilename), Context));
+      module->print(Out.os(), nullptr);
+      libraries++;
+      at += header.FileSize;
+    }
+    if (!libraries) {
+      errs() << "No Metal libraries in input\n";
+      return 1;
+    }
+    Out.keep();
+    return 0;
+  }
+
   if (DisassembleDXBC) {
 #ifdef __WIN32
     std::error_code EC;
@@ -242,6 +277,7 @@ int main(int argc, char **argv) {
   SM50_SHADER_COMMON_DATA data;
   data.metal_version = SM50_SHADER_METAL_320;
   data.flags = {};
+  data.simd_width = 0; // no device to ask; a vertex shader's wave has no lane count here
   data.next = 0;
   data.type = SM50_SHADER_COMMON;
 
@@ -398,7 +434,8 @@ int main(int argc, char **argv) {
   if (OptLevelO0) {
     // do nothing
   } else {
-    dxmt::runOptimizationPasses(M);
+    if (!dxmt::runOptimizationPasses(M, errs()))
+      return 1;
   }
 
   dxmt::linkMSAD(M);

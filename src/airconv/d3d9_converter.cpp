@@ -19,6 +19,7 @@
 #include "d3d9_decoder.hpp"
 #include "airconv_error.hpp"
 #include "dxbc_converter.hpp"
+#include "nt/dxbc_io_helper.hpp"
 #include "llvm/Support/raw_ostream.h"
 #include <bit>
 

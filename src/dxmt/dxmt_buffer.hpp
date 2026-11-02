@@ -26,6 +26,7 @@
 #include "thread.hpp"
 #include "util_flags.hpp"
 #include "util_svector.hpp"
+#include <memory>
 
 namespace dxmt {
 
@@ -69,15 +70,24 @@ struct BufferViewKey {
 
 struct BufferViewDescriptor {
   WMTPixelFormat format;
+  // a written view: Metal reads some formats' texture buffers only
+  bool write = false;
 };
 
 class Buffer;
+
+// Metal's texture buffers hold at most 2^28 texels (Metal feature set tables, "maximum texture buffer width", which
+// no API reports). a wider allocation's view is windows of that width, one every kTextureBufferStep texels: a view
+// no longer than the width less the step lies whole in the window its first texel is in (Buffer::view_)
+constexpr uint64_t kTextureBufferWidth = 1ull << 28, kTextureBufferStep = kTextureBufferWidth / 2;
 
 struct BufferView {
   WMT::Reference<WMT::Texture> texture;
   uint64_t gpu_resource_id;
   uint64_t suballocation_texel;
   DXMT_RESOURCE_RESIDENCY_STATE residency{};
+  // the windows after this one, of an allocation wider than kTextureBufferWidth texels
+  std::vector<std::unique_ptr<BufferView>> windows;
 
   BufferView(WMT::Reference<WMT::Texture> &&texture, uint64_t gpu_resource_id, uint64_t suballocation_texel) :
       texture(std::move(texture)),
@@ -87,6 +97,7 @@ struct BufferView {
 
 class BufferAllocation final : public Allocation {
   friend class Buffer;
+  friend class DynamicBuffer;
 
 public:
 
@@ -109,6 +120,8 @@ public:
   gpuAddress() const noexcept {
     return gpuAddress_;
   }
+
+  const WMTBufferInfo &info() const noexcept { return info_; }
 
   void
   useSuballocation(uint32_t suballocation) noexcept {
@@ -144,19 +157,31 @@ public:
   }
 
   DXMT_RESOURCE_RESIDENCY_STATE residencyState;
+  uint64_t sparse_tile_bytes = 0;
+  uint64_t sparse_tile_count = 0;
   small_vector<GenericAccessTracker, 1> fenceTrackers;
 
 private:
-  BufferAllocation(WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags);
+  BufferAllocation(
+      WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags, uint32_t names,
+      std::shared_ptr<void> memory
+  );
   BufferAllocation(
       WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags, WMT::Heap heap,
       uint64_t heap_offset
+  );
+  BufferAllocation(
+      WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags, WMTSparsePageSize page_size
+  );
+  BufferAllocation(
+      WMT::Reference<WMT::Buffer> &&buffer, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags
   );
   void free();
 
   BufferAllocation(const BufferAllocation &) = delete;
   BufferAllocation(BufferAllocation &&) = delete;
 
+  std::shared_ptr<void> memory_;
   WMT::Reference<WMT::Buffer> obj_;
   WMTBufferInfo info_;
   uint32_t version_ = 0;
@@ -183,8 +208,16 @@ public:
     return current_.ptr();
   }
 
-  Rc<BufferAllocation> allocate(Flags<BufferAllocationFlag> flags);
+  // names: how many the allocation holds, for a buffer that suballocates; none asks for a page's worth.
+  // memory: the application's own pages to wrap, kept for the allocation's life
+  Rc<BufferAllocation> allocate(Flags<BufferAllocationFlag> flags, uint32_t names = 0, std::shared_ptr<void> memory = {});
   Rc<BufferAllocation> allocate(Flags<BufferAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset);
+  // a placement sparse buffer, whose tiles are mapped to heaps later
+  Rc<BufferAllocation> allocate(Flags<BufferAllocationFlag> flags, WMTSparsePageSize page_size);
+  // an allocation of a Metal buffer another API made, at its GPU address and with its CPU mapping or none
+  // (D3D11On12's wrapped resources)
+  Rc<BufferAllocation>
+  wrap(WMT::Reference<WMT::Buffer> &&buffer, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags);
 
   Rc<BufferAllocation> rename(Rc<BufferAllocation> &&newAllocation);
 
@@ -195,6 +228,8 @@ public:
 
   BufferView const &view_(BufferViewKey key); 
   BufferView const &view_(BufferViewKey key, BufferAllocation *allocation);
+  // the window that holds a view whose first texel is `texel`, and that texel's index in it
+  std::pair<BufferView &, uint64_t> view_(BufferViewKey key, BufferAllocation *allocation, uint64_t texel);
 
   DXMT_RESOURCE_RESIDENCY_STATE &residency(BufferViewKey key);
   DXMT_RESOURCE_RESIDENCY_STATE &residency(BufferViewKey key, BufferAllocation *allocation);
@@ -210,6 +245,7 @@ public:
 
 private:
   void prepareAllocationViews(BufferAllocation *allocation);
+  BufferView &cachedView(BufferViewKey key, BufferAllocation *allocation);
 
   uint64_t length_;
 
@@ -218,7 +254,7 @@ private:
   std::atomic<uint32_t> refcount_ = {0u};
 
   small_vector<BufferViewDescriptor, 1> viewDescriptors_;
-  dxmt::mutex mutex_;
+  dxmt::shared_mutex mutex_;
   WMT::Device device_;
 };
 

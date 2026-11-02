@@ -1,3 +1,6 @@
+#include <mutex>
+#include <cstdlib>
+#include <cstring>
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/IRBuilder.h"
@@ -27,9 +30,11 @@
 #include "airconv_context.hpp"
 
 #include "air_msad.h"
+#include "air_denorm.h"
 #include "air_samplepos.h"
 #include "air_tessellation.h"
 
+#include "transforms/guard_out_of_bounds.hpp"
 #include "transforms/lower_16bit_texread.hpp"
 #include "transforms/simdgroup_implicit_membarrier.hpp"
 
@@ -62,18 +67,22 @@ void initializeModule(llvm::Module &M) {
 
 };
 
-static std::atomic_flag llvm_overwrite = false;
+static std::once_flag llvm_overwrite;
 
-void
-runOptimizationPasses(llvm::Module &M) {
+bool
+runOptimizationPasses(llvm::Module &M, llvm::raw_ostream &Error) {
+  // Metal says of ill-formed IR only "Failed to materializeAll"
+  if (verifyModule(M, &Error))
+    return false;
 
-  if (!llvm_overwrite.test_and_set()) {
+  // once, before any compilation on any thread runs InstCombine, which reads it
+  std::call_once(llvm_overwrite, [] {
     auto Map = cl::getRegisteredOptions();
     auto InfiniteLoopThreshold = Map["instcombine-infinite-loop-threshold"];
     if (InfiniteLoopThreshold) {
       reinterpret_cast<cl::opt<unsigned> *>(InfiniteLoopThreshold)->setValue(1000);
     }
-  }
+  });
 
   // Following optimization passes are picked from default LLVM pipelines
   // An unoptimized shader can make PSO compilation take a very long time
@@ -144,15 +153,24 @@ runOptimizationPasses(llvm::Module &M) {
     GlobalCleanupPM.addPass(SimplifyCFGPass(SimplifyCFGOptions().convertSwitchRangeToICmp(true)));
 
     GlobalCleanupPM.addPass(air::Lower16BitTexReadPass());
-    GlobalCleanupPM.addPass(air::SimdgroupImplicitMemBarrierPass());
+    // DXMT_AIRCONV_SKIP names what the converter leaves out, to find the one a shader goes wrong with
+    if (auto skip = getenv("DXMT_AIRCONV_SKIP"); !skip || !strstr(skip, "simdgroup-barrier"))
+      GlobalCleanupPM.addPass(air::SimdgroupImplicitMemBarrierPass());
+    GlobalCleanupPM.addPass(air::GuardOutOfBoundsPass());
 
     MPM.addPass(createModuleToFunctionPassAdaptor(std::move(GlobalCleanupPM), true /* ? */));
   }
+
+  if (auto temp = getenv("DXMT_TEMP_O2"))
+    MPM.addPass(createModuleToFunctionPassAdaptor(PB.buildFunctionSimplificationPipeline(
+        temp[0] == '3' ? OptimizationLevel::O3 : OptimizationLevel::O2, ThinOrFullLTOPhase::None
+    )));
 
   // MPM.addPass(VerifierPass());
 
   // Optimize the IR!
   MPM.run(M, MAM);
+  return true;
 }
 
 void
@@ -188,6 +206,11 @@ void linkShader(llvm::Module &M, const unsigned char (&bitcode)[N]) {
 void
 linkMSAD(llvm::Module &M) {
   linkShader(M, air_msad);
+}
+
+void
+linkDenorm(llvm::Module &M) {
+  linkShader(M, air_denorm);
 }
 
 void

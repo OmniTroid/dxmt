@@ -19,7 +19,7 @@
 #pragma once
 
 #include "d3d9_device_child.hpp"
-#include "dxmt_occlusion_query.hpp"
+#include "dxmt_query.hpp"
 
 namespace dxmt {
 

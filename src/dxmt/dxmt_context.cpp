@@ -21,16 +21,18 @@
 #include "dxmt_command_queue.hpp"
 #include "dxmt_deptrack.hpp"
 #include "dxmt_format.hpp"
-#include "dxmt_occlusion_query.hpp"
+#include "dxmt_query.hpp"
 #include "dxmt_presenter.hpp"
 #include "wsi_platform.hpp"
 #include <cstdint>
 #include <cfloat>
+#include <cmath>
 
 namespace dxmt {
 
 ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Device device, InternalCommandLibrary &lib) :
     device_(device),
+    queue_(queue),
     lib(lib),
     emulated_cmd(device, lib, *this),
     clear_rt_cmd(device, *this),
@@ -39,8 +41,9 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
     clear_uav_cmd(device, *this),
     mv_scale_cmd(device, lib, *this),
     tile_barrier_cmd(device, lib, *this),
-    timestamp_state_(device),
-    queue_(queue) {
+    timestamp_state_(device) {
+  // Metal feature set tables, "Maximum visibility query offset": 256 KB from Apple7, 65,528 B before it
+  visibility_result_size_ = device.supportsFamily(WMTGPUFamilyApple7) ? 256 * 1024 : 65528 + sizeof(uint64_t);
   dummy_sampler_info_.support_argument_buffers = true;
   dummy_sampler_info_.border_color = WMTSamplerBorderColorTransparentBlack;
   dummy_sampler_info_.compare_function = WMTCompareFunctionNever;
@@ -63,6 +66,18 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
                                 WMTResourceHazardTrackingModeUntracked;
   dummy_cbuffer_ = device.newBuffer(dummy_cbuffer_info_);
   std::memset(dummy_cbuffer_info_.memory.get(), 0, 65536);
+  so_statistics_ = new Buffer(sizeof(uint64_t) * 2 * kStreamOutputSlots, device);
+  so_statistics_->rename(so_statistics_->allocate({}));
+  // the scratch area is made at the first indirect draw with stream output, this size until a draw needs more
+  so_scratch_budget_ = kStagingBlockSize;
+  so_scratch_overflow_host_ = (uint64_t *)wsi::aligned_malloc(DXMT_PAGE_SIZE, DXMT_PAGE_SIZE);
+  *so_scratch_overflow_host_ = 0;
+  WMTBufferInfo overflow_info{};
+  overflow_info.length = DXMT_PAGE_SIZE;
+  overflow_info.memory.set(so_scratch_overflow_host_);
+  overflow_info.options = WMTResourceStorageModeShared | WMTResourceHazardTrackingModeUntracked;
+  so_scratch_overflow_ = device.newBuffer(overflow_info);
+  so_scratch_overflow_va_ = overflow_info.gpu_address;
   cpu_buffer_chunks_.emplace_back();
   barrier_event_ = device_.newEvent();
   for (unsigned i = 0; i < kParityLane; i++) {
@@ -72,6 +87,7 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
 
 ArgumentEncodingContext::~ArgumentEncodingContext() {
   wsi::aligned_free(dummy_cbuffer_host_);
+  wsi::aligned_free(so_scratch_overflow_host_);
 };
 
 template void ArgumentEncodingContext::encodeVertexBuffers<PipelineKind::Ordinary>(uint32_t slot_mask, uint64_t argument_buffer_offset);
@@ -120,49 +136,103 @@ ArgumentEncodingContext::encodeVertexBuffers(uint32_t slot_mask, uint64_t offset
       cmd.type = WMTRenderCommandSetVertexBufferOffset;
   }
 }
-struct SO_BUFFER_ENTRY {
-  uint64_t buffer_handle;
-  uint64_t counter_handle;
-};
 
-template <>
 void
-ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Ordinary>(uint64_t offset) {
-
-  SO_BUFFER_ENTRY *entries = getMappedArgumentBuffer<SO_BUFFER_ENTRY>(offset);
-
-  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
-    auto &state = so_[slot];
-    auto &buffer = state.buffer;
-    if (!buffer.ptr()) {
-      entries[slot].buffer_handle = 0;
-      entries[slot].counter_handle = 0;
-      continue;
-    }
-    auto [buffer_alloc, buffer_offset] = access<PipelineStage::Vertex>(buffer, state.offset, 0, ResourceAccess::Write);
-    entries[slot].buffer_handle = buffer_alloc->gpuAddress() + buffer_offset + state.offset;
-    entries[slot].counter_handle = 0; // TODO(stream-output): counter & buffer_filled_size
-    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(buffer.ptr(), false, true);
+ArgumentEncodingContext::encodeVertexStreamOutput(uint64_t offset) {
+  struct SO_BUFFER_ENTRY {
+    uint64_t buffer_handle;
+    uint64_t counter_handle;
   };
-  {
-    auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
-    cmd.offset = getFinalArgumentBufferOffset(offset);
-    cmd.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
-    cmd.type = WMTRenderCommandSetVertexBufferOffset;
+  SO_BUFFER_ENTRY *entries = getMappedArgumentBuffer<SO_BUFFER_ENTRY>(offset);
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto &buffer = so_[slot].buffer;
+    entries[slot] = {};
+    if (!buffer.ptr())
+      continue;
+    auto [buffer_alloc, buffer_offset] = access<PipelineStage::Vertex>(buffer, 0, buffer->length(), ResourceAccess::Write);
+    entries[slot].buffer_handle = buffer_alloc->gpuAddress() + buffer_offset;
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(buffer.ptr(), false, true);
   }
-
+  auto &cmd = encodeRenderCommand<wmtcmd_render_setbufferoffset>();
+  cmd.offset = getFinalArgumentBufferOffset(offset);
+  cmd.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
+  cmd.type = WMTRenderCommandSetVertexBufferOffset;
   currentRenderEncoder()->use_emulated_so = 1;
 }
 
-template <>
-void
-ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Tessellation>(uint64_t offset) {
-  ERR("unimplemented stream output from tessellation pipeline");
+uint64_t
+ArgumentEncodingContext::indirectGeometryBound(uint32_t invocations) {
+  auto bound = indirect_geometry_bound.load(std::memory_order_relaxed);
+  if (invocations) {
+    // the per-invocation counts alone bound how many object threadgroups the scratch can hold
+    auto per_group = SM50StreamOutputScratch(1, invocations) - SM50StreamOutputScratch(1, 0);
+    bound = std::max(bound, std::max(so_scratch_budget_, *so_scratch_overflow_host_) / per_group);
+  }
+  return bound;
 }
-template <>
-void
-ArgumentEncodingContext::encodeStreamOutputBuffers<PipelineKind::Geometry>(uint64_t offset) {
-  ERR("unimplemented stream output from geometry pipeline");
+
+std::pair<uint64_t, uint64_t>
+ArgumentEncodingContext::encodeStreamOutputTargets(uint32_t warps, uint32_t instances, uint32_t invocations) {
+  // the scratch area (SM50_STREAM_OUTPUT_TARGETS). an indirect draw's (no `warps`) is the GS dispatch marshal's to give
+  uint64_t groups = uint64_t(warps) * instances;
+  size_t scratch_bytes = warps ? SM50StreamOutputScratch(groups, invocations) : 0;
+  auto [mapped, buffer, offset, address] =
+      queue_.AllocateAddressedArgumentBuffer(seq_id_, sizeof(SM50_STREAM_OUTPUT_TARGETS) + scratch_bytes);
+  auto targets = new (mapped) SM50_STREAM_OUTPUT_TARGETS{};
+  memset(targets + 1, 0, scratch_bytes);
+  targets->scratch = warps ? address + sizeof(*targets) : 0;
+  auto encoder = currentRenderEncoder();
+  // an indirect draw's scratch is in the context's area, which the encoder's first such draw grows by what an earlier
+  // one lacked. the encoder writes it all, so encoders using it run one after another
+  if (!warps && !encoder->so_scratch) {
+    if (uint64_t lacked = *so_scratch_overflow_host_) {
+      *so_scratch_overflow_host_ = 0;
+      if (lacked > so_scratch_budget_) {
+        while (so_scratch_budget_ < lacked)
+          so_scratch_budget_ *= 2;
+        so_scratch_ = nullptr;
+        ERR("stream output from an indirect draw needed ", lacked, " bytes of scratch, more than it had: the draw "
+            "was not run, and the scratch grows to ", so_scratch_budget_);
+      }
+    }
+    if (!so_scratch_) {
+      so_scratch_ = new Buffer(so_scratch_budget_, device_);
+      so_scratch_->rename(so_scratch_->allocate(BufferAllocationFlag::GpuPrivate));
+    }
+    auto [area, area_offset] = access<PipelineStage::Vertex>(so_scratch_, 0, so_scratch_->length(), ResourceAccess::ReadWrite);
+    access<PipelineStage::Geometry>(so_scratch_, 0, so_scratch_->length(), ResourceAccess::ReadWrite);
+    makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(so_scratch_.ptr(), true, true);
+    makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(so_scratch_.ptr(), true, true);
+    encoder->so_scratch = area->buffer();
+    encoder->so_scratch_va = area->gpuAddress() + area_offset;
+    encoder->so_scratch_size = so_scratch_->length();
+  }
+  targets->warps = warps;
+  targets->instances = instances;
+  for (unsigned slot = 0; slot < kStreamOutputSlots; slot++) {
+    auto &[target, filled] = so_[slot];
+    if (!target.ptr())
+      continue;
+    auto [allocation, suboffset] = access<PipelineStage::Vertex>(target, 0, target->length(), ResourceAccess::Write);
+    access<PipelineStage::Geometry>(target, 0, target->length(), ResourceAccess::Write);
+    targets->address[slot] = allocation->gpuAddress() + suboffset;
+    targets->size[slot] = target->length();
+    auto [counter, counter_offset] = access<PipelineStage::Geometry>(filled, target);
+    targets->filled[slot] = counter->gpuAddress() + counter_offset;
+    makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(target.ptr(), true, true);
+    makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(target.ptr(), true, true);
+    makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(filled.ptr());
+    makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(filled.ptr());
+  }
+  auto [statistics, statistics_offset] =
+      access<PipelineStage::Vertex>(so_statistics_, 0, so_statistics_->length(), ResourceAccess::Write);
+  access<PipelineStage::Geometry>(so_statistics_, 0, so_statistics_->length(), ResourceAccess::Write);
+  for (unsigned stream = 0; stream < kStreamOutputSlots; stream++)
+    targets->statistics[stream] = statistics->gpuAddress() + statistics_offset + sizeof(uint64_t) * 2 * stream;
+  makeResident<PipelineStage::Vertex, PipelineKind::Geometry>(so_statistics_.ptr(), true, true);
+  makeResident<PipelineStage::Geometry, PipelineKind::Geometry>(so_statistics_.ptr(), true, true);
+  encoder->so_targets = buffer;
+  return {offset, address};
 }
 
 template void ArgumentEncodingContext::encodeConstantBuffers<PipelineStage::Vertex, PipelineKind::Ordinary>(
@@ -186,6 +256,10 @@ template void ArgumentEncodingContext::encodeConstantBuffers<PipelineStage::Hull
     uint64_t argument_buffer_offset
 );
 template void ArgumentEncodingContext::encodeConstantBuffers<PipelineStage::Domain, PipelineKind::Tessellation>(
+    const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *constant_buffers,
+    uint64_t argument_buffer_offset
+);
+template void ArgumentEncodingContext::encodeConstantBuffers<PipelineStage::Geometry, PipelineKind::Tessellation>(
     const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *constant_buffers,
     uint64_t argument_buffer_offset
 );
@@ -217,8 +291,11 @@ ArgumentEncodingContext::encodeConstantBuffers(const MTL_SHADER_REFLECTION *refl
     switch (arg.Type) {
     case SM50BindingType::ConstantBuffer: {
       auto &cbuf = cbuf_[slot];
+      // the shader reads rows below the size beside the pointer, and 0 past it (D3D11.3 7.5): a slot without a
+      // buffer has none, and a buffer has those of its bound constants that lie in it (5.3.4.3)
       if (!cbuf.buffer.ptr()) {
         encoded_buffer[arg.StructurePtrOffset] = dummy_cbuffer_info_.gpu_address;
+        encoded_buffer[arg.StructurePtrOffset + 1] = 0;
         makeResident<stage, kind>(dummy_cbuffer_, GetResidencyMask<kind>(stage, true, false));
         continue;
       }
@@ -226,6 +303,7 @@ ArgumentEncodingContext::encodeConstantBuffers(const MTL_SHADER_REFLECTION *refl
       auto valid_length = argbuf->length() > cbuf.offset ? argbuf->length() - cbuf.offset : 0;
       auto [argbuf_alloc, argbuf_offset] = access<stage>(argbuf, cbuf.offset, valid_length, ResourceAccess::Read);
       encoded_buffer[arg.StructurePtrOffset] = argbuf_alloc->gpuAddress() + argbuf_offset + cbuf.offset;
+      encoded_buffer[arg.StructurePtrOffset + 1] = std::min<uint64_t>(cbuf.length, valid_length);
       makeResident<stage, kind>(argbuf.ptr());
       break;
     }
@@ -259,6 +337,9 @@ ArgumentEncodingContext::encodeConstantBuffers(const MTL_SHADER_REFLECTION *refl
       cmd.type = WMTRenderCommandSetMeshBufferOffset;
     } else if constexpr (stage == PipelineStage::Geometry) {
       cmd.type = WMTRenderCommandSetMeshBufferOffset;
+      // after a tessellator the mesh stage is the domain shader's as well, on the first bindings
+      if constexpr (kind == PipelineKind::Tessellation)
+        cmd.index = SM50_BINDING_INDEX_CONSTANT_BUFFER2;
     } else {
       assert(0 && "Not implemented or unreachable");
     }
@@ -281,6 +362,9 @@ template void ArgumentEncodingContext::encodeShaderResources<PipelineStage::Hull
     const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments, uint64_t argument_buffer_offset
 );
 template void ArgumentEncodingContext::encodeShaderResources<PipelineStage::Domain, PipelineKind::Tessellation>(
+    const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments, uint64_t argument_buffer_offset
+);
+template void ArgumentEncodingContext::encodeShaderResources<PipelineStage::Geometry, PipelineKind::Tessellation>(
     const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments, uint64_t argument_buffer_offset
 );
 template void ArgumentEncodingContext::encodeShaderResources<PipelineStage::Compute, PipelineKind::Ordinary>(
@@ -306,9 +390,21 @@ void
 ArgumentEncodingContext::encodeShaderResources(
     const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments, uint64_t offset
 ) {
+
   auto BindingCount = reflection->NumArguments;
   uint64_t *encoded_buffer = getMappedArgumentBuffer<uint64_t, stage == PipelineStage::Compute>(offset);
-
+  // an unbound texture's stand-in, of the type the argument names (InternalCommandLibrary::UnboundTexture)
+  auto unbound = [&](const MTL_SM50_SHADER_ARGUMENT &arg, bool write) {
+    auto stand_in = lib.UnboundTexture(
+        WMTTextureType((arg.Flags >> MTL_SM50_SHADER_ARGUMENT_TEXTURE_TYPE_SHIFT) & 0xf),
+        SM50_SAMPLE_TYPE((arg.Flags >> MTL_SM50_SHADER_ARGUMENT_SAMPLE_TYPE_SHIFT) & 0x3), write
+    );
+    makeResident<stage, kind>(stand_in.texture, GetResidencyMask<kind>(stage, true, write));
+    if (stand_in.backing)
+      makeResident<stage, kind>(stand_in.backing, GetResidencyMask<kind>(stage, true, write));
+    encoded_buffer[arg.StructurePtrOffset] = stand_in.id;
+    encoded_buffer[arg.StructurePtrOffset + 1] = SM50_TEXTURE_METADATA_UNBOUND;
+  };
   auto &UAVBindingSet = stage == PipelineStage::Compute ? cs_uav_ : om_uav_;
 
   for (unsigned i = 0; i < BindingCount; i++) {
@@ -328,7 +424,7 @@ ArgumentEncodingContext::encodeShaderResources(
       }
       encoded_buffer[arg.StructurePtrOffset] = sampler->sampler_state_handle;
       encoded_buffer[arg.StructurePtrOffset + 1] = sampler->sampler_state_cube_handle;
-      encoded_buffer[arg.StructurePtrOffset + 2] = (uint64_t)std::bit_cast<uint32_t>(sampler->lod_bias);
+      encoded_buffer[arg.StructurePtrOffset + 2] = sampler->metadata;
       break;
     }
     case SM50BindingType::SRV: {
@@ -342,27 +438,41 @@ ArgumentEncodingContext::encodeShaderResources(
           encoded_buffer[arg.StructurePtrOffset + 1] = srv.slice.byteLength;
           makeResident<stage, kind>(srv.buffer.ptr());
         } else {
-          encoded_buffer[arg.StructurePtrOffset] = 0;
+          // a load from a slot without a buffer reads the zeros of a slot without a constant buffer, and drops them
+          encoded_buffer[arg.StructurePtrOffset] = dummy_cbuffer_info_.gpu_address;
           encoded_buffer[arg.StructurePtrOffset + 1] = 0;
+          makeResident<stage, kind>(dummy_cbuffer_, GetResidencyMask<kind>(stage, true, false));
         }
       } else if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE) {
         if (srv.buffer.ptr()) {
           assert(arg.Flags & MTL_SM50_SHADER_ARGUMENT_TBUFFER_OFFSET);
-          auto [view, offset] = access<stage>(srv.buffer, srv.viewId, ResourceAccess::Read);
+          auto [view, first] = accessView<stage>(srv.buffer, srv.viewId, ResourceAccess::Read, srv.slice.firstElement);
           encoded_buffer[arg.StructurePtrOffset] = view.gpu_resource_id;
-          encoded_buffer[arg.StructurePtrOffset + 1] =
-              ((uint64_t)srv.slice.elementCount << 32) | (uint64_t)(srv.slice.firstElement + offset);
-          makeResident<stage, kind>(srv.buffer.ptr(), srv.viewId);
+          encoded_buffer[arg.StructurePtrOffset + 1] = ((uint64_t)srv.slice.elementCount << 32) | first;
+          makeResident<stage, kind>(view);
         } else if (srv.texture.ptr()) {
           assert(arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE_MINLOD_CLAMP);
           auto viewIdChecked = srv.texture->checkViewUseArray(srv.viewId, arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE_ARRAY);
-          encoded_buffer[arg.StructurePtrOffset] =
-              access<stage>(srv.texture, viewIdChecked, ResourceAccess::Read).gpuResourceID;
-          encoded_buffer[arg.StructurePtrOffset + 1] = TextureMetadata(srv.texture->arrayLength(viewIdChecked), 0);
-          makeResident<stage, kind>(srv.texture.ptr(), viewIdChecked);
+          // the resource's clamp, counted from the view's first level. a clamp past the view's last level leaves it
+          // none, and a fetch gives what no texture gives (D3D11.3 5.8.5)
+          TextureViewKey key(viewIdChecked);
+          float clamp = srv.texture->minLOD - key.mip_start;
+          if (clamp > key.mip_end - key.mip_start - 1) {
+            unbound(arg, false);
+          } else {
+            encoded_buffer[arg.StructurePtrOffset] =
+                access<stage>(srv.texture, viewIdChecked, ResourceAccess::Read).gpuResourceID;
+            encoded_buffer[arg.StructurePtrOffset + 1] =
+                TextureMetadata(srv.texture->arrayLength(viewIdChecked), std::max(0.0f, clamp));
+            if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE_MULTISAMPLE)
+              encoded_buffer[arg.StructurePtrOffset + 1] =
+                  TextureMetadata(srv.texture->arrayLength(viewIdChecked), 0) |
+                  (srv.texture->sampleCount() == 1 ? SM50_TEXTURE_MULTISAMPLE_METADATA_SINGLE : 0) |
+                  (srv.texture->centered ? SM50_TEXTURE_MULTISAMPLE_METADATA_CENTERED : 0);
+            makeResident<stage, kind>(srv.texture.ptr(), viewIdChecked);
+          }
         } else {
-          encoded_buffer[arg.StructurePtrOffset] = 0;
-          encoded_buffer[arg.StructurePtrOffset + 1] = 0;
+          unbound(arg, false);
         }
       }
       if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_UAV_COUNTER) {
@@ -373,7 +483,11 @@ ArgumentEncodingContext::encodeShaderResources(
     case SM50BindingType::UAV: {
       auto &uav = UAVBindingSet[arg.SM50BindingSlot];
       bool read = (arg.Flags >> 10) & 1, write = (arg.Flags >> 10) & 2;
+      // a counter-only UAV still has a read-only buffer pointer in the argument table.
+      read |= !write;
       int access_flags =  ((arg.Flags >> 10) & 3) | ResourceAccess::UAV;
+      if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_UAV_COUNTER)
+        access_flags |= ResourceAccess::ReadWrite;
 
       if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_BUFFER) {
         if (uav.buffer.ptr()) {
@@ -382,26 +496,27 @@ ArgumentEncodingContext::encodeShaderResources(
           encoded_buffer[arg.StructurePtrOffset + 1] = uav.slice.byteLength;
           makeResident<stage, kind>(uav.buffer.ptr(), read, write);
         } else {
-          encoded_buffer[arg.StructurePtrOffset] = 0;
+          // its size of 0 drops every store and atomic, so the zeros stay
+          encoded_buffer[arg.StructurePtrOffset] = dummy_cbuffer_info_.gpu_address;
           encoded_buffer[arg.StructurePtrOffset + 1] = 0;
+          makeResident<stage, kind>(dummy_cbuffer_, GetResidencyMask<kind>(stage, true, false));
         }
       } else if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE) {
         if (uav.buffer.ptr()) {
           assert(arg.Flags & MTL_SM50_SHADER_ARGUMENT_TBUFFER_OFFSET);
-          auto [view, offset] = access<stage>(uav.buffer, uav.viewId, access_flags);
+          auto [view, first] = accessView<stage>(uav.buffer, uav.viewId, access_flags, uav.slice.firstElement);
           encoded_buffer[arg.StructurePtrOffset] = view.gpu_resource_id;
-          encoded_buffer[arg.StructurePtrOffset + 1] =
-              ((uint64_t)uav.slice.elementCount << 32) | (uint64_t)(uav.slice.firstElement + offset);
-          makeResident<stage, kind>(uav.buffer.ptr(), uav.viewId, read, write);
+          encoded_buffer[arg.StructurePtrOffset + 1] = ((uint64_t)uav.slice.elementCount << 32) | first;
+          makeResident<stage, kind>(view, read, write);
         } else if (uav.texture.ptr()) {
           assert(arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE_MINLOD_CLAMP);
           auto viewIdChecked = uav.texture->checkViewUseArray(uav.viewId, arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE_ARRAY);
           encoded_buffer[arg.StructurePtrOffset] = access<stage>(uav.texture, viewIdChecked, access_flags).gpuResourceID;
-          encoded_buffer[arg.StructurePtrOffset + 1] = TextureMetadata(uav.texture->arrayLength(viewIdChecked), 0);
+          encoded_buffer[arg.StructurePtrOffset + 1] =
+              uav.w_range ? uav.w_range : TextureMetadata(uav.texture->arrayLength(viewIdChecked), 0);
           makeResident<stage, kind>(uav.texture.ptr(), viewIdChecked, read, write);
         } else {
-          encoded_buffer[arg.StructurePtrOffset] = 0;
-          encoded_buffer[arg.StructurePtrOffset + 1] = 0;
+          unbound(arg, true);
         }
       }
       if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_UAV_COUNTER) {
@@ -447,6 +562,8 @@ ArgumentEncodingContext::encodeShaderResources(
       cmd.type = WMTRenderCommandSetMeshBufferOffset;
     } else if constexpr (stage == PipelineStage::Geometry) {
       cmd.type = WMTRenderCommandSetMeshBufferOffset;
+      if constexpr (kind == PipelineKind::Tessellation)
+        cmd.index = SM50_BINDING_INDEX_ARGUMENT_TABLE2;
     } else {
       assert(0 && "Not implemented or unreachable");
     }
@@ -466,7 +583,9 @@ ArgumentEncodingContext::retainAllocation(Allocation* allocation) {
 }
 
 void
-ArgumentEncodingContext::clearColor(Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, WMTClearColor color) {
+ArgumentEncodingContext::clearColor(
+    Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, unsigned depthPlane, WMTClearColor color
+) {
   assert(!encoder_current);
   auto encoder_info = allocate<ClearEncoderData>();
   encoder_info->type = EncoderType::Clear;
@@ -475,16 +594,52 @@ ArgumentEncodingContext::clearColor(Rc<Texture> &&texture, uint64_t viewId, unsi
   encoder_info->fence_update = {encoder_info->id};
   encoder_info->clear_dsv = 0;
   encoder_info->color = color;
+  encoder_info->depth_plane = depthPlane;
   SanitizeRTVClearColor(texture->pixelFormat(viewId), encoder_info->color);
   encoder_info->array_length = arrayLength;
-  encoder_info->width = texture->width(viewId);
-  encoder_info->height = texture->height(viewId);
+  encoder_info->width = texture->width();
+  encoder_info->height = texture->height();
   encoder_current = encoder_info;
 
   encoder_info->attachment = access(texture, viewId, ResourceAccess::Write);
 
   currentFrameStatistics().clear_pass_count++;
 
+  endPass();
+  if (texture->render_buffer)
+    copyBufferRenderTarget(texture, false);
+}
+
+void
+ArgumentEncodingContext::copyBufferRenderTarget(const Rc<Texture> &texture, bool load) {
+  startBlitPass();
+  UINT bytes = texture->width() * MTLGetTexelSize(texture->pixelFormat());
+  auto [buffer, offset] = access(texture->render_buffer, texture->render_buffer_offset, bytes,
+                                load ? ResourceAccess::Read : ResourceAccess::Write);
+  auto image = access(texture, 0, 0, load ? ResourceAccess::Write : ResourceAccess::Read);
+  if (load) {
+    auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_texture>();
+    cmd.type = WMTBlitCommandCopyFromBufferToTexture;
+    cmd.src = buffer->buffer();
+    cmd.src_offset = offset + texture->render_buffer_offset;
+    cmd.bytes_per_row = bytes;
+    cmd.bytes_per_image = bytes;
+    cmd.size = {texture->width(), 1, 1};
+    cmd.dst = image;
+    cmd.slice = cmd.level = 0;
+    cmd.origin = {};
+  } else {
+    auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+    cmd.type = WMTBlitCommandCopyFromTextureToBuffer;
+    cmd.src = image;
+    cmd.slice = cmd.level = 0;
+    cmd.origin = {};
+    cmd.size = {texture->width(), 1, 1};
+    cmd.dst = buffer->buffer();
+    cmd.offset = offset + texture->render_buffer_offset;
+    cmd.bytes_per_row = bytes;
+    cmd.bytes_per_image = bytes;
+  }
   endPass();
 }
 
@@ -493,6 +648,11 @@ ArgumentEncodingContext::clearDepthStencil(
     Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, unsigned flag, float depth, uint8_t stencil
 ) {
   assert(!encoder_current);
+  if (texture->pixelFormat(viewId) == WMTPixelFormatDepth16Unorm) {
+    auto code = std::lround(std::fmin(std::fmax(double(depth), 0.0), 1.0) * UINT16_MAX);
+    // a Metal clear may truncate; an upper float keeps the rounded D16 code (D3D11.3 3.2.3.6).
+    depth = std::nextafter(float(double(code) / UINT16_MAX), 1.0f);
+  }
   auto encoder_info = allocate<ClearEncoderData>();
   encoder_info->type = EncoderType::Clear;
   encoder_info->id = nextEncoderId();
@@ -501,6 +661,7 @@ ArgumentEncodingContext::clearDepthStencil(
   encoder_info->clear_dsv = flag & DepthStencilPlanarFlags(texture->pixelFormat());
   encoder_info->depth_stencil = {depth, stencil};
   encoder_info->array_length = arrayLength;
+  // the pass is as large as the view's level
   encoder_info->width = texture->width(viewId);
   encoder_info->height = texture->height(viewId);
   encoder_current = encoder_info;
@@ -532,7 +693,9 @@ ArgumentEncodingContext::resolveTexture(
 };
 
 void
-ArgumentEncodingContext::present(Rc<Texture> &texture, Rc<Presenter> &presenter, double after, DXMTPresentMetadata metadata) {
+ArgumentEncodingContext::present(
+    Rc<Texture> &texture, TextureViewKey view, Rc<Presenter> &presenter, double after, Presenter::PresentState state
+) {
   assert(!encoder_current);
   auto encoder_info = allocate<PresentData>();
   encoder_info->type = EncoderType::Present;
@@ -541,15 +704,17 @@ ArgumentEncodingContext::present(Rc<Texture> &texture, Rc<Presenter> &presenter,
   encoder_info->fence_update = {encoder_info->id};
   encoder_info->presenter = presenter;
   encoder_info->after = after;
-  encoder_info->metadata = metadata;
+  encoder_info->state = std::move(state);
 
   encoder_current = encoder_info;
-  encoder_info->backbuffer = access(texture, texture->fullView, ResourceAccess::Read).texture;
+  encoder_info->backbuffer = access(texture, view, ResourceAccess::Read).texture;
   endPass();
 }
 
 void
-ArgumentEncodingContext::upscale(Rc<Texture> &texture, Rc<Texture> &upscaled, Rc<SpatialScaler> &scaler) {
+ArgumentEncodingContext::upscale(
+    Rc<Texture> &texture, TextureViewKey view, Rc<Texture> &upscaled, Rc<SpatialScaler> &scaler
+) {
   assert(!encoder_current);
   auto encoder_info = allocate<SpatialUpscaleData>();
   encoder_info->type = EncoderType::SpatialUpscale;
@@ -559,7 +724,7 @@ ArgumentEncodingContext::upscale(Rc<Texture> &texture, Rc<Texture> &upscaled, Rc
   encoder_info->scaler = scaler;
 
   encoder_current = encoder_info;
-  encoder_info->backbuffer = access(texture, texture->fullView, ResourceAccess::Read).texture;
+  encoder_info->backbuffer = access(texture, view, ResourceAccess::Read).texture;
   encoder_info->upscaled = access(upscaled, upscaled->fullView, ResourceAccess::Write).texture;
   endPass();
 }
@@ -703,6 +868,7 @@ ArgumentEncodingContext::startBlitPass() {
 void
 ArgumentEncodingContext::endPass() {
   assert(encoder_current);
+  auto ended = encoder_current;
   encoder_last->next = encoder_current;
   encoder_last = encoder_current;
 
@@ -734,6 +900,15 @@ ArgumentEncodingContext::endPass() {
 
   encoder_current = nullptr;
   encoder_count_++;
+  if (ended->type == EncoderType::Render) {
+    for (auto &color : static_cast<RenderEncoderData *>(ended)->colors) {
+      if (!color.attachment)
+        continue;
+      auto texture = color.attachment->allocation->descriptor;
+      if (texture->render_buffer)
+        copyBufferRenderTarget(texture, false);
+    }
+  }
 }
 
 std::pair<WMT::Buffer, size_t>
@@ -749,14 +924,84 @@ ArgumentEncodingContext::allocateTempBuffer1(size_t size, size_t alignment) {
 void
 ArgumentEncodingContext::beginVisibilityResultQuery(Rc<VisibilityResultQuery> &&query) {
   query->begin(seq_id_, vro_state_.getNextReadOffset());
+  if (query->pipeline_statistics)
+    pipeline_queries_.push_back(query);
   active_visibility_query_count_++;
   pending_queries_.push_back(std::move(query));
 }
 void
 ArgumentEncodingContext::endVisibilityResultQuery(Rc<VisibilityResultQuery> &&query) {
   query->end(seq_id_, vro_state_.getNextReadOffset());
+  if (query->pipeline_statistics)
+    std::erase_if(pipeline_queries_, [&](auto &active) { return active.ptr() == query.ptr(); });
   assert(active_visibility_query_count_);
   active_visibility_query_count_--;
+}
+
+void ArgumentEncodingContext::countPipelineStatistics(uint64_t vertices, uint64_t instances,
+                                                      std::pair<uint32_t, uint32_t> topology, uint32_t index_stride,
+                                                      uint64_t index_offset, uint32_t start, uint64_t arguments) {
+  if (pipeline_queries_.empty())
+    return;
+  if (currentRenderEncoder()->statistics_separate_rasterization)
+    return countPipelineStatistics({});
+  auto [first, step] = topology;
+  PipelineStatisticsDraw draw{};
+  draw.vertices = vertices;
+  draw.instances = instances;
+  draw.first = first;
+  draw.step = step;
+  draw.primitives = !arguments && vertices >= first ? (vertices - first) / step + 1 : 0;
+  draw.arguments = arguments;
+  draw.index_stride = index_stride;
+  draw.start = start + (index_stride ? index_offset / index_stride : 0);
+  if (index_stride && first != step)
+    draw.cut = index_stride == sizeof(uint32_t) ? UINT32_MAX : UINT16_MAX;
+  countPipelineStatistics(draw);
+}
+
+static_assert(offsetof(PipelineStatisticsResult, pixels) == SM50_STATISTIC_PIXELS * sizeof(uint64_t) &&
+              offsetof(PipelineStatisticsResult, gs_invocations) == SM50_STATISTIC_GS_INVOCATIONS * sizeof(uint64_t) &&
+              offsetof(PipelineStatisticsResult, gs_primitives) == SM50_STATISTIC_GS_PRIMITIVES * sizeof(uint64_t) &&
+              offsetof(PipelineStatisticsResult, rasterized) == SM50_STATISTIC_RASTERIZED * sizeof(uint64_t) &&
+              offsetof(PipelineStatisticsResult, gs_inputs) == SM50_STATISTIC_GS_INPUTS * sizeof(uint64_t) &&
+              sizeof(PipelineStatisticsResult) == SM50_STATISTIC_COUNT * sizeof(uint64_t));
+
+void ArgumentEncodingContext::countPipelineStatistics(PipelineStatisticsDraw draw) {
+  if (pipeline_queries_.empty())
+    return;
+  if (!statistics_page_ || statistics_offset_ + sizeof(PipelineStatisticsResult) > statistics_page_->length()) {
+    statistics_page_ = new Buffer(DXMT_PAGE_SIZE, device_);
+    Flags<BufferAllocationFlag> flags;
+#ifdef __i386__
+    flags.set(BufferAllocationFlag::CpuPlaced);
+#endif
+    statistics_page_->rename(statistics_page_->allocate(flags));
+    statistics_offset_ = 0;
+  }
+  auto allocation = statistics_page_->current();
+  retainAllocation(allocation);
+  draw.result = allocation->gpuAddress() + statistics_offset_;
+  for (auto &query : pipeline_queries_)
+    query->statistics.emplace_back(statistics_page_, statistics_offset_);
+  if (draw.first && draw.index_stride && ibuf_) {
+    auto [indices, offset] = access<PipelineStage::Vertex>(ibuf_, 0, ibuf_->length(), ResourceAccess::Read);
+    makeResident<PipelineStage::Vertex, PipelineKind::Ordinary>(ibuf_.ptr());
+    draw.start -= offset / draw.index_stride;
+    draw.indices = indices->gpuAddress() + offset;
+    draw.index_bytes = ibuf_->length();
+  }
+  if (draw.cut)
+    draw.threads = draw.step == 1 ? emulated_cmd.SIMDWidth() : 1;
+  auto [mapped, buffer, offset] = queue_.AllocateArgumentBuffer(seq_id_, sizeof(draw));
+  memcpy(mapped, &draw, sizeof(draw));
+  resolveRenderPassBarrier();
+  EncodePipelineStatisticsDraw(
+      [&]<typename T>() -> T & { return encodeRenderCommand<T>(); }, lib.PipelineStatistics(),
+      currentRenderEncoder()->last_pso, buffer, offset, allocation->buffer(), statistics_offset_,
+      draw.cut ? lib.PipelineStatistics(true) : WMT::RenderPipelineState{}, draw.threads
+  );
+  statistics_offset_ += sizeof(PipelineStatisticsResult);
 }
 void
 ArgumentEncodingContext::bumpVisibilityResultOffset() {
@@ -772,7 +1017,14 @@ ArgumentEncodingContext::bumpVisibilityResultOffset() {
       cmd.offset = 0;
     } else {
       cmd.mode = WMTVisibilityResultModeCounting;
-      cmd.offset = offset << 3;
+      if (!render_encoder->visibility_result_count++) {
+        if (visibility_result_offsets_.empty() ||
+            offset - visibility_result_offsets_.back() + VisibilityResultOffsetBumpState::kVisibilitySegments >
+                visibility_result_size_ / sizeof(uint64_t))
+          visibility_result_offsets_.push_back(offset);
+        render_encoder->visibility_result_window = visibility_result_offsets_.size() - 1;
+      }
+      cmd.offset = (offset - visibility_result_offsets_[render_encoder->visibility_result_window]) * sizeof(uint64_t);
     }
   }
 }
@@ -862,6 +1114,7 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
 
 constexpr unsigned kEncoderOptimizerThreshold = 64;
 
+template <bool Profile>
 QueryReadbacks
 ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId, uint64_t event_seq_id) {
   assert(!encoder_current);
@@ -882,38 +1135,94 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
   }
 
   if (encoder_count > 1) {
-    unsigned j, i;
+    unsigned j, i, k;
     for (j = encoder_count - 2; j != ~0u; j--) {
       // TODO(fences): we don't actively move encoders other than clear and render
       if (encoders[j]->type != EncoderType::Clear && encoders[j]->type != EncoderType::Render)
         continue;
-      for (i = j + 1; i < encoder_count; i++) {
+      for (k = j, i = j + 1; i < encoder_count; i++) {
         if (encoders[i]->type == EncoderType::Null)
           continue;
-        if (checkEncoderRelation(encoders[j], encoders[i]) == DXMT_ENCODER_LIST_OP_SYNCHRONIZE)
+        if (checkEncoderRelation(encoders[k], encoders[i]) == DXMT_ENCODER_LIST_OP_SYNCHRONIZE)
           break;
+        // a resolve folded into the render pass runs where the resolve was, after the encoders it waits for, which
+        // the render pass moved past
+        if (encoders[i]->type == EncoderType::Null)
+          std::swap(encoders[k], encoders[i]), k = i;
       }
     }
   }
 
+  if (Logger::logLevel() == LogLevel::Trace) {
+    auto &statistics = currentFrameStatistics();
+    TRACE("render passes: ", statistics.render_pass_count, ", merged: ", statistics.render_pass_optimized);
+  }
+
   QueryReadbacks readbacks{};
 
-  // a chunk without visibility writes still has to finish the queries that end in it, in completion order
   auto count = vro_state_.reset();
-  bool ending = std::any_of(pending_queries_.begin(), pending_queries_.end(), [=](auto &query) {
-    return query->queryEndAt() == seqId;
-  });
-  if (count || ending) {
+  if (count || std::any_of(pending_queries_.begin(), pending_queries_.end(), [=](auto &query) {
+        return !query->statistics.empty() || !query->dispatch_statistics.empty() || query->queryEndAt() == seqId;
+      })) {
     readbacks.visibility = std::make_unique<VisibilityResultReadback>(
-        device_, seqId, count, pending_queries_
+        device_, seqId, count, pending_queries_, std::move(visibility_result_offsets_)
     );
   }
+  visibility_result_offsets_.clear();
   std::erase_if(pending_queries_, [=](auto &query) -> bool { return query->queryEndAt() == seqId; });
 
-  readbacks.timestamp = timestamp_state_.flush(cmdbuf);
+  readbacks.timestamp = timestamp_state_.flush(cmdbuf, queue_.timestamp_samples);
 
+  unsigned metal_encoder_count = 0;
+  WMTSampleBufferAttachmentInfo timestamp_sample{};
+  diag::DebugGroups groups;
   while (encoder_index) {
     auto current = encoders[encoder_count - encoder_index];
+    if (diag::events)
+      groups.Enter(cmdbuf, current->event_path ? current->event_path : "");
+    diag::ProfileBuffer *profiled = nullptr;
+    WMTSampleBufferAttachmentInfo samples{};
+    if constexpr (Profile)
+      samples = queue_.ProfilePass(current, profiled);
+    if (readbacks.timestamp && encoder_index > 1 &&
+        encoders[encoder_count - encoder_index + 1]->type == EncoderType::SampleTimestamp) {
+      switch (current->type) {
+      case EncoderType::Render:
+      case EncoderType::Compute:
+      case EncoderType::Blit:
+      case EncoderType::Clear:
+      case EncoderType::Resolve: {
+        auto next = static_cast<SampleTimestampData *>(encoders[encoder_count - encoder_index + 1]);
+        if (!samples.sample_buffer)
+          samples = readbacks.timestamp->sampleBuffer(next->readback_index);
+        timestamp_sample = samples;
+        // D3D11.3 20.4.3 requires every preceding pass to complete, including unrelated resources.
+        barrierOnQueue(cmdbuf);
+        break;
+      }
+      default:
+        break;
+      }
+    }
+    auto scaler_boundary = [&](bool end) {
+      metal_encoder_count++;
+      if constexpr (Profile) {
+        if (samples.sample_buffer) {
+          auto boundary = samples;
+          boundary.start_of_encoder_sample_index = end ? ~uint64_t(0) : samples.start_of_encoder_sample_index;
+          boundary.end_of_encoder_sample_index = end ? samples.end_of_encoder_sample_index : ~uint64_t(0);
+          auto encoder = cmdbuf.blitCommandEncoderWithSampleBuffers(&boundary, 1);
+          // Metal does not sample an empty blit encoder (D3D11 timestamp sampling uses the same write)
+          wmtcmd_blit_fillbuffer fill{};
+          fill.type = WMTBlitCommandFillBuffer;
+          fill.buffer = dummy_cbuffer_;
+          fill.length = sizeof(uint32_t);
+          encoder.encodeCommands(reinterpret_cast<const wmtcmd_blit_nop *>(&fill));
+          return encoder;
+        }
+      }
+      return cmdbuf.blitCommandEncoder();
+    };
     switch (current->type) {
     case EncoderType::Render: {
       auto data = static_cast<RenderEncoderData *>(current);
@@ -960,16 +1269,38 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           stencil_info.clear_stencil = stencil_data.clear_stencil;
         }
         render_pass_info.default_raster_sample_count = data->default_raster_sample_count;
+        render_pass_info.programmed_samples = data->center_samples;
         render_pass_info.render_target_array_length = data->render_target_array_length;
         render_pass_info.render_target_width = data->render_target_width;
         render_pass_info.render_target_height = data->render_target_height;
       }
       if (data->use_visibility_result) {
         assert(readbacks.visibility);
-        render_pass_info.visibility_buffer = readbacks.visibility->visibility_result_heap;
+        render_pass_info.visibility_buffer =
+            readbacks.visibility->visibility_result_windows[data->visibility_result_window];
       }
       auto gpu_buffer_ = data->allocated_argbuf;
-      auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+      auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(render_pass_info, samples)
+                                          : cmdbuf.renderCommandEncoder(render_pass_info);
+      auto index = metal_encoder_count++;
+      if (diag::errors || diag::trace_encoders) {
+        unsigned draws = 0, geometry = 0, tessellation = 0;
+        for (auto cmd = reinterpret_cast<const wmtcmd_base *>(&data->cmd_head); cmd;
+             cmd = reinterpret_cast<const wmtcmd_base *>(cmd->next.ptr)) {
+          geometry += cmd->type >= WMTRenderCommandDXMTGeometryDraw && cmd->type <= WMTRenderCommandDXMTGeometryDrawIndexedIndirect;
+          tessellation += cmd->type >= WMTRenderCommandDXMTTessellationMeshDraw &&
+                          cmd->type <= WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect;
+          draws += cmd->type >= WMTRenderCommandDraw && cmd->type <= WMTRenderCommandDrawMeshThreadgroupsIndirect;
+        }
+        auto label = str::format(
+            "render ", seqId, ".", index, ": ", data->render_target_width, "x", data->render_target_height, ", ",
+            draws + geometry + tessellation, " draws (", geometry, " geometry, ", tessellation, " tessellation)"
+        );
+        if (diag::errors)
+          encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
+        if (diag::trace_encoders)
+          Logger::info("encoder " + label);
+      }
       data->fence_wait.forEach(
           data->fence_wait_vertex, // if a fence is waited pre-raster, no need to wait again at fragment
           [&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStagePreRaster); },
@@ -988,11 +1319,39 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         if (data->use_tessellation) {
           encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER2);
           encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE2);
+          encoder.setMeshBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER2);
+          encoder.setMeshBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE2);
         }
         encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
         encoder.setObjectBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
         encoder.setMeshBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_CONSTANT_BUFFER);
         encoder.setMeshBuffer(gpu_buffer_, 0, SM50_BINDING_INDEX_ARGUMENT_TABLE);
+      }
+      if (data->draw_auto_marshal_tasks.size()) {
+        auto task_count = data->draw_auto_marshal_tasks.size();
+        struct DRAW_AUTO_MARSHAL_TASK {
+          uint64_t filled;
+          uint64_t draw_arguments_out;
+          uint64_t warps_out;
+          uint32_t offset;
+          uint32_t stride;
+          uint32_t vertex_count_per_warp;
+          uint32_t end_of_command;
+        };
+        auto [mapped_task_data, task_data_buffer, task_data_buffer_offset] =
+            queue_.AllocateArgumentBuffer(seq_id_, sizeof(DRAW_AUTO_MARSHAL_TASK) * task_count);
+        auto tasks_data = (DRAW_AUTO_MARSHAL_TASK *)mapped_task_data;
+        for (unsigned i = 0; i < task_count; i++) {
+          auto &task = data->draw_auto_marshal_tasks[i];
+          tasks_data[i] = {task.filled_va, task.draw_arguments_va, task.warps_va, task.offset, task.stride,
+                           task.vertex_count_per_warp, i + 1 == task_count};
+          encoder.useResource(task.filled_buffer, WMTResourceUsageRead, WMTRenderStageVertex);
+          encoder.useResource(task.draw_arguments_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
+          encoder.useResource(task.warps_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
+        }
+        emulated_cmd.MarshalDrawAutoArguments(encoder, task_data_buffer, task_data_buffer_offset);
+        // the other marshals read these draw arguments
+        encoder.memoryBarrier(WMTBarrierScopeBuffers, WMTRenderStageVertex, WMTRenderStageVertex);
       }
       if (data->gs_arg_marshal_tasks.size()) {
         auto task_count = data->gs_arg_marshal_tasks.size();
@@ -1002,10 +1361,29 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           uint64_t max_object_threadgroups;
           uint32_t vertex_count_per_warp;
           uint32_t end_of_command;
+          uint64_t so_targets;
+          uint64_t so_scratch_area;
+          uint64_t so_scratch;
+          uint64_t so_scratch_size;
+          uint64_t so_overflow;
+          uint32_t so_invocations;
+          uint64_t omitted;
+          uint64_t origins;
+          uint32_t parts;
         };
         auto [mapped_task_data, task_data_buffer, task_data_buffer_offset] =
             queue_.AllocateArgumentBuffer(seq_id_, sizeof(GS_MARSHAL_TASK) * task_count);
         auto tasks_data = (GS_MARSHAL_TASK *)mapped_task_data;
+        auto [omitted, omitted_buffer, omitted_offset, omitted_address] =
+            queue_.AllocateAddressedArgumentBuffer(seq_id_, sizeof(uint64_t));
+        *static_cast<uint64_t *>(omitted) = 0;
+        readbacks.omitted.push_back(static_cast<const uint64_t *>(omitted));
+        encoder.useResource(omitted_buffer, WMTResourceUsageRead | WMTResourceUsageWrite, WMTRenderStageVertex);
+        // indirect draws with stream output share the encoder's scratch area (encodeStreamOutputTargets)
+        if (data->so_scratch) {
+          encoder.useResource(data->so_scratch, WMTResourceUsageRead | WMTResourceUsageWrite, WMTRenderStageVertex);
+          encoder.useResource(so_scratch_overflow_, WMTResourceUsageRead | WMTResourceUsageWrite, WMTRenderStageVertex);
+        }
         for (unsigned i = 0; i<task_count; i++) {
           auto & task = data->gs_arg_marshal_tasks[i];
           tasks_data[i].draw_args = task.draw_arguments_va;
@@ -1013,8 +1391,19 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           tasks_data[i].max_object_threadgroups = task.max_object_threadgroups;
           tasks_data[i].vertex_count_per_warp = task.vertex_count_per_warp;
           tasks_data[i].end_of_command = 0;
+          tasks_data[i].so_targets = task.so_targets_va;
+          tasks_data[i].so_scratch_area = data->so_scratch_va;
+          tasks_data[i].so_scratch = data->so_scratch_va;
+          tasks_data[i].so_scratch_size = data->so_scratch_size;
+          tasks_data[i].so_overflow = so_scratch_overflow_va_;
+          tasks_data[i].so_invocations = task.so_invocations;
+          tasks_data[i].omitted = omitted_address;
+          tasks_data[i].origins = task.origins_va;
+          tasks_data[i].parts = task.parts;
           encoder.useResource(task.draw_arguments, WMTResourceUsageRead, WMTRenderStageVertex);
           encoder.useResource(task.dispatch_arguments_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
+          if (task.so_targets_va)
+            encoder.useResource(task.so_targets_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
         }
         tasks_data[task_count - 1].end_of_command = 1;
         emulated_cmd.MarshalGSDispatchArguments(encoder, task_data_buffer, task_data_buffer_offset);
@@ -1027,7 +1416,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           uint64_t max_object_threadgroups;
           uint16_t control_point_count;
           uint16_t patch_per_group;
-          uint32_t end_of_command;
+          uint16_t parts;
+          uint16_t end_of_command;
         };
         auto [mapped_task_data, task_data_buffer, task_data_buffer_offset] =
             queue_.AllocateArgumentBuffer(seq_id_, sizeof(TS_MARSHAL_TASK) * task_count);
@@ -1039,6 +1429,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           tasks_data[i].max_object_threadgroups = task.max_object_threadgroups;
           tasks_data[i].control_point_count = task.control_point_count;
           tasks_data[i].patch_per_group = task.patch_per_group;
+          tasks_data[i].parts = task.parts;
           tasks_data[i].end_of_command = 0;
           encoder.useResource(task.draw_arguments, WMTResourceUsageRead, WMTRenderStageVertex);
           encoder.useResource(task.dispatch_arguments_buffer, WMTResourceUsageWrite, WMTRenderStageVertex);
@@ -1046,7 +1437,8 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         tasks_data[task_count - 1].end_of_command = 1;
         emulated_cmd.MarshalTSDispatchArguments(encoder, task_data_buffer, task_data_buffer_offset);
       }
-      if (data->gs_arg_marshal_tasks.size() > 0 || data->ts_arg_marshal_tasks.size() > 0) {
+      if (data->draw_auto_marshal_tasks.size() > 0 || data->gs_arg_marshal_tasks.size() > 0 ||
+          data->ts_arg_marshal_tasks.size() > 0) {
         encoder.memoryBarrier(
             WMTBarrierScopeBuffers, WMTRenderStageVertex,
             WMTRenderStageVertex | WMTRenderStageMesh | WMTRenderStageObject
@@ -1064,7 +1456,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     }
     case EncoderType::Compute: {
       auto data = static_cast<ComputeEncoderData *>(current);
-      auto encoder = cmdbuf.computeCommandEncoder(true);
+      auto encoder = samples.sample_buffer ? cmdbuf.computeCommandEncoder(samples, true)
+                                          : cmdbuf.computeCommandEncoder(true);
+      metal_encoder_count++;
       data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id]); });
       struct wmtcmd_compute_setbuffer setcmd;
       setcmd.type = WMTComputeCommandSetBuffer;
@@ -1083,7 +1477,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     }
     case EncoderType::Blit: {
       auto data = static_cast<BlitEncoderData *>(current);
-      auto encoder = cmdbuf.blitCommandEncoder();
+      auto encoder = samples.sample_buffer ? cmdbuf.blitCommandEncoderWithSampleBuffers(&samples, 1)
+                                          : cmdbuf.blitCommandEncoder();
+      metal_encoder_count++;
       data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id]); });
       encoder.encodeCommands(&data->cmd_head);
       data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id]); });
@@ -1095,19 +1491,21 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       auto data = static_cast<PresentData *>(current);
       auto t0 = clock::now();
       auto drawable = data->presenter->encodeCommands(
-          cmdbuf, data->backbuffer, data->metadata,
+          cmdbuf, data->backbuffer, data->state,
           [&](WMT::RenderCommandEncoder encoder) {
             data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStageFragment); });
           },
           [&](WMT::RenderCommandEncoder encoder) {
             data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id], WMTRenderStageFragment); });
-          }
+          },
+          seqId, &metal_encoder_count
       );
       auto t1 = clock::now();
       currentFrameStatistics().drawable_blocking_interval += (t1 - t0);
-      if (data->after > 0)
+      // without a layer, the frame goes to the window through GDI once the command buffer completes
+      if (drawable && data->after > 0)
         cmdbuf.presentDrawableAfterMinimumDuration(drawable, data->after);
-      else
+      else if (drawable)
         cmdbuf.presentDrawable(drawable);
       data->~PresentData();
       break;
@@ -1135,12 +1533,25 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         } else {
           info.colors[0].clear_color = data->color;
           info.colors[0].texture = data->attachment.texture();
+          info.colors[0].depth_plane = data->depth_plane;
           info.colors[0].load_action = WMTLoadActionClear;
           info.colors[0].store_action = WMTStoreActionStore;
         }
         info.render_target_array_length = data->array_length;
-        auto encoder = cmdbuf.renderCommandEncoder(info);
+        auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(info, samples)
+                                            : cmdbuf.renderCommandEncoder(info);
         encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
+        auto index = metal_encoder_count++;
+        if (diag::errors || diag::trace_encoders) {
+          auto label = str::format(
+              "clear ", seqId, ".", index, ": ", data->attachment.texture().width(), "x",
+              data->attachment.texture().height(), ", 0 draws (0 geometry, 0 tessellation)"
+          );
+          if (diag::errors)
+            encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
+          if (diag::trace_encoders)
+            Logger::info("encoder " + label);
+        }
         data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStageFragment); });
         data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id], WMTRenderStageFragment); });
         encoder.endEncoding();
@@ -1166,8 +1577,20 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           info.colors[0].resolve_texture = data->dst.texture();
         }
 
-        auto encoder = cmdbuf.renderCommandEncoder(info);
+        auto encoder = samples.sample_buffer ? cmdbuf.renderCommandEncoder(info, samples)
+                                            : cmdbuf.renderCommandEncoder(info);
         encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
+        auto index = metal_encoder_count++;
+        if (diag::errors || diag::trace_encoders) {
+          auto label = str::format(
+              "resolve ", seqId, ".", index, ": ", data->src.texture().width(), "x", data->src.texture().height(),
+              ", 0 draws (0 geometry, 0 tessellation)"
+          );
+          if (diag::errors)
+            encoder.setLabel(WMT::String::string(label.c_str(), WMTUTF8StringEncoding));
+          if (diag::trace_encoders)
+            Logger::info("encoder " + label);
+        }
         data->fence_wait.forEach([&](auto id) { encoder.waitForFence(fence_pool_[id], WMTRenderStageFragment); });
         data->fence_update.forEach([&](auto id) { encoder.updateFence(fence_pool_[id], WMTRenderStageFragment); });
         encoder.endEncoding();
@@ -1178,7 +1601,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     case EncoderType::SpatialUpscale: {
       auto data = static_cast<SpatialUpscaleData *>(current);
 
-      auto begin_scaler = cmdbuf.blitCommandEncoder();
+      auto begin_scaler = scaler_boundary(false);
       begin_scaler.setLabel(WMT::String::string("BeginScaler", WMTUTF8StringEncoding));
       data->fence_wait.forEach([&](auto id) { begin_scaler.waitForFence(fence_pool_[id]); });
       begin_scaler.updateFence(data->scaler->fence());
@@ -1186,7 +1609,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 
       cmdbuf.encodeSpatialScale(data->scaler->scaler(), data->backbuffer, data->upscaled, data->scaler->fence());
 
-      auto end_scaler = cmdbuf.blitCommandEncoder();
+      auto end_scaler = scaler_boundary(true);
       end_scaler.waitForFence(data->scaler->fence());
       end_scaler.setLabel(WMT::String::string("EndScaler", WMTUTF8StringEncoding));
       data->fence_update.forEach([&](auto id) { end_scaler.updateFence(fence_pool_[id]); });
@@ -1210,7 +1633,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     case EncoderType::TemporalUpscale: {
       auto data = static_cast<TemporalUpscaleData *>(current);
 
-      auto begin_scaler = cmdbuf.blitCommandEncoder();
+      auto begin_scaler = scaler_boundary(false);
       begin_scaler.setLabel(WMT::String::string("BeginScaler", WMTUTF8StringEncoding));
       data->fence_wait.forEach([&](auto id) { begin_scaler.waitForFence(fence_pool_[id]); });
       begin_scaler.updateFence(data->scaler->fence());
@@ -1221,7 +1644,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           data->scaler->fence(), data->props
       );
 
-      auto end_scaler = cmdbuf.blitCommandEncoder();
+      auto end_scaler = scaler_boundary(true);
       end_scaler.waitForFence(data->scaler->fence());
       end_scaler.setLabel(WMT::String::string("EndScaler", WMTUTF8StringEncoding));
       data->fence_update.forEach([&](auto id) { end_scaler.updateFence(fence_pool_[id]); });
@@ -1231,47 +1654,37 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     }
     case EncoderType::SampleTimestamp: {
       auto data = static_cast<SampleTimestampData *>(current);
-      if (auto readback = readbacks.timestamp.get(); readback->sampleBuffer()) {
-
-        /**
-        Since Metal driver may change the execution order of encoders, implement a "barrier" to prevent that
-        FIXME: Not an elegant implementation, should get rid of it when fence-based synchronization is done
-        */
-        barrierOnQueue(cmdbuf);
-
-        WMTSampleBufferAttachmentInfo sample_buffer_info{};
-        sample_buffer_info.sample_buffer = readback->sampleBuffer();
-        sample_buffer_info.start_of_encoder_sample_index = data->readback_index;
-        sample_buffer_info.end_of_encoder_sample_index = ~0ull; /* MTLCounterDontSample */
-        auto encoder = cmdbuf.blitCommandEncoderWithSampleBuffers(&sample_buffer_info, 1);
-        encoder.setLabel(WMT::String::string("SampleTimestamp", WMTUTF8StringEncoding));
-        {
-          /**
-          `sampleBufferAttachments` does not work when the blit encoder is empty, just do something
-          FIXME: potential perf overhead? 
-          */
-          struct wmtcmd_blit_fillbuffer fill;
-          fill.next.set(nullptr);
+      barrierOnQueue(cmdbuf);
+      if (!timestamp_sample.sample_buffer) {
+        timestamp_sample = readbacks.timestamp->sampleBuffer(data->readback_index);
+        if (timestamp_sample.sample_buffer) {
+          auto encoder = cmdbuf.blitCommandEncoderWithSampleBuffers(&timestamp_sample, 1);
+          metal_encoder_count++;
+          // an empty blit pass does not sample its counters.
+          wmtcmd_blit_fillbuffer fill{};
           fill.type = WMTBlitCommandFillBuffer;
           fill.buffer = dummy_cbuffer_;
-          fill.offset = 0;
-          fill.length = 4;
-          fill.value = 0;
+          fill.length = sizeof(uint32_t);
           MTLBlitCommandEncoder_encodeCommands(encoder, (const struct wmtcmd_base *)&fill);
+          encoder.endEncoding();
+          barrierOnQueue(cmdbuf);
         }
-        encoder.endEncoding();
-
-      } else {
-        // Use timestamp from command buffer's `gpuEndTime`
       }
+      readbacks.timestamp->resolve(data->readback_index, timestamp_sample, Profile);
+      timestamp_sample = {};
       data->~SampleTimestampData();
       break;
     }
     default:
       break;
     }
+    if constexpr (Profile)
+      if (profiled)
+        profiled->passes.back().encoding = diag::Now() - profiled->passes.back().encoding;
     encoder_index--;
   }
+  if (diag::events)
+    groups.Enter(cmdbuf, {});
   encoder_head.next = nullptr;
   encoder_last = &encoder_head;
   encoder_count_ = 0;
@@ -1286,6 +1699,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
 
   return readbacks;
 }
+
+template QueryReadbacks ArgumentEncodingContext::flushCommands<false>(WMT::CommandBuffer, uint64_t, uint64_t);
+template QueryReadbacks ArgumentEncodingContext::flushCommands<true>(WMT::CommandBuffer, uint64_t, uint64_t);
 
 DXMT_ENCODER_LIST_OP
 ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *latter) {
@@ -1397,7 +1813,16 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
     auto r1 = reinterpret_cast<RenderEncoderData *>(latter);
     auto r0 = reinterpret_cast<RenderEncoderData *>(former);
 
-    if (isEncoderSignatureMatched(r0, r1) &&
+    // a merged pass runs latter's marshals as it begins, before former's draws, whose writes they may wait for
+    if ((!r1->draw_auto_marshal_tasks.empty() || !r1->gs_arg_marshal_tasks.empty() || !r1->ts_arg_marshal_tasks.empty()) &&
+        r1->fence_wait_vertex.intersectedWith(r0->fence_update_vertex))
+      return DXMT_ENCODER_LIST_OP_SYNCHRONIZE;
+    if (r0->visibility_result_count + r1->visibility_result_count <=
+            VisibilityResultOffsetBumpState::kVisibilitySegments &&
+        r0->scissors + r1->scissors <= WMT::kPassRectangles && r0->viewports + r1->viewports <= WMT::kPassRectangles &&
+        (!r0->use_visibility_result || !r1->use_visibility_result ||
+         r0->visibility_result_window == r1->visibility_result_window) &&
+        isEncoderSignatureMatched(r0, r1) &&
         // can't merge if latter's vertex wait for former's fragment
         !r1->fence_wait_vertex.intersectedWith(r0->fence_update)) {
       for (unsigned i = 0; i < r0->render_target_count; i++) {
@@ -1414,6 +1839,17 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       r1->stencil.clear_stencil = r0->stencil.clear_stencil;
       r1->stencil.store_action = r0->stencil.store_action;
 
+      if (r0->use_visibility_result) {
+        // a render pass begins with visibility disabled (MTLRenderCommandEncoder::setVisibilityResultMode)
+        auto visibility = allocate<wmtcmd_render_setvisibilitymode>();
+        visibility->type = WMTRenderCommandSetVisibilityMode;
+        visibility->mode = WMTVisibilityResultModeDisabled;
+        visibility->offset = 0;
+        visibility->next.set(r1->cmd_head.next.get());
+        r1->cmd_head.next.set(visibility);
+        if ((void *)r1->cmd_tail == &r1->cmd_head)
+          r1->cmd_tail = (wmtcmd_base *)visibility;
+      }
       if ((void *)r0->cmd_tail != &r0->cmd_head) {
         r0->cmd_tail->next.set(r1->cmd_head.next.get());
         r1->cmd_head.next.set(r0->cmd_head.next.get());
@@ -1433,9 +1869,20 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
         r1->ts_arg_marshal_tasks.end(),
         std::back_inserter(r0->ts_arg_marshal_tasks)
       );
+      std::move(
+        r1->draw_auto_marshal_tasks.begin(),
+        r1->draw_auto_marshal_tasks.end(),
+        std::back_inserter(r0->draw_auto_marshal_tasks)
+      );
+      r1->draw_auto_marshal_tasks = std::move(r0->draw_auto_marshal_tasks);
       r1->gs_arg_marshal_tasks = std::move(r0->gs_arg_marshal_tasks);
       r1->ts_arg_marshal_tasks = std::move(r0->ts_arg_marshal_tasks);
+      if (!r1->use_visibility_result)
+        r1->visibility_result_window = r0->visibility_result_window;
       r1->use_visibility_result = r0->use_visibility_result || r1->use_visibility_result;
+      r1->visibility_result_count += r0->visibility_result_count;
+      r1->scissors += r0->scissors;
+      r1->viewports += r0->viewports;
 
       r1->fence_update.merge(r0->fence_update);
       r1->fence_wait.merge(r0->fence_wait);
@@ -1552,7 +1999,7 @@ RenderEncoderColorAttachmentData *
 ArgumentEncodingContext::isClearColorSignatureMatched(ClearEncoderData *clear, RenderEncoderData *render) {
   for (unsigned i = 0; i < render->render_target_count; i++) {
     auto &attachment = render->colors[i];
-    if (attachment.attachment == clear->attachment) {
+    if (attachment.attachment == clear->attachment && attachment.depth_plane == clear->depth_plane) {
       return &attachment;
     }
   }
@@ -1612,16 +2059,7 @@ ArgumentEncodingContext::isResolveSignatureMatched(RenderEncoderData *render, Re
 template <>
 WMT::Reference<WMT::ComputePipelineState>
 SimpleCommandContext<ArgumentEncodingContext>::getComputePipeline(std::string name) {
-  auto lib = ctx.lib.getLibrary();
-  auto func = lib.newFunction(name.c_str());
-  if (!func)
-    return {};
-  WMT::Reference<WMT::Error> err;
-  auto pso = ctx.device_.newComputePipelineState(func, err);
-  if (err) {
-    ERR("Failed to create compute PSO: ", err.description().getUTF8String());
-  }
-  return pso;
+  return ctx.lib.ComputePipeline(name);
 }
 
 template <>
@@ -1634,6 +2072,23 @@ template <>
 void
 SimpleCommandContext<ArgumentEncodingContext>::endPass() {
   ctx.endPass();
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::startBlitPass() {
+  ctx.startBlitPass()->fence_wait.set(ctx.encoder_last->id);
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setComputeBuffer(uint32_t index, WMT::Buffer buffer, uint64_t offset) {
+  ctx.encoder_current->fence_wait.set(ctx.encoder_last->id);
+  auto &cmd = ctx.encodeComputeCommand<wmtcmd_compute_setbuffer>();
+  cmd.type = WMTComputeCommandSetBuffer;
+  cmd.buffer = buffer;
+  cmd.offset = offset;
+  cmd.index = index;
 }
 
 template <>
@@ -1668,9 +2123,10 @@ SimpleCommandContext<ArgumentEncodingContext>::setComputeTexture(
 template <>
 void
 SimpleCommandContext<ArgumentEncodingContext>::setComputeTexelBuffer(
-    uint32_t index, const Rc<Buffer> &buffer, uint64_t viewId, int flags
+    uint32_t index, const Rc<Buffer> &buffer, uint64_t viewId, int flags, uint32_t &first
 ) {
-  auto [dst_, dst_sub_offset] = ctx.access(buffer, viewId, flags);
+  auto [dst_, texel] = ctx.accessView(buffer, viewId, flags, first);
+  first = texel;
   auto &settexbuf = ctx.encodeComputeCommand<wmtcmd_compute_settexture>();
   settexbuf.type = WMTComputeCommandSetTexture;
   settexbuf.texture = dst_.texture;
@@ -1799,7 +2255,18 @@ void
 SimpleCommandContext<ArgumentEncodingContext>::setStencilReference(uint8_t stencil_ref) {
   auto &cmd = ctx.encodeRenderCommand<wmtcmd_render_setstencilref>();
   cmd.type = WMTRenderCommandSetStencilRef;
-  cmd.stencil_ref = stencil_ref;
+  cmd.stencil_ref = cmd.back_stencil_ref = stencil_ref;
+}
+
+template <>
+void
+SimpleCommandContext<ArgumentEncodingContext>::setFragmentTexture(
+    uint32_t index, const Rc<Texture> &texture, uint64_t viewId
+) {
+  auto &settex = ctx.encodeRenderCommand<wmtcmd_render_settexture>();
+  settex.type = WMTRenderCommandSetFragmentTexture;
+  settex.texture = ctx.access<PipelineStage::Pixel>(texture, viewId, ResourceAccess::Read).texture;
+  settex.index = index;
 }
 
 template <>
@@ -1816,18 +2283,6 @@ SimpleCommandContext<ArgumentEncodingContext>::setFragmentBytes(uint32_t index, 
 
 template <>
 void
-SimpleCommandContext<ArgumentEncodingContext>::setFragmentTexture(
-    uint32_t index, const Rc<Texture> &texture, uint64_t viewId
-) {
-  auto &src = ctx.access<PipelineStage::Pixel>(texture, viewId, ResourceAccess::Read);
-  auto &settex = ctx.encodeRenderCommand<wmtcmd_render_settexture>();
-  settex.type = WMTRenderCommandSetFragmentTexture;
-  settex.texture = src.texture;
-  settex.index = index;
-}
-
-template <>
-void
 SimpleCommandContext<ArgumentEncodingContext>::draw(
     WMTPrimitiveType primitive, uint32_t vertex_start, uint32_t vertex_count, int32_t base_instance,
     uint32_t instance_count
@@ -1839,6 +2294,51 @@ SimpleCommandContext<ArgumentEncodingContext>::draw(
   draw.vertex_count = vertex_count;
   draw.base_instance = base_instance;
   draw.instance_count = instance_count;
+}
+
+void
+ArgumentEncodingContext::countComputePipelineStatistics(
+    WMTSize groups, WMT::Buffer arguments, uint64_t arguments_offset
+) {
+  if (pipeline_queries_.empty())
+    return;
+  if (!statistics_page_ || statistics_offset_ + sizeof(PipelineStatisticsDispatch) > statistics_page_->length()) {
+    statistics_page_ = new Buffer(DXMT_PAGE_SIZE, device_);
+    Flags<BufferAllocationFlag> flags;
+#ifdef __i386__
+    flags.set(BufferAllocationFlag::CpuPlaced);
+#endif
+    statistics_page_->rename(statistics_page_->allocate(flags));
+    statistics_offset_ = 0;
+  }
+  auto allocation = statistics_page_->current();
+  retainAllocation(allocation);
+  auto encoder = static_cast<ComputeEncoderData *>(encoder_current);
+  auto size = encoder->threadgroup_size;
+  auto count = reinterpret_cast<PipelineStatisticsDispatch *>(
+      static_cast<char *>(allocation->mappedMemory(0)) + statistics_offset_);
+  auto threads = uint64_t(size.width) * size.height * size.depth;
+  *count = {threads * groups.width * groups.height * groups.depth, threads};
+  for (auto &query : pipeline_queries_)
+    query->dispatch_statistics.emplace_back(statistics_page_, statistics_offset_);
+  auto offset = statistics_offset_;
+  statistics_offset_ += sizeof(PipelineStatisticsDispatch);
+  if (!arguments)
+    return;
+  SimpleCommandContext<ArgumentEncodingContext> ctx{*this};
+  if (!dispatch_statistics_pso_)
+    dispatch_statistics_pso_ = ctx.getComputePipeline("pipeline_statistics_dispatch");
+  if (!dispatch_statistics_pso_)
+    abort();
+  ctx.setComputePSO(dispatch_statistics_pso_, {1, 1, 1});
+  ctx.setComputeBuffer(kCustomBufferArgumentIndex0, allocation->buffer(), offset);
+  ctx.setComputeBuffer(kCustomBufferArgumentIndex1, arguments, arguments_offset);
+  ctx.dispatch({1, 1, 1});
+  // the arguments may be overwritten by the application dispatch (D3D11.3 20.4.7).
+  auto &barrier = encodeComputeCommand<wmtcmd_compute_memory_barrier>();
+  barrier.type = WMTComputeCommandMemoryBarrier;
+  barrier.scope = WMTBarrierScopeBuffers;
+  ctx.setComputePSO(encoder->last_pso, size);
 }
 
 } // namespace dxmt

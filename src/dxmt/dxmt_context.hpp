@@ -25,7 +25,7 @@
 #include "dxmt_command_clear.hpp"
 #include "dxmt_counter.hpp"
 #include "dxmt_deptrack.hpp"
-#include "dxmt_occlusion_query.hpp"
+#include "dxmt_query.hpp"
 #include "dxmt_presenter.hpp"
 #include "dxmt_residency.hpp"
 #include "dxmt_sampler.hpp"
@@ -34,7 +34,8 @@
 #include "dxmt_texture.hpp"
 #include "log/log.hpp"
 #include "rc/util_rc_ptr.hpp"
-#include "airconv_public.h"
+#include "../airconv/airconv_public.h"
+#include <atomic>
 #include <cassert>
 
 #define DXMT_IMPLEMENT_ME __builtin_unreachable();
@@ -77,9 +78,11 @@ struct VertexBufferBinding {
   unsigned stride;
 };
 
+// the constants of the buffer a stage sees: `length` bytes from `offset`
 struct ConstantBufferBinding {
   Rc<Buffer> buffer;
   unsigned offset;
+  unsigned length;
 };
 
 struct SamplerBinding {
@@ -95,16 +98,17 @@ struct ResourceViewBinding {
 
 struct UnorderedAccessViewBinding {
   uint64_t viewId;
+  uint64_t w_range;
   Rc<Buffer> buffer;
   Rc<Texture> texture;
   Rc<Counter> counter;
   BufferSlice slice;
 };
 
+// a stream output target and its filled size, which the next draw appends at
 struct StreamOutputBinding {
   Rc<Buffer> buffer;
-  uint64_t offset;
-  Rc<Buffer> counter;
+  Rc<Counter> filled;
 };
 
 enum class EncoderType {
@@ -129,6 +133,8 @@ struct EncoderData {
   FenceSet fence_wait;
   FenceSet fence_update;
   EncoderBarrierState barrier_state;
+  // the path of the application's events the pass began in, each name ended by diag::kEventEnd (diag::events)
+  const char *event_path = nullptr;
 };
 
 struct GSDispatchArgumentsMarshal {
@@ -137,6 +143,28 @@ struct GSDispatchArgumentsMarshal {
   uint64_t max_object_threadgroups;
   WMT::Buffer dispatch_arguments_buffer;
   uint64_t dispatch_arguments_va;
+  uint32_t vertex_count_per_warp;
+  // the Metal draws the draw is encoded as, and where each one's first object threadgroup and instance go, in the
+  // dispatch arguments' buffer
+  uint32_t parts;
+  uint64_t origins_va;
+  // an indirect draw's stream output: its targets, whose scratch the marshal gives it, and its invocations per object
+  // threadgroup (see DXMTGSDispatchMarshal)
+  WMT::Buffer so_targets_buffer;
+  uint64_t so_targets_va;
+  uint32_t so_invocations;
+};
+
+// see DXMTDrawAutoMarshal
+struct DrawAutoArgumentsMarshal {
+  WMT::Buffer filled_buffer;
+  uint64_t filled_va;
+  WMT::Buffer draw_arguments_buffer;
+  uint64_t draw_arguments_va;
+  WMT::Buffer warps_buffer;
+  uint64_t warps_va;
+  uint32_t offset;
+  uint32_t stride;
   uint32_t vertex_count_per_warp;
 };
 
@@ -148,6 +176,7 @@ struct TSDispatchArgumentsMarshal {
   uint64_t dispatch_arguments_va;
   uint32_t control_point_count;
   uint32_t patch_per_group;
+  uint32_t parts;
 };
 
 struct RenderEncoderColorAttachmentData {
@@ -189,9 +218,11 @@ struct RenderEncoderData : EncoderData {
   RenderEncoderDepthAttachmentData depth;
   RenderEncoderStencilAttachmentData stencil;
   uint8_t default_raster_sample_count;
+  uint8_t center_samples = 0;
   uint16_t render_target_array_length;
   uint32_t render_target_height;
   uint32_t render_target_width;
+  std::vector<DrawAutoArgumentsMarshal> draw_auto_marshal_tasks;
   std::vector<GSDispatchArgumentsMarshal> gs_arg_marshal_tasks;
   std::vector<TSDispatchArgumentsMarshal> ts_arg_marshal_tasks;
   wmtcmd_render_nop cmd_head;
@@ -206,11 +237,26 @@ struct RenderEncoderData : EncoderData {
   uint8_t dsv_readonly_flags;
   uint8_t render_target_count;
   bool use_visibility_result = 0;
+  size_t visibility_result_window = 0;
+  uint64_t visibility_result_count = 0;
+  // of WMT::kPassRectangles
+  uint32_t scissors = 0, viewports = 0;
   bool use_tessellation = 0;
   bool use_geometry = 0;
   bool use_emulated_so = 0;
   TileBarrierPSOKey tile_barrier_pso_key = {};
   WMT::RenderPipelineState last_pso = {};
+  bool statistics_separate_rasterization = false;
+  // the bound geometry pipeline's stream output counting pass and geometry instances, and the last draw's targets
+  WMT::RenderPipelineState so_count_pso = {};
+  uint32_t so_geometry_instances = 1;
+  // the bound geometry pipeline's mesh threadgroups per object threadgroup and primitive (MeshInstances)
+  uint32_t geometry_mesh_instances = 0;
+  WMT::Buffer so_targets = {};
+  // the scratch area the encoder's indirect draws with stream output share: its buffer, GPU address and size
+  WMT::Buffer so_scratch = {};
+  uint64_t so_scratch_va = 0;
+  uint64_t so_scratch_size = 0;
 };
 
 struct ComputeEncoderData : EncoderData {
@@ -219,6 +265,8 @@ struct ComputeEncoderData : EncoderData {
   WMT::Buffer allocated_argbuf;
   uint64_t allocated_argbuf_offset;
   void *allocated_argbuf_mapping;
+  WMT::ComputePipelineState last_pso = {};
+  WMTSize threadgroup_size = {};
 };
 
 struct BlitEncoderData : EncoderData {
@@ -234,6 +282,7 @@ struct ClearEncoderData : EncoderData {
   TextureViewRef attachment;
   unsigned clear_dsv;
   unsigned array_length;
+  unsigned depth_plane = 0;
   unsigned width;
   unsigned height;
 
@@ -252,7 +301,7 @@ struct PresentData : EncoderData {
   WMT::Reference<WMT::Texture> backbuffer;
   Rc<Presenter> presenter;
   double after;
-  DXMTPresentMetadata metadata;
+  Presenter::PresentState state;
 };
 
 struct SpatialUpscaleData : EncoderData {
@@ -336,6 +385,9 @@ struct AllocatedTempBufferSlice {
 class ArgumentEncodingContext {
   friend struct SimpleCommandContext<ArgumentEncodingContext>;
 private:
+  // before the commands below, which make their pipelines from it as they are constructed
+  WMT::Device device_;
+  CommandQueue &queue_;
   template <PipelineStage stage> void track(GenericAccessTracker &tracker, int flags);
 
 public:
@@ -359,12 +411,12 @@ public:
   }
 
   template<PipelineStage stage = PipelineStage::Compute>
-  std::pair<BufferView const &, uint32_t>
-  access(Rc<Buffer> const &buffer, uint64_t viewId, int flags) {
+  std::pair<BufferView &, uint64_t>
+  accessView(Rc<Buffer> const &buffer, uint64_t viewId, int flags, uint64_t first) {
     auto allocation = buffer->current();
     trackBuffer<stage>(allocation, flags);
-    auto &view = buffer->view_(viewId, allocation);
-    return {view, allocation->currentSuballocationOffset(view.suballocation_texel)};
+    auto texel = first + allocation->currentSuballocationOffset(buffer->view_(viewId, allocation).suballocation_texel);
+    return buffer->view_(viewId, allocation, texel);
   }
 
   template<PipelineStage stage = PipelineStage::Compute>
@@ -427,19 +479,21 @@ public:
 
   template <PipelineStage stage>
   void
-  bindConstantBuffer(unsigned slot, unsigned offset, Rc<Buffer> &&buffer) {
+  bindConstantBuffer(unsigned slot, unsigned offset, unsigned length, Rc<Buffer> &&buffer) {
     unsigned idx = slot + 14 * unsigned(stage);
     auto &entry = cbuf_[idx];
     entry.offset = offset;
+    entry.length = length;
     entry.buffer = std::move(buffer);
   }
 
   template <PipelineStage stage>
   void
-  bindConstantBufferOffset(unsigned slot, unsigned offset) {
+  bindConstantBufferOffset(unsigned slot, unsigned offset, unsigned length) {
     unsigned idx = slot + 14 * unsigned(stage);
     auto &entry = cbuf_[idx];
     entry.offset = offset;
+    entry.length = length;
   }
 
   template <PipelineStage stage>
@@ -474,18 +528,44 @@ public:
   template <PipelineStage stage>
   void bindOutputBuffer(unsigned slot, Rc<Buffer> &&buffer, uint64_t viewId, Rc<Counter> &&counter, BufferSlice slice);
 
-  template <PipelineStage stage> void bindOutputTexture(unsigned slot, Rc<Texture> &&texture, uint64_t viewId);
+  template <PipelineStage stage>
+  void bindOutputTexture(unsigned slot, Rc<Texture> &&texture, uint64_t viewId, uint64_t w_range);
 
-  void bindStreamOutputBuffer(unsigned slot, unsigned offset, Rc<Buffer> &&buffer, Rc<Buffer> &&counter) {
-    auto &entry = so_[slot];
-    entry.buffer = std::move(buffer);
-    entry.offset = offset;
-    entry.counter = std::move(counter);
+  void bindStreamOutputBuffer(unsigned slot, Rc<Buffer> &&buffer, Rc<Counter> &&filled) {
+    so_[slot] = {std::move(buffer), std::move(filled)};
   }
-  
-  void bindStreamOutputBufferOffset(unsigned slot, unsigned offset) {
-    auto &entry = so_[slot];
-    entry.offset = offset;
+
+  // a geometry pipeline's draw with stream output (SM50_STREAM_OUTPUT_TARGETS): `draw` encodes it, and it runs twice,
+  // once counting each geometry invocation's primitives (at most `invocations` per object threadgroup) and, after a
+  // barrier, again writing them. no `warps` is an indirect draw's, whose object threadgroups and scratch the GS
+  // dispatch marshal sets. returns the targets' GPU address
+  template <typename Draw>
+  uint64_t
+  encodeStreamOutputDraw(uint32_t warps, uint32_t instances, uint32_t invocations, Draw &&draw) {
+    auto encoder = currentRenderEncoder();
+    auto [offset, address] = encodeStreamOutputTargets(warps, instances, invocations);
+    for (auto type : {WMTRenderCommandSetObjectBuffer, WMTRenderCommandSetMeshBuffer}) {
+      auto &cmd = encodeRenderCommand<wmtcmd_render_setbuffer>();
+      cmd.type = type;
+      cmd.buffer = encoder->so_targets;
+      cmd.offset = offset;
+      cmd.index = SM50_BINDING_INDEX_STREAM_OUTPUT0;
+    }
+    auto pass = [&](WMT::RenderPipelineState pso, WMTRenderStages written_before) {
+      auto &set = encodeRenderCommand<wmtcmd_render_setpso>();
+      set.type = WMTRenderCommandSetPSO;
+      set.pso = pso;
+      draw();
+      auto &barrier = encodeRenderCommand<wmtcmd_render_memory_barrier>();
+      barrier.type = WMTRenderCommandMemoryBarrier;
+      barrier.scope = WMTBarrierScopeBuffers;
+      barrier.stages_after = WMTRenderStageMesh;
+      barrier.stages_before = written_before;
+    };
+    pass(encoder->so_count_pso, WMTRenderStagePreRaster);
+    // the next draw may read what this one wrote, as vertices or filled sizes
+    pass(encoder->last_pso, WMTRenderStages(WMTRenderStagePreRaster | WMTRenderStageFragment));
+    return address;
   }
 
   void
@@ -536,7 +616,18 @@ public:
       const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments,
       uint64_t argument_buffer_offset
   );
-  template <PipelineKind kind> void encodeStreamOutputBuffers(uint64_t offset);
+  // the targets' offset in the encoder's `so_targets`, and their GPU address
+  // D3D9 ProcessVertices: the vertex stage writes to slot 0 (SM50_SHADER_EMULATE_VERTEX_STREAM_OUTPUT)
+  void encodeVertexStreamOutput(uint64_t offset);
+
+  std::pair<uint64_t, uint64_t> encodeStreamOutputTargets(uint32_t warps, uint32_t instances, uint32_t invocations);
+
+  // per stream, the primitives stream output has written and those it would have with room (D3D11_QUERY_DATA_SO_STATISTICS),
+  // counted on by every draw; a query is the difference between two copies of it
+  const Rc<Buffer> &
+  streamOutputStatistics() {
+    return so_statistics_;
+  }
 
   void retainAllocation(Allocation* allocation);
 
@@ -588,6 +679,13 @@ public:
   }
   template <PipelineStage stage, PipelineKind kind>
   void
+  makeResident(BufferView &view, bool read = true, bool write = false) {
+    DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, read, write);
+    if (CheckResourceResidency(view.residency, currentEncoder()->id, requested))
+      makeResident<stage, kind>(view.texture, requested);
+  }
+  template <PipelineStage stage, PipelineKind kind>
+  void
   makeResident(Texture *texture, uint64_t viewId, bool read = true, bool write = false) {
     auto allocation = texture->current();
     uint64_t encoder_id = currentEncoder()->id;
@@ -610,30 +708,41 @@ public:
     return *storage;
   }
 
+  std::atomic_uint64_t indirect_geometry_bound{1};
+  uint64_t indirectGeometryBound(uint32_t invocations);
+
   void
   encodeGSDispatchArgumentsMarshal(
       WMT::Buffer draw_args, uint64_t draw_args_resource_id, uint32_t draw_args_offset, uint32_t vertex_count_per_warp,
-      WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset, uint64_t max_object_threadgroups
+      WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset, uint64_t max_object_threadgroups,
+      uint32_t parts, uint64_t origins_va, uint64_t so_targets_va = 0, uint32_t so_invocations = 0
   ) {
     assert(encoder_current->type == EncoderType::Render);
     auto data = static_cast<RenderEncoderData *>(encoder_current);
     data->gs_arg_marshal_tasks.push_back(
         {draw_args, draw_args_resource_id + draw_args_offset, max_object_threadgroups, dispatch_args,
-         dispatch_args_resource_id + write_offset, vertex_count_per_warp}
+         dispatch_args_resource_id + write_offset, vertex_count_per_warp, parts, origins_va,
+         so_targets_va ? data->so_targets : WMT::Buffer{}, so_targets_va, so_invocations}
     );
+  }
+
+  void
+  encodeDrawAutoArgumentsMarshal(DrawAutoArgumentsMarshal &&task) {
+    assert(encoder_current->type == EncoderType::Render);
+    static_cast<RenderEncoderData *>(encoder_current)->draw_auto_marshal_tasks.push_back(std::move(task));
   }
 
   void
   encodeTSDispatchArgumentsMarshal(
       WMT::Buffer draw_args, uint64_t draw_args_resource_id, uint32_t draw_args_offset, uint32_t control_point_count,
-      uint32_t patch_per_group, WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset,
-      uint64_t max_object_threadgroups
+      uint32_t patch_per_group, uint32_t parts, WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id,
+      uint32_t write_offset, uint64_t max_object_threadgroups
   ) {
     assert(encoder_current->type == EncoderType::Render);
     auto data = static_cast<RenderEncoderData *>(encoder_current);
     data->ts_arg_marshal_tasks.push_back(
         {draw_args, draw_args_resource_id + draw_args_offset, max_object_threadgroups, dispatch_args,
-         dispatch_args_resource_id + write_offset, control_point_count, patch_per_group}
+         dispatch_args_resource_id + write_offset, control_point_count, patch_per_group, parts}
     );
   }
 
@@ -664,12 +773,23 @@ public:
   template <typename T>
   T *
   allocate() {
-    return (new (allocate_cpu_heap(sizeof(T), alignof(T))) T());
+    auto data = new (allocate_cpu_heap(sizeof(T), alignof(T))) T();
+    if constexpr (std::is_base_of_v<EncoderData, T>)
+      if (!events.empty())
+        data->event_path = strcpy(static_cast<char *>(allocate_cpu_heap(events.size() + 1, 1)), events.c_str());
+    return data;
   };
 
-  void present(Rc<Texture> &texture, Rc<Presenter> &presenter, double after, DXMTPresentMetadata metadata);
+  // the path of the application's open events, which the passes begun in them carry; it outlives a chunk, so each
+  // pass carries a copy in the chunk's memory
+  std::string events;
 
-  void upscale(Rc<Texture> &texture, Rc<Texture> &upscaled, Rc<SpatialScaler> &scaler);
+  void present(
+      Rc<Texture> &texture, TextureViewKey view, Rc<Presenter> &presenter, double after, Presenter::PresentState state
+  );
+  void copyBufferRenderTarget(const Rc<Texture> &texture, bool load);
+
+  void upscale(Rc<Texture> &texture, TextureViewKey view, Rc<Texture> &upscaled, Rc<SpatialScaler> &scaler);
 
   void upscaleTemporal(
       Rc<Texture> &input, Rc<Texture> &output, Rc<Texture> &depth, Rc<Texture> &motion_vector, TextureViewKey mvViewId,
@@ -685,7 +805,9 @@ public:
     return encoder_id_++;
   };
 
-  void clearColor(Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, WMTClearColor color);
+  void clearColor(
+      Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, unsigned depthPlane, WMTClearColor color
+  );
   void clearDepthStencil(
       Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, unsigned flag, float depth, uint8_t stencil
   );
@@ -771,6 +893,7 @@ public:
   
   AllocatedTempBufferSlice allocateTempBuffer1(size_t size, size_t alignment);
 
+  template <bool Profile = false>
   QueryReadbacks flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId, uint64_t event_seq_id);
 
   uint64_t currentSeqId() {return seq_id_;}
@@ -785,6 +908,15 @@ public:
   void bumpVisibilityResultOffset();
   void beginVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
   void endVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
+  bool pipelineStatisticsActive() const { return !pipeline_queries_.empty(); }
+  void countPipelineStatistics(PipelineStatisticsDraw draw);
+  void countComputePipelineStatistics(WMTSize groups, WMT::Buffer arguments = {}, uint64_t arguments_offset = 0);
+  void countPipelineStatistics(uint64_t vertices, uint64_t instances, std::pair<uint32_t, uint32_t> topology,
+                               uint32_t index_stride = 0, uint64_t index_offset = 0, uint32_t start = 0,
+                               uint64_t arguments = 0);
+  // while the region of a deferred command list whose predicate skips its operations is replayed
+  bool skips_predicated = false;
+
   void
   pushDeferredVisibilityQueries(Rc<VisibilityResultQuery> *list) {
     deferred_visibility_query_stack_.push_back(list);
@@ -800,6 +932,7 @@ public:
     return deferred_visibility_query_stack_.back()[query_id];
   }
 
+  Rc<TimestampQuery> *deferred_timestamp_queries = nullptr;
   void sampleTimestamp(Rc<TimestampQuery> &&query);
 
   void barrierOnQueue(WMT::CommandBuffer cmdbuf) {
@@ -816,11 +949,6 @@ public:
   currentFrameStatistics();
 
   void
-  setCompatibilityFlag(FeatureCompatibility flag) {
-    currentFrameStatistics().compatibility_flags.set(flag);
-  }
-
-  void
   setIntrapassBarrierControl(uint64_t control_bits) {
     intrapass_barrier_control_bits_ = control_bits;
   }
@@ -830,16 +958,13 @@ public:
 
   uint32_t tess_num_output_control_point_element;
   uint32_t tess_threads_per_patch;
+  // the object threadgroups that share a patch group's mesh threadgroups (tessellation_parts)
+  uint32_t tess_parts;
+  // the arguments of the last DrawAuto, which a second draw of it reads again
+  AllocatedTempBufferSlice draw_auto_arguments;
 
-private:
-  // Declared ahead of the command helpers below, which build their pipelines through this context
-  // in their constructors (ClearUAV reaches device_ through getComputePipeline): members start in
-  // declaration order, so declared after them it was still uninitialised memory there, and a game
-  // could die at start in newComputePipelineStateWithDescriptor on a garbage device.
-  WMT::Device device_;
-
-public:
   InternalCommandLibrary &lib;
+  RGB32Copy<ArgumentEncodingContext> rgb32_copy_cmd{*this};
   EmulatedCommandContext emulated_cmd;
   ClearRTV<ArgumentEncodingContext> clear_rt_cmd;
   BlitColor<ArgumentEncodingContext> blit_color_cmd;
@@ -874,6 +999,14 @@ private:
   std::array<UnorderedAccessViewBinding, kUAVBindings> cs_uav_;
 
   std::array<StreamOutputBinding, kStreamOutputSlots> so_;
+  Rc<Buffer> so_statistics_;
+  // the scratch area render encoders' indirect draws with stream output share, one encoder after another, and the most
+  // one needed that it did not have, which the GS dispatch marshal leaves for a later encoder to grow it by
+  Rc<Buffer> so_scratch_;
+  uint64_t so_scratch_budget_;
+  WMT::Reference<WMT::Buffer> so_scratch_overflow_;
+  uint64_t so_scratch_overflow_va_;
+  uint64_t *so_scratch_overflow_host_;
 
   WMT::Reference<WMT::SamplerState> dummy_sampler_;
   WMTSamplerInfo dummy_sampler_info_;
@@ -920,7 +1053,12 @@ private:
   VisibilityResultOffsetBumpState vro_state_;
   std::vector<Rc<VisibilityResultQuery>> pending_queries_;
   unsigned active_visibility_query_count_ = 0;
-  Flags<FeatureCompatibility> compatibility_flag_;
+  std::vector<Rc<VisibilityResultQuery>> pipeline_queries_;
+  Rc<Buffer> statistics_page_;
+  uint32_t statistics_offset_ = 0;
+  WMT::Reference<WMT::ComputePipelineState> dispatch_statistics_pso_;
+  uint64_t visibility_result_size_;
+  std::vector<uint64_t> visibility_result_offsets_;
   TimestampQueryState timestamp_state_;
   std::vector<Rc<VisibilityResultQuery> *> deferred_visibility_query_stack_;
 
@@ -928,8 +1066,6 @@ private:
   uint64_t barrier_index_ = 0;
 
   uint64_t intrapass_barrier_control_bits_ = 0;
-
-  CommandQueue& queue_;
 };
 
 template <>
@@ -960,22 +1096,24 @@ ArgumentEncodingContext::bindOutputBuffer<PipelineStage::Pixel>(
 template <>
 inline void
 ArgumentEncodingContext::bindOutputTexture<PipelineStage::Compute>(
-    unsigned slot, Rc<Texture> &&texture, uint64_t viewId
+    unsigned slot, Rc<Texture> &&texture, uint64_t viewId, uint64_t w_range
 ) {
   auto &entry = cs_uav_[slot];
   entry.buffer = {};
   entry.texture = std::move(texture);
   entry.viewId = viewId;
+  entry.w_range = w_range;
 }
 template <>
 inline void
 ArgumentEncodingContext::bindOutputTexture<PipelineStage::Pixel>(
-    unsigned slot, Rc<Texture> &&texture, uint64_t viewId
+    unsigned slot, Rc<Texture> &&texture, uint64_t viewId, uint64_t w_range
 ) {
   auto &entry = om_uav_[slot];
   entry.buffer = {};
   entry.texture = std::move(texture);
   entry.viewId = viewId;
+  entry.w_range = w_range;
 }
 
 template <PipelineStage stage>

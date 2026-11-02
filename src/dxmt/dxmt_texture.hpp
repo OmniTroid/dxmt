@@ -22,6 +22,7 @@
 #include "dxmt_residency.hpp"
 #include "dxmt_allocation.hpp"
 #include "rc/util_rc_ptr.hpp"
+#include "dxmt_buffer.hpp"
 #include "thread.hpp"
 #include "util_flags.hpp"
 #include "util_svector.hpp"
@@ -176,6 +177,7 @@ private:
 class Texture {
 
 public:
+  uint32_t refCount() const { return refcount_.load(); }
   void incRef();
   void decRef();
 
@@ -185,6 +187,8 @@ public:
   current() {
     return current_.ptr();
   }
+
+  const WMTTextureInfo &info() const { return info_; }
 
   WMTTextureType
   textureType() const {
@@ -211,6 +215,11 @@ public:
   WMTTextureUsage
   usage() const {
     return info_.usage;
+  }
+
+  bool
+  isSparse() const {
+    return info_.placement_sparse_page_size != 0;
   }
 
   unsigned
@@ -274,10 +283,24 @@ public:
   }
 
   TextureViewKey fullView;
+  Rc<Texture> chroma;
+  Rc<Buffer> render_buffer;
+  uint32_t render_buffer_offset = 0;
+
+  Texture *
+  plane(unsigned index) {
+    return index && chroma ? chroma.ptr() : this;
+  }
+  // the most detailed level a shader samples (ID3D11DeviceContext::SetResourceMinLOD), as of the commands encoded
+  float minLOD = 0;
+  // its samples all lie at the pixel center (D3D11_CENTER_MULTISAMPLE_PATTERN, D3D11.3 19.2.4.1)
+  bool centered = false;
 
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags);
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags, WMT::Heap heap, uint64_t heap_offset = 0);
   Rc<TextureAllocation> import(mach_port_t mach_port);
+  // an allocation of a Metal texture another API made, of this texture's description (D3D11On12's wrapped resources)
+  Rc<TextureAllocation> wrap(WMT::Reference<WMT::Texture> &&texture, const WMTTextureInfo &info, Flags<TextureAllocationFlag> flags);
 
   TextureView &view(TextureViewKey key);
   TextureView &view(TextureViewKey key, TextureAllocation *allocation);
@@ -286,6 +309,7 @@ public:
   TextureViewKey checkViewUseFormat(TextureViewKey key, WMTPixelFormat format);
 
   Rc<TextureAllocation> rename(Rc<TextureAllocation> &&newAllocation);
+  Rc<TextureAllocation> rename(Rc<TextureAllocation> &&newAllocation, std::vector<TextureViewRef> &retiredViews);
 
   Texture(const WMTTextureInfo &info, WMT::Device device);
 

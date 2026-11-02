@@ -589,11 +589,11 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const flo
         Rc<Buffer> buffer;
         UINT offset = 0;
         UploadToRing(ff_constants_, ff_constants_offset_, FFConstants, FFConstantCount * 16, 256, buffer, offset);
-        Emit([buffer = std::move(buffer), offset, Pixel](ArgumentEncodingContext &enc) mutable {
+        Emit([buffer = std::move(buffer), offset, Pixel, FFConstantCount](ArgumentEncodingContext &enc) mutable {
           if (Pixel)
-            enc.bindConstantBuffer<PipelineStage::Pixel>(0, offset, std::move(buffer));
+            enc.bindConstantBuffer<PipelineStage::Pixel>(0, offset, FFConstantCount * 16, std::move(buffer));
           else
-            enc.bindConstantBuffer<PipelineStage::Vertex>(0, offset, std::move(buffer));
+            enc.bindConstantBuffer<PipelineStage::Vertex>(0, offset, FFConstantCount * 16, std::move(buffer));
         });
         continue;
       }
@@ -616,11 +616,11 @@ MTLD3D9Device::BindStageResources(bool Pixel, MTLD3D9ShaderCode *Code, const flo
         const_dirty_[stage] &= ~(1u << slot);
       }
       storage->MarkUsed(queue().CurrentSeqId());
-      Emit([buffer = storage->buffer(), slot, Pixel](ArgumentEncodingContext &enc) mutable {
+      Emit([buffer = storage->buffer(), length = storage->length(), slot, Pixel](ArgumentEncodingContext &enc) mutable {
         if (Pixel)
-          enc.bindConstantBuffer<PipelineStage::Pixel>(slot, 0, std::move(buffer));
+          enc.bindConstantBuffer<PipelineStage::Pixel>(slot, 0, length, std::move(buffer));
         else
-          enc.bindConstantBuffer<PipelineStage::Vertex>(slot, 0, std::move(buffer));
+          enc.bindConstantBuffer<PipelineStage::Vertex>(slot, 0, length, std::move(buffer));
       });
     }
     auto offset = PreAllocateArgumentBuffer(refl.NumConstantBuffers << 3, 32);
@@ -1048,10 +1048,10 @@ MTLD3D9Device::PrepareDraw(WMTPrimitiveTopologyClass Topology, bool Instanced, u
   BindStageResources(false, vs_code, vertex_shader ? nullptr : ff_vs_constants.data(), ff::VSConstantCount);
   if (so_target_.ptr()) {
     Emit([buffer = so_target_](ArgumentEncodingContext &enc) mutable {
-      enc.bindStreamOutputBuffer(0, 0, std::move(buffer), {});
+      enc.bindStreamOutputBuffer(0, std::move(buffer), {});
     });
     auto offset = PreAllocateArgumentBuffer(16 * kStreamOutputSlots, 32);
-    Emit([offset](ArgumentEncodingContext &enc) { enc.encodeStreamOutputBuffers<PipelineKind::Ordinary>(offset); });
+    Emit([offset](ArgumentEncodingContext &enc) { enc.encodeVertexStreamOutput(offset); });
     return true;
   }
   BindStageResources(true, ps_code, pixel_shader_ ? nullptr : ff_ps_constants.data(), ff::PSConstantCount);
