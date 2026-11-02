@@ -1,0 +1,20 @@
+[project]
+name = "dxmt-tools"
+version = "0"
+description = "DXMT's test runner and benchmarks"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+dxmt-run = "run:main"
+dxmt-bench = "bench:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+dev-mode-dirs = ["tests", "tests/perf"]
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true

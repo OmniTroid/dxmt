@@ -1,5 +1,7 @@
 # Testing
 
+`uv run dxmt-run` and `uv run dxmt-bench` run `tests/run.py` and `tests/perf/bench.py`.
+
 This document describes how DXMT's tests are built, written, run and reported. The rules for when a change needs a
 test are in [CODE.md 6.1](CODE.md#6-tests), and what a pull request reports is in [CONTRIBUTING.md
 3](../CONTRIBUTING.md#3-showing-that-it-works). The suite is being reworked, so the commands, options and formats it
