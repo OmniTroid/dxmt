@@ -25,6 +25,7 @@
 #include "wsi_monitor.hpp"
 #include "wsi_window.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace dxmt {
@@ -571,8 +572,17 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9SwapChain::GetRasterStatus(D3DRASTER_STATUS *pRasterStatus) {
   if (!pRasterStatus)
     return D3DERR_INVALIDCALL;
-  pRasterStatus->InVBlank = FALSE;
-  pRasterStatus->ScanLine = 0;
+  // Games poll this to wait for the vertical blank, so it has to come. Nothing tells us where the display's beam is:
+  // this is where the time and the refresh rate put it, with a blank of 5% of the lines, as is usual
+  LARGE_INTEGER now, frequency;
+  QueryPerformanceCounter(&now);
+  QueryPerformanceFrequency(&frequency);
+  const double refresh = refresh_rate_ > 0 ? refresh_rate_ : 60;
+  const double seconds = (double)now.QuadPart / (double)frequency.QuadPart;
+  const double position = seconds * refresh - std::floor(seconds * refresh);
+  const double active = 0.95;
+  pRasterStatus->InVBlank = position >= active;
+  pRasterStatus->ScanLine = pRasterStatus->InVBlank ? 0 : (UINT)(position / active * params_.BackBufferHeight);
   return D3D_OK;
 }
 
