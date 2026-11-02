@@ -22,7 +22,10 @@ airconv_src = files([
  'nt/dxbc_converter_base.cpp',
  'nt/dxbc_io_helper.cpp',
  'transforms/guard_out_of_bounds.cpp',
+ 'transforms/hoist_loads.cpp',
  'transforms/lower_16bit_texread.cpp',
+ 'transforms/merge_sample_branches.cpp',
+ 'transforms/merge_minmax_branches.cpp',
  'transforms/simdgroup_implicit_membarrier.cpp',
 ])
 

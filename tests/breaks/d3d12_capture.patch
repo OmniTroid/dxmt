@@ -1,0 +1,13 @@
+# a capture that never stops.
+diff --git a/src/dxmt/dxmt_capture.cpp b/src/dxmt/dxmt_capture.cpp
+--- a/src/dxmt/dxmt_capture.cpp
++++ b/src/dxmt/dxmt_capture.cpp
+@@ -56,7 +56,7 @@
+   }
+   case NextAction::StopCapture:
+     // Metal's stop waits for the device's work, which can wait for what the calling thread submits next
+-    stopping_ = dxmt::thread([] { WMT::CaptureManager::sharedCaptureManager().stopCapture(); });
++    (void)0;
+     break;
+   case NextAction::Nothing:
+     if (shouldCaptureNextFrame())

@@ -344,6 +344,7 @@ PipelineRuns(Head head, Name name) {
       case WMTRenderCommandDrawMeshThreadgroups:
       case WMTRenderCommandDrawMeshThreadgroupsIndirect:
       case WMTRenderCommandDXMTGeometryDraw:
+      case WMTRenderCommandDXMTMeshDraw:
       case WMTRenderCommandDXMTGeometryDrawIndexed:
       case WMTRenderCommandDXMTGeometryDrawIndirect:
       case WMTRenderCommandDXMTGeometryDrawIndexedIndirect:
