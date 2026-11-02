@@ -402,11 +402,6 @@ struct unixcall_cache_set {
   obj_handle_t value_data;
 };
 
-struct unixcall_setmetalcachepath {
-  struct WMTConstMemoryPointer path;
-  uint64_t ret_success;
-};
-
 struct unixcall_bootstrap {
   char name[128];
   uint32_t mach_port;

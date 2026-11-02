@@ -21,7 +21,6 @@
 #include "dxgi_interfaces.h"
 #include "dxgi_object.hpp"
 #include "dxgi_output.hpp"
-#include "dxmt_hud_state.hpp"
 #include "dxmt_presenter.hpp"
 #include "dxmt_format.hpp"
 #include "dxgi_swapchain_settings.hpp"
@@ -138,7 +137,6 @@ class MTLD3D12SwapChain final : public MTLDXGISubObject<IMTLDXGISwapChain, MTLD3
   uint32_t frame_latency;
   DXGI_COLOR_SPACE_TYPE colorspace_ = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
   float scale_factor = 1.0;
-  HUDState hud;
   double init_refresh_rate_ = DBL_MAX;
   int preferred_max_frame_rate = 0;
   ModeSetGuard modeset_guard_;
@@ -176,7 +174,6 @@ public:
       hWnd(hWnd),
       monitor_(wsi::getWindowMonitor(hWnd)),
       desc_(*pDesc),
-      hud(WMT::DeveloperHUDProperties::instance()),
       lib(pDevice->GetMTLDevice()) {
 
     if (!dump_frames.empty()) {
@@ -217,8 +214,6 @@ public:
         current_mode.refreshRate.numerator != 0) {
       init_refresh_rate_ = (double)current_mode.refreshRate.numerator / (double)current_mode.refreshRate.denominator;
     }
-
-    hud.initialize(GetVersionDescriptionText(12, device_->GetFeatureLevel()));
 
     backbuffer_desc_ = D3D12_RESOURCE_DESC{
         .Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,

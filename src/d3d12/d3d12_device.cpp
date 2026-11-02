@@ -468,7 +468,7 @@ public:
     return adapter_->GetMTLDevice();
   };
 
-  // the highest level the device supports, as D3D12_FEATURE_FEATURE_LEVELS answers it (the HUD shows it)
+  // the highest level the device supports, as D3D12_FEATURE_FEATURE_LEVELS answers it
   D3D_FEATURE_LEVEL
   GetFeatureLevel() {
     static const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0,
@@ -750,11 +750,7 @@ public:
         return FAIL(E_INVALIDARG);
       auto *out = reinterpret_cast<D3D12_FEATURE_DATA_D3D12_OPTIONS *>(pFeatureData);
       out->DoublePrecisionFloatShaderOps = FALSE;
-#ifdef DXMT_NO_PRIVATE_API
-      out->OutputMergerLogicOp = FALSE;
-#else
       out->OutputMergerLogicOp = TRUE;
-#endif
       out->MinPrecisionSupport = D3D12_SHADER_MIN_PRECISION_SUPPORT_16_BIT;
       // placement sparse resources carry tier 3: a reserved 3D texture is a placement sparse 3D texture, whose tiles
       // GetResourceTiling reports, Metal's slabs a texel deep rather than D3D11.3's standard 3D shapes (5.9.4)

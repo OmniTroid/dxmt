@@ -597,45 +597,6 @@ _MTLCommandEncoder_endEncoding(void *obj) {
   return STATUS_SUCCESS;
 }
 
-#ifndef DXMT_NO_PRIVATE_API
-
-typedef NS_ENUM(NSUInteger, MTLLogicOperation) {
-  MTLLogicOperationClear,
-  MTLLogicOperationSet,
-  MTLLogicOperationCopy,
-  MTLLogicOperationCopyInverted,
-  MTLLogicOperationNoop,
-  MTLLogicOperationInvert,
-  MTLLogicOperationAnd,
-  MTLLogicOperationNand,
-  MTLLogicOperationOr,
-  MTLLogicOperationNor,
-  MTLLogicOperationXor,
-  MTLLogicOperationEquivalence,
-  MTLLogicOperationAndReverse,
-  MTLLogicOperationAndInverted,
-  MTLLogicOperationOrReverse,
-  MTLLogicOperationOrInverted,
-};
-
-@interface
-MTLRenderPipelineDescriptor ()
-
-- (void)setLogicOperationEnabled:(BOOL)enable;
-- (void)setLogicOperation:(MTLLogicOperation)op;
-
-@end
-
-@interface
-MTLMeshRenderPipelineDescriptor ()
-
-- (void)setLogicOperationEnabled:(BOOL)enable;
-- (void)setLogicOperation:(MTLLogicOperation)op;
-
-@end
-
-#endif
-
 static NTSTATUS
 CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
   struct unixcall_mtldevice_newrenderpso *params = obj;
@@ -663,10 +624,6 @@ CREATES(_MTLDevice_newRenderPipelineState)(void *obj) {
       descriptor.vertexBuffers[i].mutability = MTLMutabilityImmutable;
   }
 
-#ifndef DXMT_NO_PRIVATE_API
-  [descriptor setLogicOperationEnabled:info->logic_operation_enabled];
-  [descriptor setLogicOperation:(MTLLogicOperation)info->logic_operation];
-#endif
   descriptor.depthAttachmentPixelFormat = to_metal_pixel_format(info->depth_pixel_format);
   descriptor.stencilAttachmentPixelFormat = to_metal_pixel_format(info->stencil_pixel_format);
   descriptor.alphaToCoverageEnabled = info->alpha_to_coverage_enabled;
@@ -759,10 +716,6 @@ CREATES(_MTLDevice_newMeshRenderPipelineState)(void *obj) {
       descriptor.objectBuffers[i].mutability = MTLMutabilityImmutable;
   }
 
-#ifndef DXMT_NO_PRIVATE_API
-  [descriptor setLogicOperationEnabled:info->logic_operation_enabled];
-  [descriptor setLogicOperation:(MTLLogicOperation)info->logic_operation];
-#endif
   descriptor.depthAttachmentPixelFormat = to_metal_pixel_format(info->depth_pixel_format);
   descriptor.stencilAttachmentPixelFormat = to_metal_pixel_format(info->stencil_pixel_format);
   descriptor.alphaToCoverageEnabled = info->alpha_to_coverage_enabled;
@@ -1826,69 +1779,6 @@ _NSString_alloc_init(void *obj) {
   struct unixcall_nsstring_string *params = obj;
   NSString *str = [[NSString alloc] initWithCString:params->buffer_ptr.ptr encoding:(NSStringEncoding)params->encoding];
   params->ret = (obj_handle_t)str;
-  return STATUS_SUCCESS;
-}
-
-static bool
-developer_hud_uses_metric_service(void) {
-  NSOperatingSystemVersion version = [NSProcessInfo processInfo].operatingSystemVersion;
-  return version.majorVersion >= 27;
-}
-
-static NTSTATUS
-_DeveloperHUDProperties_instance(void *obj) {
-  struct unixcall_generic_obj_ret *params = obj;
-  Class cls = objc_lookUpClass(
-      developer_hud_uses_metric_service()
-          ? "MTLHUDService"
-          : "_CADeveloperHUDProperties"
-  );
-  params->ret =
-      (obj_handle_t)((id(*)(id, SEL))objc_msgSend)((id)cls, @selector(instance));
-  return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-_DeveloperHUDProperties_addLabel(void *obj) {
-  struct unixcall_generic_obj_obj_obj_uint64_ret *params = obj;
-  if (developer_hud_uses_metric_service()) {
-    params->ret =
-        ((bool (*)(id, SEL, id, id, id, id, uint32_t, uint32_t, uint32_t, uint64_t))objc_msgSend)(
-            (id)params->handle,
-            @selector(insertMetric:after:name:unit:nameColor:valueColor:visualType:options:),
-            (id)params->arg0,
-            (id)params->arg1,
-            @"",
-            @"",
-            UINT32_MAX,
-            UINT32_MAX,
-            1u,
-            0u
-        );
-  } else {
-    params->ret =
-        ((bool (*)(id, SEL, id, id))objc_msgSend)(
-            (id)params->handle,
-            @selector(addLabel:after:),
-            (id)params->arg0,
-            (id)params->arg1
-        );
-  }
-  return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-_DeveloperHUDProperties_updateLabel(void *obj) {
-  struct unixcall_generic_obj_obj_obj_noret *params = obj;
-  ((void (*)(id, SEL, id, id)
-  )objc_msgSend)((id)params->handle, @selector(updateLabel:value:), (id)params->arg0, (id)params->arg1);
-  return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-_DeveloperHUDProperties_remove(void *obj) {
-  struct unixcall_generic_obj_obj_noret *params = obj;
-  ((void (*)(id, SEL, id))objc_msgSend)((id)params->handle, @selector(remove:), (id)params->arg);
   return STATUS_SUCCESS;
 }
 
@@ -3308,6 +3198,12 @@ _DispatchData_alloc_init(void *obj) {
 
 @end
 
+// keeps the thunks' call numbers
+static NTSTATUS
+_unused_slot(void *obj) {
+  return STATUS_UNSUCCESSFUL;
+}
+
 static NTSTATUS
 CREATES(_MTLDevice_newSharedTexture)(void *obj) {
   struct unixcall_mtldevice_newtexture *params = obj;
@@ -3953,7 +3849,6 @@ NTSTATUS _CacheReader_alloc_init(void *obj);
 NTSTATUS _CacheReader_get(void *obj);
 NTSTATUS _CacheWriter_alloc_init(void *obj);
 NTSTATUS _CacheWriter_set(void *obj);
-NTSTATUS _WMTSetMetalShaderCachePath(void *obj);
 
 // the Metal descriptor of a WMTAccelerationStructureInfo, autoreleased
 static MTLAccelerationStructureDescriptor *
@@ -6053,10 +5948,10 @@ const void *__wine_unix_call_funcs[] = {
     &_MTLCommandBuffer_encodeSpatialScale,
     &_NSString_string,
     &_NSString_alloc_init,
-    &_DeveloperHUDProperties_instance,
-    &_DeveloperHUDProperties_addLabel,
-    &_DeveloperHUDProperties_updateLabel,
-    &_DeveloperHUDProperties_remove,
+    &_unused_slot,
+    &_unused_slot,
+    &_unused_slot,
+    &_unused_slot,
     &_MetalDrawable_texture,
     &_MetalLayer_nextDrawable,
     &_MTLDevice_supportsFXSpatialScaler,
@@ -6110,7 +6005,7 @@ const void *__wine_unix_call_funcs[] = {
     &_CacheReader_get,
     &_CacheWriter_alloc_init,
     &_CacheWriter_set,
-    &_WMTSetMetalShaderCachePath,
+    &_unused_slot,
     &_MTLDevice_newSharedTexture,
     &_WMTBootstrapRegister,
     &_WMTBootstrapLookUp,
@@ -6253,10 +6148,10 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_MTLCommandBuffer_encodeSpatialScale,
     &_NSString_string,
     &_NSString_alloc_init,
-    &_DeveloperHUDProperties_instance,
-    &_DeveloperHUDProperties_addLabel,
-    &_DeveloperHUDProperties_updateLabel,
-    &_DeveloperHUDProperties_remove,
+    &_unused_slot,
+    &_unused_slot,
+    &_unused_slot,
+    &_unused_slot,
     &_MetalDrawable_texture,
     &_MetalLayer_nextDrawable,
     &_MTLDevice_supportsFXSpatialScaler,
@@ -6310,7 +6205,7 @@ const void *__wine_unix_call_wow64_funcs[] = {
     &_CacheReader_get,
     &_CacheWriter_alloc_init,
     &_CacheWriter_set,
-    &_WMTSetMetalShaderCachePath,
+    &_unused_slot,
     &_MTLDevice_newSharedTexture,
     &_WMTBootstrapRegister,
     &_WMTBootstrapLookUp,
