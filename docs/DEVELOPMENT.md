@@ -7,7 +7,7 @@
 - Meson 1.3+, it's the build system used by this project
 - LLVM 15 (exact major version), with headers and static libs
     - CMake 3.27+, when building LLVM from the source
-- Xcode 16+, with Metal toolchain
+- Xcode with the macOS 26.4 SDK or newer, with Metal toolchain
 - Wine 8+, with headers and tools, _if you want to use DXMT with Wine_.
     - A cross-compiler (mingw-w64 or llvm-mingw) for Windows is also required
     - When building DXMT with Wine, it is a **Cross Build**.
