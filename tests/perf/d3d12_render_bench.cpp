@@ -4,7 +4,7 @@
 //   d3d12_render_bench.exe <dxbc|dxil> <scene> <frames> <warmup>
 //   d3d12_render_bench.exe <dxbc|dxil> list
 //
-// `frame` has the shape measured of a real UE5 title's frame (Black Myth: Wukong's benchmark on DXMT, median): 1100
+// `frame` has the shape measured of a real UE5 frame: 1100
 // draws, 244 passes, 3.8 million indices and 178 ExecuteIndirect calls. the other scenes each isolate one of its costs.
 // frames are serialized, so `wait` is the GPU's time and `record` and `submit` are the CPU's. each timed frame prints
 //   frame <index> <record ms> <submit ms> <wait ms> <gpu ms by timestamps>

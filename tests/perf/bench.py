@@ -104,7 +104,7 @@ def print_scene(scene, report):
 
 
 def pipelines_cold_and_warm(wine, exe, args, env):
-    """the same new pipelines twice with DXMT's cache on, in two processes: what a second run of a game keeps"""
+    """the same new pipelines twice with DXMT's cache on, in two processes: what the caches keep across runs"""
     frames = min(args.frames, 20)
     with tempfile.TemporaryDirectory() as cache:
         run_env = dict(env, DXMT_SHADER_CACHE_PATH=cache, DXMT_BENCH_SALT=str(int(time.time()) % 100000000))
@@ -160,8 +160,8 @@ def cmd_run(args):
 
 
 def cmd_corpus(args):
-    """how long a game's dumped shaders (neutron start --dump-shaders) take to become pipelines, cold and then with
-    the caches a first pass left, in two processes. the shaders are the game's: keep the directory out of any repo"""
+    """how long dumped shaders (neutron start --dump-shaders) take to become pipelines, cold and then with
+    the caches a first pass left, in two processes. dumped shaders belong to their authors: keep the directory out of any repo"""
     tests.guard(args)
     builds, wine, env = tests.environment(args)
     exe = builds[0] / "tests" / "d3d12" / "d3d12_corpus.exe"
