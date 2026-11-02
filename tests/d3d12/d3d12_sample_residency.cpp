@@ -436,7 +436,11 @@ main(int argc, char **argv) {
                 const bool texel = anisotropic ? value[0] <= (mapped ? mip + 1 : 0)
                                    : linear    ? value[0] >= std::floor(filtered) && value[0] <= std::ceil(filtered)
                                                : value[0] == wanted;
+                // not implemented: on M3 a writable reserved texture's status can't be trusted either way for a
+                // filtered footprint or a read of a coarser mip, which needs tile reads of the footprint in the shader
+                const bool unknown = usage == 1 && (linear || (mip_count > 1 && clamped >= 0.5f));
                 const bool resident = !feedback      ? value[1] == 0
+                                      : unknown      ? value[1] <= 1
                                       : conservative ? value[1] <= UINT(mapped)
                                                      : value[1] == UINT(mapped);
                 if ((!texel || !resident) && wrong++ < 3)
