@@ -261,7 +261,8 @@ public:
       WMT::Device device, WMT::CommandBuffer cmdbuf, diag::TimestampSamples &pool, uint64_t num_samples,
       TimestampQueryList &&queries
   ) :
-      queries_(std::move(queries)), pool_(pool), num_samples_(num_samples), cmdbuf_(cmdbuf) {
+      queries_(std::move(queries)), pool_(pool), num_samples_(num_samples), cmdbuf_(cmdbuf),
+      no_counters_(!device.supportsFamily(WMTGPUFamilyApple7)) {
     samples_.push_back(pool_.Take(device, false));
     if (!samples_.front())
       return;
@@ -280,13 +281,14 @@ public:
         );
       }
     // Metal writes no sample for a pass without work, and a virtual machine's GPU has no counters: such a query reads
-    // the time of the next sample, and a later query still may not read an earlier time
+    // the time of the next sample, and a later query still may not read an earlier time. samples that ran out still
+    // fail the query
     thread_local uint64_t latest_end = 0;
-    if (cmdbuf_.status() == WMTCommandBufferStatusCompleted) {
+    if (cmdbuf_.status() == WMTCommandBufferStatusCompleted && (samples_.front() || no_counters_)) {
       latest_end = std::max(cmdbuf_.gpuEndTime(), latest_end);
       auto next = latest_end;
       for (auto result = results.rbegin(); result != results.rend(); ++result) {
-        if (!*result || *result == TimestampQuery::kCounterErrorValue)
+        if (!*result || (!samples_.front() && *result == TimestampQuery::kCounterErrorValue))
           *result = next;
         else
           next = *result;
@@ -326,6 +328,7 @@ private:
   std::vector<std::pair<uint64_t, WMTSampleBufferAttachmentInfo>> ranges_;
   uint64_t num_samples_;
   WMT::CommandBuffer cmdbuf_;
+  bool no_counters_;
 };
 
 class TimestampQueryState {
