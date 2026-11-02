@@ -4763,29 +4763,46 @@ _MTLCommandBuffer_sampledCommandEncoder(void *obj) {
   return STATUS_SUCCESS;
 }
 
+static FILE *diag_file;
+static dispatch_queue_t diag_queue;
+
+static void
+diag_flush_at_exit(void) {
+  dispatch_sync(diag_queue, ^{
+    fflush(diag_file);
+  });
+}
+
+// the record goes to a queue of its own, so that writing it costs the thread that profiles only the copy
 static NTSTATUS
 _WMTDiagWrite(void *obj) {
   struct unixcall_wmtdiag_write *params = obj;
-  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-  static FILE *file;
-  static bool opened;
+  static dispatch_once_t once;
   params->ret = getpid();
   if (!params->lines.ptr)
     return STATUS_SUCCESS;
-  pthread_mutex_lock(&lock);
-  if (!opened) {
-    opened = true;
-    NSString *path =
-        [NSString stringWithFormat:@"%s/dxmt-%u.diag", (const char *)params->directory.ptr, params->ret];
-    file = fopen(path.fileSystemRepresentation, "w");
-    if (!file)
+  const char *directory = params->directory.ptr;
+  dispatch_once(&once, ^{
+    diag_queue = dispatch_queue_create("dxmt-diag", DISPATCH_QUEUE_SERIAL);
+    NSString *path = [NSString stringWithFormat:@"%s/dxmt-%u.diag", directory, getpid()];
+    diag_file = fopen(path.fileSystemRepresentation, "w");
+    if (diag_file)
+      atexit(diag_flush_at_exit);
+    else
       perror("dxmt-diag: open record");
-  }
-  if (!file || fwrite(params->lines.ptr, 1, params->length, file) != params->length || fflush(file)) {
+  });
+  if (!diag_file) {
     params->ret = 0;
-    perror("dxmt-diag: write record");
+    return STATUS_SUCCESS;
   }
-  pthread_mutex_unlock(&lock);
+  size_t length = params->length;
+  char *lines = malloc(length);
+  memcpy(lines, params->lines.ptr, length);
+  dispatch_async(diag_queue, ^{
+    if (fwrite(lines, 1, length, diag_file) != length)
+      perror("dxmt-diag: write record");
+    free(lines);
+  });
   return STATUS_SUCCESS;
 }
 
@@ -4964,12 +4981,9 @@ _WMTFlightWrite(void *obj) {
   }
 }
 
-static NTSTATUS
-_WMTGPUStatistics(void *obj) {
-  struct unixcall_wmtgpu_statistics *params = obj;
-  io_service_t entry = IOServiceGetMatchingService(
-      kIOMainPortDefault, IORegistryEntryIDMatching([(id<MTLDevice>)params->device registryID])
-  );
+static NSString *
+gpu_statistics_read(uint64_t registry_id) {
+  io_service_t entry = IOServiceGetMatchingService(kIOMainPortDefault, IORegistryEntryIDMatching(registry_id));
   NSDictionary *statistics =
       entry ? (NSDictionary *)IORegistryEntryCreateCFProperty(entry, CFSTR("PerformanceStatistics"), kCFAllocatorDefault, 0)
             : nil;
@@ -4977,13 +4991,43 @@ _WMTGPUStatistics(void *obj) {
   for (NSString *name in statistics)
     if ([statistics[name] isKindOfClass:[NSNumber class]])
       [text appendFormat:@"\t%@=%lld", name, [statistics[name] longLongValue]];
-  params->ret = strlen(text.UTF8String);
-  if (params->buffer.ptr && params->size >= params->ret)
-    memcpy(params->buffer.ptr, text.UTF8String, params->ret);
-  [text release];
   [statistics release];
   if (entry)
     IOObjectRelease(entry);
+  return text;
+}
+
+// an IORegistry read takes about half a millisecond, a lot for each frame: it happens ten times a second on a queue
+// of its own, and a frame takes the latest, which is what its counters' means need
+static NTSTATUS
+_WMTGPUStatistics(void *obj) {
+  struct unixcall_wmtgpu_statistics *params = obj;
+  static dispatch_once_t once;
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+  static NSString *latest;
+  static dispatch_source_t timer;
+  uint64_t registry_id = [(id<MTLDevice>)params->device registryID];
+  dispatch_once(&once, ^{
+    latest = gpu_statistics_read(registry_id);
+    timer = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_queue_create("dxmt-gpu-statistics", DISPATCH_QUEUE_SERIAL)
+    );
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_SEC / 10, NSEC_PER_SEC / 100);
+    dispatch_source_set_event_handler(timer, ^{
+      NSString *text = gpu_statistics_read(registry_id);
+      pthread_mutex_lock(&lock);
+      NSString *old = latest;
+      latest = text;
+      pthread_mutex_unlock(&lock);
+      [old release];
+    });
+    dispatch_resume(timer);
+  });
+  pthread_mutex_lock(&lock);
+  params->ret = strlen(latest.UTF8String);
+  if (params->buffer.ptr && params->size >= params->ret)
+    memcpy(params->buffer.ptr, latest.UTF8String, params->ret);
+  pthread_mutex_unlock(&lock);
   return STATUS_SUCCESS;
 }
 

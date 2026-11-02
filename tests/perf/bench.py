@@ -73,7 +73,9 @@ def profile_scene(wine, exe, scene, args, env, timeout, directory):
     for old in directory.glob("*.diag"):
         old.unlink()
     command = [str(wine), str(exe), args.front_end, scene, str(args.frames), str(args.warmup)]
-    subprocess.run(command, env=run_env, capture_output=True, timeout=timeout)
+    done = subprocess.run(command, env=run_env, capture_output=True, text=True, errors="replace", timeout=timeout)
+    frames = [[float(x) for x in line.split()[2:5]] for line in done.stdout.splitlines() if line.startswith("frame ")]
+    profiled = round(statistics.median(sum(f) for f in frames), 3) if frames else None
     records = sorted(directory.glob("*.diag"), key=lambda p: p.stat().st_size)
     if not records:
         return {"error": "no profile record"}
@@ -87,7 +89,7 @@ def profile_scene(wine, exe, scene, args, env, timeout, directory):
     for m in re.finditer(r"^\s+([\d.]+)\s+[\d.]+%\s+(\w+): (\d+) calls", section, re.M):
         calls[m[2]] = {"ms": float(m[1]), "calls": int(m[3])}
     frames = max(args.frames + args.warmup, 1)
-    return {"gpu_table_ok": gpu_table_ok, "bridge_ms_per_frame": {k: round(v["ms"] / frames, 3) for k, v in calls.items()},
+    return {"profiled_total": profiled, "gpu_table_ok": gpu_table_ok, "bridge_ms_per_frame": {k: round(v["ms"] / frames, 3) for k, v in calls.items()},
             "bridge_calls_per_frame": {k: round(v["calls"] / frames, 1) for k, v in calls.items()}}
 
 
@@ -146,6 +148,9 @@ def cmd_run(args):
                 best["profile"] = profile_scene(wine, exe, scene, args, env, args.timeout, directory)
             data["scenes"][scene] = best
             print_scene(scene, best)
+            profiled = best.get("profile", {}).get("profiled_total")
+            if profiled:
+                print(f"{scene:15} with the profile on: {profiled:.2f} ms, {profiled - best['total']['median']:+.2f} ms a frame", flush=True)
             if not best.get("profile", {}).get("gpu_table_ok", True):
                 print(f"{scene:12} the profile's GPU time by kind of pass is impossible: its numbers can't be read", flush=True)
     out = Path(args.out) if args.out else builds[0] / "perf" / f"{args.label}.json"
