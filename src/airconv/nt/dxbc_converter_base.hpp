@@ -576,6 +576,11 @@ public:
   llvm::Value *FirstBit(IntegerUnaryOp Op, llvm::Value *Value);
   llvm::Value *SinCos(llvm::air::AIRBuilder::FPUnOp Op, llvm::Value *Value);
   // `Used`: the components the caller takes of the texel
+  llvm::Value *WritableResidency(
+      const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *Level,
+      llvm::Value *Residency
+  );
+
   std::pair<llvm::Value *, llvm::Value *> ReadTexel(
       const TextureResourceHandle &Tex, llvm::Value *Address, llvm::Value *ArrayIndex, llvm::Value *SampleIndex,
       llvm::Value *Level, mask_t Used = kMaskAll
