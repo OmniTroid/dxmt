@@ -43,7 +43,7 @@ NvAPI_SYS_GetDriverAndBranchVersion(NvU32 *pDriverVersion,
   if (!pDriverVersion || !szBuildBranchString)
     return NVAPI_INVALID_ARGUMENT;
 
-  memcpy(szBuildBranchString, build_str.c_str(), build_str.size() + 1);
+  memcpy(szBuildBranchString, build_str.c_str(), build_str.size());
   *pDriverVersion = 99999;
 
   return NVAPI_OK;
@@ -62,8 +62,8 @@ NvAPI_GetDisplayDriverVersion(NvDisplayHandle hNvDisplay, NV_DISPLAY_DRIVER_VERS
 
   pVersion->drvVersion = 99999;
   pVersion->bldChangeListNum = 0;
-  memcpy(pVersion->szBuildBranchString, build_str.c_str(), build_str.size() + 1);
-  memcpy(pVersion->szAdapterString, adapter_str.c_str(), adapter_str.size() + 1);
+  memcpy(pVersion->szBuildBranchString, build_str.c_str(), build_str.size());
+  memcpy(pVersion->szAdapterString, adapter_str.c_str(), adapter_str.size());
 
   return NVAPI_OK;
 }
@@ -75,7 +75,7 @@ NvAPI_GetInterfaceVersionString(NvAPI_ShortString szDesc) {
   if (!szDesc)
     return NVAPI_INVALID_ARGUMENT;
 
-  memcpy(szDesc, version_str.c_str(), version_str.size() + 1);
+  memcpy(szDesc, version_str.c_str(), version_str.size());
 
   return NVAPI_OK;
 }
@@ -593,7 +593,7 @@ NvAPI_GPU_GetFullName(NvPhysicalGpuHandle hPhysicalGpu, NvAPI_ShortString szName
   if (!szName)
     return NVAPI_INVALID_ARGUMENT;
 
-  memcpy(szName, adapter_str.c_str(), adapter_str.size() + 1);
+  memcpy(szName, adapter_str.c_str(), adapter_str.size());
 
   return NVAPI_OK;
 }

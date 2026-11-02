@@ -63,8 +63,6 @@ public:
     sample_int,
     sample_uint,
     sample_half,
-    sample_short,
-    sample_ushort,
   };
 
   enum MemoryAccess {
@@ -86,6 +84,9 @@ public:
   enum ResourceKind kind;
   enum SampleType sample_type;
   enum MemoryAccess memory_access;
+  Value *SingleSample = nullptr;
+  // true where the texture stands for an unbound one (SM50_TEXTURE_METADATA_UNBOUND): what it answers is dropped
+  Value *Unbound = nullptr;
 };
 
 enum class Signedness { DontCare, Signed, Unsigned };
@@ -109,6 +110,18 @@ class AIRBuilderOptions {
 public:
   bool sampleNaNToZero = false;
   bool defuseFma = false;
+  bool noAtomicMinMax64 = false;
+  bool noCustomBorder = false;
+};
+
+struct TextureOperationInfo {
+  const char *air_symbol_suffix;
+  bool is_array;
+  uint8_t coord_dimension;
+  bool is_cube;
+  bool is_depth;
+  bool is_ms;
+  bool is_mipmaped;
 };
 
 class AIRBuilder {
@@ -189,9 +202,10 @@ public:
     return CreateSampleGrad(Texture, Handle, Sampler, Coord, ArrayIndex, DerivX, DerivY, getFloat(0), Offset);
   }
 
+  // with a `Reference`, the sample compares it
   std::pair<Value *, Value *> CreateSampleGrad(
       const Texture &Texture, Value *Handle, Value *Sampler, Value *Coord, Value *ArrayIndex, Value *DerivX,
-      Value *DerivY, Value *MinLOD, const int32_t Offset[3]
+      Value *DerivY, Value *MinLOD, const int32_t Offset[3], Value *Reference = nullptr
   );
 
   Value *CreateAtomicRMW(
@@ -241,8 +255,6 @@ public:
 
   Value *CreateTextureQuery(const Texture &Texture, Value *Handle, Texture::Query Query, Value *Level);
 
-  Value *CreateCalculateLOD(const Texture &Texture, Value *Handle, Value *Sampler, Value *Coord, bool Clamped);
-
   /**
   \returns (float clamped_lod, float unclamped_lod)
   */
@@ -254,31 +266,18 @@ public:
 
   Value *CreateGetNumSamples();
 
+  Value *CreateSamplePos(Value *SampleCount, Value *Index);
+  Value *CreateRasterizerSamplePos(Value *Index);
+
   Value *CreateDerivative(Value *Val, bool YAxis);
 
   CallInst *CreateDiscard();
 
   /* Compute Shader */
 
-  Value *CreateGetGroupID(uint32_t Component);
-
-  Value *CreateGetGlobalID(uint32_t Component);
-
-  Value *CreateGetLocalID(uint32_t Component);
-
-  Value *CreateGetLocalLinearID();
-
-  Value *CreateGetBuiltinID(llvm::StringRef Name, uint32_t Component);
-
-  Value *CreateGetBuiltinID(llvm::StringRef Name);
-
   CallInst *CreateBarrier(MemFlags Flags, bool SimdGroup = false);
 
   CallInst *CreateAtomicFence(MemFlags Flags, ThreadScope Scope, bool Relaxed = false);
-
-  CallInst *CreateShuffle(Value *ShuffleValue, Value *LaneId, bool Quad = false);
-
-  CallInst *CreateQuadShuffleXor(Value *ShuffleValue, uint16_t Mask);
 
   /* Math */
 
@@ -297,6 +296,20 @@ public:
 
   CallInst *CreateDeviceCoherentLoad(Type *Ty, Value *Ptr);
   CallInst *CreateDeviceCoherentStore(Value *Val, Value *Ptr);
+  // while set, what the shader would write to resources is not built, and its atomics leave memory as they find it:
+  // a stream output draw's first pass runs the shader for its counts alone
+  bool DiscardWrites = false;
+  // a pixel shader's flag of whether its run still writes memory, which a discard clears
+  Value *Live = nullptr;
+  // a pixel shader's render target samples all lie at the pixel center (D3D11.3 19.2.4.1)
+  bool CenteredSamples = false;
+  // a pixel shader's covered samples and the state's sample mask, where D3D takes a centroid among the covered samples
+  // in the mask (D3D11.3 3.5.5) and Metal among all covered: null where they agree
+  Value *CentroidCoverage = nullptr, *CentroidMask = nullptr;
+  // what a rasterized position's x and y are multiplied by (SM50_BINDING_INDEX_RASTER_SCALE), null for none
+  Value *RasterScale = nullptr;
+  // whether the device has Metal's 64-bit atomic minimum and maximum (CreateAtomicMinMax64)
+  bool HasAtomicMinMax64() const { return !options.noAtomicMinMax64; }
 
   /* Pull-based Interpolation */
 
@@ -304,9 +317,20 @@ public:
 
   Value *CreateInterpolateAtCentroid(Value *Interpoant, bool Perspective);
 
+  // the sample D3D takes a centroid at among `Coverage`'s samples in `Mask` (D3D11.3 3.5.5): whether it is the center,
+  // and else which one
+  std::pair<Value *, Value *> CreateCentroidSample(Value *Coverage, Value *Mask);
+
+  // where D3D takes a centroid, as an offset from the pixel's center, of the pixel's covered samples (or
+  // CentroidCoverage's, where it is set)
+  Value *CreateCentroidOffset(Value *Coverage);
+
   Value *CreateInterpolateAtSample(Value *Interpoant, Value *SampleIndex, bool Perspective);
 
   Value *CreateInterpolateAtOffset(Value *Interpoant, Value *Offset, bool Perspective);
+
+  // a vertex_value input's value of type `Ty` (a float, or an unsigned integer) at the primitive's vertex `Index`
+  Value *CreateGetVertexValue(Value *VertexValue, Type *Ty, Value *Index);
 
   /* Object Shader */
 
@@ -317,8 +341,8 @@ public:
   CallInst *CreateSetMeshRenderTargetArrayIndex(Value *Vertex, Value *ArrayIndex);
 
   CallInst *CreateSetMeshViewportArrayIndex(Value *Vertex, Value *ArrayIndex);
-
-  CallInst *CreateSetMeshPrimitiveID(Value *Vertex, Value *ID);
+  CallInst *CreateSetMeshPrimitiveID(Value *Primitive, Value *ID);
+  CallInst *CreateSetMeshPrimitiveCulled(Value *Primitive, Value *Culled);
 
   CallInst *CreateSetMeshPosition(Value *Vertex, Value *Position);
 
@@ -357,20 +381,14 @@ public:
     acos,
     asin,
     atan,
-    hcos,
-    hsin,
-    htan,
+    cosh,
+    sinh,
+    tanh,
   };
 
   Value *CreateFPUnOp(FPUnOp Op, Value *Operand, bool FastVariant = true);
 
   Value *CreateIsNaN(Value *Operand);
-
-  Value *CreateIsFinite(Value *Operand);
-
-  Value *CreateIsInfinite(Value *Operand);
-
-  Value *CreateIsNormal(Value *Operand);
 
   enum FPBinOp {
     fmax,
@@ -395,6 +413,12 @@ public:
   Value *CreateIntBinOp(IntBinOp Op, Value *LHS, Value *RHS, bool Signed = false);
 
   Value *CreateAtomicRMW(AtomicRMWInst::BinOp Op, Value *Ptr, Value *Val);
+
+  // Metal's 64-bit atomic minimum or maximum, unsigned, which gives no old value: of a device word, and of a texel of
+  // an RG32Uint texture (its low half the red). named and called as the Metal compiler does for atomic_ulong and for
+  // textures of ulong in the AIR versions the converter writes (2.6 and 2.7; later ones take more arguments)
+  void CreateAtomicMinMax64(bool Max, Value *Ptr, Value *Val);
+  void CreateAtomicMinMax64(const Texture &Texture, Value *Handle, bool Max, Value *Pos, Value *ArrayIndex, Value *Val);
 
   llvm::Value *SanitizePosition(llvm::Value *Pos);
 
@@ -519,6 +543,7 @@ public:
   Type *getTexelGatherType(const Texture &Texture);
   Type *getTextureSampleCoordType(const Texture &Texture);
   Type *getTextureRWPositionType(const Texture &Texture);
+  static const TextureOperationInfo &getTextureInfo(Texture::ResourceKind Kind);
 
   Type *
   getTextureSampleResultType(const Texture &Texture) {
@@ -576,11 +601,30 @@ public:
     return builder.CreateSelect(CreateIsNaN(Operand), Constant::getNullValue(Operand->getType()), Operand);
   };
 
+  bool
+  noCustomBorder() const {
+    return options.noCustomBorder;
+  }
+
+  // a comparison takes a denormal reference as its sign's zero (D3D11.3 22.4.3); Metal compares it as it is
+  Value *
+  getDenormToZero(Value *Operand) {
+    auto Bits = builder.CreateBitCast(Operand, getIntTy());
+    auto &Context = getContext();
+    auto Exponent = ConstantInt::get(Context, APFloat::getInf(APFloat::IEEEsingle()).bitcastToAPInt());
+    auto Sign = builder.CreateAnd(Bits, ConstantInt::get(Context, APInt::getSignMask(32)));
+    auto Flushed = builder.CreateICmpEQ(builder.CreateAnd(Bits, Exponent), getInt(0));
+    return builder.CreateSelect(Flushed, builder.CreateBitCast(Sign, Operand->getType()), Operand);
+  };
+
   std::string getTypeOverloadSuffix(Type *Ty, Signedness Sign = Signedness::DontCare);
 
 protected:
   raw_ostream &debug;
   AIRBuilderOptions options;
+
+  // calls `Fn` of `Texture`, answering 0 where the texture stands for an unbound one
+  Value *CreateTextureCall(const Texture &Texture, FunctionCallee Fn, ArrayRef<Value *> Ops);
 
   Value *
   GetOffset(const Texture &Texture, const int32_t ImmOffset[3]) {
@@ -635,10 +679,8 @@ protected:
   getTexelSign(const Texture &Texture) {
     switch (Texture.sample_type) {
     case Texture::sample_int:
-    case Texture::sample_short:
       return Signedness::Signed;
     case Texture::sample_uint:
-    case Texture::sample_ushort:
       return Signedness::Unsigned;
     default:
       return Signedness::DontCare;

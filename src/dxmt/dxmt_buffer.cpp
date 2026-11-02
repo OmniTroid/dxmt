@@ -17,6 +17,7 @@
  */
 
 #include "dxmt_buffer.hpp"
+#include "dxmt_diag.hpp"
 #include "dxmt_format.hpp"
 #include "thread.hpp"
 #include "util_likely.hpp"
@@ -29,16 +30,20 @@ namespace dxmt {
 
 std::atomic_uint64_t global_buffer_seq = {0};
 
-BufferAllocation::BufferAllocation(WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags) :
+BufferAllocation::BufferAllocation(
+    WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags, uint32_t names,
+    std::shared_ptr<void> memory
+) :
+    memory_(std::move(memory)),
     info_(info),
     flags_(flags) {
   // (sub)allocate a minimum of 256B buffer so that texture can be created
   info_.length = std::max(info_.length, 256ull);
   suballocation_size_ = info_.length;
-  if (flags_.test(BufferAllocationFlag::SuballocateFromOnePage) && suballocation_size_ <= DXMT_PAGE_SIZE) {
+  if (flags_.test(BufferAllocationFlag::SuballocateFromOnePage) && (names || suballocation_size_ <= DXMT_PAGE_SIZE)) {
     suballocation_size_ = align(info_.length, 16);
-    suballocation_count_ = DXMT_PAGE_SIZE / suballocation_size_;
-    info_.length = DXMT_PAGE_SIZE;
+    info_.length = std::max<uint64_t>(DXMT_PAGE_SIZE, uint64_t(names) * suballocation_size_);
+    suballocation_count_ = info_.length / suballocation_size_;
   }
   fenceTrackers.resize(suballocation_count_);
   if (flags_.test(BufferAllocationFlag::CpuPlaced)) {
@@ -46,6 +51,8 @@ BufferAllocation::BufferAllocation(WMT::Device device, const WMTBufferInfo &info
     info_.memory.set(placed_buffer);
   }
   obj_ = device.newBuffer(info_);
+  if (diag::profile && obj_)
+    diag::Write(diag::Line("buffer", diag::Now(), obj_.handle, info_.length));
   gpuAddress_ = info_.gpu_address;
   mappedMemory_ = info_.memory.get_accessible_or_null();
 };
@@ -66,6 +73,38 @@ BufferAllocation::BufferAllocation(
     assert(0 && "heap doesn't support placed buffer");
   }
   obj_ = heap.newBuffer(info_, heap_offset);
+  if (diag::profile && obj_)
+    diag::Write(diag::Line("buffer", diag::Now(), obj_.handle, info_.length));
+  gpuAddress_ = info_.gpu_address;
+  mappedMemory_ = info_.memory.get_accessible_or_null();
+}
+
+BufferAllocation::BufferAllocation(
+    WMT::Device device, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags, WMTSparsePageSize page_size
+) :
+    info_(info),
+    flags_(flags) {
+  // whole tiles, which map one by one
+  sparse_tile_bytes = device.sparseTileSizeInBytes(page_size);
+  info_.length = align(info_.length, sparse_tile_bytes);
+  sparse_tile_count = info_.length / sparse_tile_bytes;
+  suballocation_size_ = info_.length;
+  fenceTrackers.resize(suballocation_count_);
+  // and a tile more, which stays mapped (MTLD3D12CommandQueue::Settle)
+  obj_ = device.newPlacementSparseBuffer(info_.length + sparse_tile_bytes, info_.options, page_size, gpuAddress_);
+  if (diag::profile && obj_)
+    diag::Write(diag::Line("buffer", diag::Now(), obj_.handle, info_.length));
+  mappedMemory_ = nullptr;
+}
+
+BufferAllocation::BufferAllocation(
+    WMT::Reference<WMT::Buffer> &&buffer, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags
+) :
+    obj_(std::move(buffer)),
+    info_(info),
+    flags_(flags) {
+  suballocation_size_ = info_.length;
+  fenceTrackers.resize(suballocation_count_);
   gpuAddress_ = info_.gpu_address;
   mappedMemory_ = info_.memory.get_accessible_or_null();
 }
@@ -96,11 +135,15 @@ Buffer::view_(BufferViewKey key) {
 
 BufferView const &
 Buffer::view_(BufferViewKey key, BufferAllocation *allocation) {
-  if (unlikely(allocation->version_ != version_)) {
-    prepareAllocationViews(allocation);
-  }
-  return *allocation->cached_view_[key.index];
+  return cachedView(key, allocation);
 };
+
+std::pair<BufferView &, uint64_t>
+Buffer::view_(BufferViewKey key, BufferAllocation *allocation, uint64_t texel) {
+  auto &view = cachedView(key, allocation);
+  auto window = std::min<uint64_t>(texel / kTextureBufferStep, view.windows.size());
+  return {window ? *view.windows[window - 1] : view, texel - window * kTextureBufferStep};
+}
 
 DXMT_RESOURCE_RESIDENCY_STATE &
 Buffer::residency(BufferViewKey key) {
@@ -109,24 +152,33 @@ Buffer::residency(BufferViewKey key) {
 
 DXMT_RESOURCE_RESIDENCY_STATE &
 Buffer::residency(BufferViewKey key, BufferAllocation *allocation) {
+  return cachedView(key, allocation).residency;
+}
+
+// views are made on any thread while others read them (Texture::view): the list is read under the lock too, as adding
+// a view may move it, though not the views it points to
+BufferView &
+Buffer::cachedView(BufferViewKey key, BufferAllocation *allocation) {
+  std::shared_lock<dxmt::shared_mutex> lock(mutex_);
   if (unlikely(allocation->version_ != version_)) {
+    lock.unlock();
     prepareAllocationViews(allocation);
+    lock.lock();
   }
-  return allocation->cached_view_[key.index]->residency;
+  return *allocation->cached_view_[key.index];
 }
 
 void
 Buffer::prepareAllocationViews(BufferAllocation *allocation) {
-  std::unique_lock<dxmt::mutex> lock(mutex_);
+  std::unique_lock<dxmt::shared_mutex> lock(mutex_);
   for (unsigned version = allocation->version_; version < version_; version++) {
     auto format = viewDescriptors_[version].format;
     auto texel_size = MTLGetTexelSize(format);
     assert(texel_size);
     assert(!(allocation->suballocation_size_ & (texel_size - 1)));
-    auto total_length = allocation->suballocation_size_ * allocation->suballocation_count_;
-    WMTTextureInfo info;
+    uint64_t texels = (uint64_t)allocation->suballocation_size_ * allocation->suballocation_count_ / texel_size;
+    WMTTextureInfo info{};
     info.type = WMTTextureTypeTextureBuffer;
-    info.width = total_length / (uint64_t)texel_size;
     info.height = 1;
     info.depth = 1;
     info.array_length = 1;
@@ -135,8 +187,7 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
     info.pixel_format = format;
     info.options = allocation->info_.options;
     auto usage = WMTTextureUsageShaderRead;
-    if (!allocation->flags().test(BufferAllocationFlag::GpuReadonly) &&
-       ( allocation->flags().test(BufferAllocationFlag::GpuManaged) ||  allocation->flags().test(BufferAllocationFlag::GpuPrivate))) {
+    if (viewDescriptors_[version].write && !allocation->flags().test(BufferAllocationFlag::GpuReadonly)) {
       usage |= WMTTextureUsageShaderWrite;
       if (format == WMTPixelFormatR32Uint || format == WMTPixelFormatR32Sint ||
           (format == WMTPixelFormatRG32Uint && device_.supportsFamily(WMTGPUFamilyApple8))) {
@@ -145,21 +196,27 @@ Buffer::prepareAllocationViews(BufferAllocation *allocation) {
     }
     info.usage = usage;
 
-    auto view = allocation->obj_.newTexture(info, 0, total_length);
-
-    allocation->cached_view_.push_back(std::make_unique<BufferView>(
-        std::move(view), info.gpu_resource_id, allocation->suballocation_size_ / texel_size
-    ));
+    std::unique_ptr<BufferView> first;
+    for (uint64_t start = 0; !first || start + kTextureBufferWidth - kTextureBufferStep < texels;
+         start += kTextureBufferStep) {
+      info.width = std::min(texels - start, kTextureBufferWidth);
+      auto view = allocation->obj_.newTexture(info, start * texel_size, info.width * texel_size);
+      auto window = std::make_unique<BufferView>(
+          std::move(view), info.gpu_resource_id, allocation->suballocation_size_ / texel_size
+      );
+      first ? (void)first->windows.push_back(std::move(window)) : (void)(first = std::move(window));
+    }
+    allocation->cached_view_.push_back(std::move(first));
   }
   allocation->version_ = version_;
 };
 
 BufferViewKey
 Buffer::createView(BufferViewDescriptor const &descriptor) {
-  std::unique_lock<dxmt::mutex> lock(mutex_);
+  std::unique_lock<dxmt::shared_mutex> lock(mutex_);
   unsigned i = 0;
   for (; i < version_; i++) {
-    if (viewDescriptors_[i].format == descriptor.format) {
+    if (viewDescriptors_[i].format == descriptor.format && viewDescriptors_[i].write == descriptor.write) {
       return BufferViewKey(i, std::nullopt);
     }
   }
@@ -169,7 +226,7 @@ Buffer::createView(BufferViewDescriptor const &descriptor) {
 }
 
 Rc<BufferAllocation>
-Buffer::allocate(Flags<BufferAllocationFlag> flags) {
+Buffer::allocate(Flags<BufferAllocationFlag> flags, uint32_t names, std::shared_ptr<void> memory) {
   WMTResourceOptions options = WMTResourceHazardTrackingModeUntracked;
   if (flags.test(BufferAllocationFlag::CpuWriteCombined)) {
     options |= WMTResourceOptionCPUCacheModeWriteCombined;
@@ -181,10 +238,10 @@ Buffer::allocate(Flags<BufferAllocationFlag> flags) {
     options |= WMTResourceStorageModeManaged;
   }
   WMTBufferInfo info;
-  info.memory.set(0);
+  info.memory.set(memory.get());
   info.length = length_;
   info.options = options;
-  return new BufferAllocation(device_, info, flags);
+  return new BufferAllocation(device_, info, flags, names, std::move(memory));
 };
 
 Rc<BufferAllocation>
@@ -206,6 +263,21 @@ Buffer::allocate(Flags<BufferAllocationFlag> flags, WMT::Heap heap, uint64_t hea
   flags.set(BufferAllocationFlag::AllocatedOnHeap);
   return new BufferAllocation(device_, info, flags, heap, heap_offset);
 };
+
+Rc<BufferAllocation>
+Buffer::allocate(Flags<BufferAllocationFlag> flags, WMTSparsePageSize page_size) {
+  WMTBufferInfo info;
+  info.memory.set(0);
+  info.length = length_;
+  info.options = WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate;
+  flags.set(BufferAllocationFlag::CpuInvisible);
+  return new BufferAllocation(device_, info, flags, page_size);
+};
+
+Rc<BufferAllocation>
+Buffer::wrap(WMT::Reference<WMT::Buffer> &&buffer, const WMTBufferInfo &info, Flags<BufferAllocationFlag> flags) {
+  return buffer ? new BufferAllocation(std::move(buffer), info, flags) : nullptr;
+}
 
 Rc<BufferAllocation>
 Buffer::rename(Rc<BufferAllocation> &&newAllocation) {

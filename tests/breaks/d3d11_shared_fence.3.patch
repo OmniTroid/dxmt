@@ -1,0 +1,12 @@
+# opening a shared fence creates an independent Metal event
+--- a/src/dxmt/dxmt_fence.cpp
++++ b/src/dxmt/dxmt_fence.cpp
+@@ -179,7 +179,7 @@
+     ERR("openSharedEvent: Failed to look up mach port");
+     return {};
+   }
+-  return mtl.newSharedEventWithMachPort(mach_port);
++  return mtl.newSharedEvent();
+ }
+ 
+ HRESULT

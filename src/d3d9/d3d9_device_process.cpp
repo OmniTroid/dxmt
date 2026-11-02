@@ -362,7 +362,7 @@ MTLD3D9Device::ProcessVerticesWithShader(
   HRESULT hr = DrawPrimitive(D3DPT_POINTLIST, SrcStartIndex, VertexCount);
   so_target_ = nullptr;
   so_registers_ = 0;
-  Emit([](ArgumentEncodingContext &enc) { enc.bindStreamOutputBuffer(0, 0, {}, {}); });
+  Emit([](ArgumentEncodingContext &enc) { enc.bindStreamOutputBuffer(0, {}, {}); });
   if (FAILED(hr))
     return hr;
   EndRenderPass();

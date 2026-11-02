@@ -1350,7 +1350,7 @@ MTLD3D9Device::ClearSurface(
     TextureViewKey target_view = Srgb ? RenderTargetView(pSurface) : pSurface->viewKey();
     if (full) {
       Emit([texture = pSurface->texture(), view = target_view, color](ArgumentEncodingContext &enc) mutable {
-        enc.clearColor(std::move(texture), view, 1, color);
+        enc.clearColor(std::move(texture), view, 1, 0, color);
       });
       return;
     }

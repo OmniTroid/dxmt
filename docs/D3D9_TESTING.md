@@ -44,6 +44,10 @@ The airconv tests in `tests/airconv_d3d9` render one pixel per case on the GPU a
 - While iterating, run only the tests a change affects (`winetest.sh <suite> <test>...`, one of our exes); run the full suite once at the end of a batch.
 - Screenshots: capture a single window by its exact title (`screencapture -l <id>`), never the whole screen, and never pick a window by owner process: other Wine apps (games) may be running.
 
+## The panic
+
+On 2026-11-02 this suite panicked the host: `AGXSecureGart::unmap Timed out waiting for FW` (M3 Max, macOS 26.6.2). A `SIGTERM`ed `tests/run.py` with `--jobs 4` kept starting its queue unseen, beside a second run and three VMs, past a memory pressure limit that had been raised by hand. So `tests/run.py` runs at most two tests at a time, one run at a time, at pressure level 1 only, and refuses to start beside macOS VMs, whose GPU helpers it looks for (`--beside-vms` overrides, not for heavy tests). The `format_blend` tests are the heaviest: on 2026-11-02 running them alone made the screen and sound of a machine in use stutter, so run them on an idle machine. Run the single test you are fixing. After stopping a run, check that `pgrep -f tests/run.py` finds nothing.
+
 ## Traps
 
 **Stale files**

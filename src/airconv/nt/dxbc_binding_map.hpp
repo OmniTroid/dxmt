@@ -2,6 +2,7 @@
 
 #include "air_builder.hpp"
 #include "llvm/IR/Value.h"
+#include <optional>
 
 namespace dxmt::dxbc {
 
@@ -14,6 +15,10 @@ struct SamplerDescriptor {
   llvm::Value *SamplerHandle;
   llvm::Value *CubeSamplerHandle;
   llvm::Value *Metadata;
+  llvm::Value *Border = nullptr; // SM50_SAMPLER_BORDER's address, when the binding can have one
+  // a static sampler's, known when the pipeline is made: whether it filters anisotropically, and whether its metadata
+  // holds a LOD bias
+  std::optional<bool> Anisotropic, Biased;
 };
 
 struct TextureDescirptor {
@@ -24,7 +29,8 @@ struct TextureDescirptor {
   llvm::air::Texture::ResourceKind ResourceKindLogical;
   llvm::air::Texture::MemoryAccess MemoryAccess;
   llvm::air::Texture::SampleType SampleType;
-
+  llvm::Value *Range = nullptr; // where its format range is (SM50_SAMPLER_BORDER), when the binding has one
+  bool IsUAV = false;
 };
 
 struct BufferDescriptor {
@@ -57,6 +63,15 @@ public:
   GetUAVBuffer(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) = 0;
   virtual llvm::Optional<CounterDescriptor>
   GetUAVCounter(llvm::air::AIRBuilder &Builder, RangeId Range, llvm::Value *Index) = 0;
+  // the device's table of lock words for 64-bit atomics (word 0 its index mask), where the binding carries one
+  virtual llvm::Value *
+  GetAtomicLocks(llvm::air::AIRBuilder &Builder) {
+    return nullptr;
+  }
+  virtual llvm::Value *
+  GetSparseBufferMappings(llvm::air::AIRBuilder &Builder) {
+    return nullptr;
+  }
 };
 
 } // namespace dxmt::dxbc

@@ -358,7 +358,8 @@ namespace dxmt {
     std::string filePath = env::getEnvVar("DXMT_CONFIG_FILE");
     std::string confLine = env::getEnvVar("DXMT_CONFIG");
 
-    if (filePath == "")
+    bool named = filePath != "";
+    if (!named)
       filePath = "dxmt.conf";
 
     // Open the file if it exists
@@ -388,6 +389,8 @@ namespace dxmt {
       // help when debugging configuration issues
       Logger::info(str::format("Found config env: ", confLine));
 
+      // the environment applies to this executable, whichever section the file ended in
+      ctx.active = true;
       for(auto l : str::split(confLine, ";"))
         parseUserConfigLine(config, ctx, std::string(l.data(), l.size()));
     }

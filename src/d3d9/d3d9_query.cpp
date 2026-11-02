@@ -141,7 +141,7 @@ MTLD3D9Query::Ready() {
   if (type_ == D3DQUERYTYPE_OCCLUSION)
     return occlusion_->getValue(&value);
   if (type_ == D3DQUERYTYPE_TIMESTAMP)
-    return timestamp_->getValue(&value);
+    return timestamp_->getValue(&value) != S_FALSE;
   return parent_->queue().CoherentSeqId() >= seq_;
 }
 

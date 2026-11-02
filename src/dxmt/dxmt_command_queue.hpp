@@ -25,8 +25,9 @@
 #include "dxmt_command.hpp"
 #include "dxmt_command_list.hpp"
 #include "dxmt_context.hpp"
+#include "dxmt_diag.hpp"
 #include "dxmt_counter.hpp"
-#include "dxmt_occlusion_query.hpp"
+#include "dxmt_query.hpp"
 #include "dxmt_resource_initializer.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
 #include "dxmt_statistics.hpp"
@@ -106,7 +107,7 @@ public:
   }
 
   void
-  encode(WMT::CommandBuffer cmdbuf, ArgumentEncodingContext &enc) {
+  encode(WMT::CommandBuffer cmdbuf, ArgumentEncodingContext &enc, const bool &cancelled) {
     enc.$$setEncodingContext(
       chunk_id,
       frame_
@@ -114,9 +115,12 @@ public:
     auto& statistics = enc.currentFrameStatistics();
     auto t0 = clock::now();
     list_enc.execute(enc);
+    if (cancelled)
+      return;
     attached_cmdbuf = cmdbuf;
     auto t1 = clock::now();
-    readback = enc.flushCommands(cmdbuf, chunk_id, chunk_event_id);
+    readback = diag::profile ? enc.flushCommands<true>(cmdbuf, chunk_id, chunk_event_id)
+                            : enc.flushCommands<false>(cmdbuf, chunk_id, chunk_event_id);
     auto t2 = clock::now();
     statistics.encode_prepare_interval += (t1 - t0);
     statistics.encode_flush_interval += (t2 - t1);
@@ -126,6 +130,7 @@ public:
   uint64_t chunk_event_id;
   uint64_t frame_;
   uint64_t signal_frame_latency_fence_;
+  std::function<void()> completed;
   QueryReadbacks readback;
   uint64_t resource_initializer_event_id;
 
@@ -144,6 +149,7 @@ public:
   void
   reset() noexcept {
     signal_frame_latency_fence_ = ~0ull;
+    completed = {};
     readback = {};
     list_enc.reset();
     ref_tracker.clear();
@@ -166,11 +172,23 @@ private:
   CpuFence cpu_coherent;
   CpuFence frame_latency_fence_;
   std::atomic_bool stopped;
+  std::atomic_bool draining_ = false;
+  uint64_t drain_last_seq_ = 0;
+  bool encoding_cancelled_ = false;
 
   std::array<CommandChunk, kCommandChunkCount> chunks;
   uint64_t encoder_seq = 1;
   uint64_t frame_count = 0;
-  uint32_t max_latency_ = 3;
+  // DXGI's default (IDXGIDevice1::SetMaximumFrameLatency)
+  static constexpr uint32_t kDefaultLatency = 3;
+  uint32_t max_latency_ = kDefaultLatency;
+
+  struct ProfileQueue {
+    static inline std::atomic_uint64_t queues{0};
+    std::string id = str::format("d3d11:", ++queues);
+    std::array<diag::ProfileBuffer, kCommandChunkCount> buffers;
+  };
+  std::unique_ptr<ProfileQueue> profile_ = diag::profile ? std::make_unique<ProfileQueue>() : nullptr;
 
   dxmt::thread encodeThread;
   dxmt::thread finishThread;
@@ -201,10 +219,34 @@ public:
   FrameStatisticsContainer statistics;
   ResourceInitializer initializer;
   CounterPool counter_pool;
+  diag::TimestampSamples timestamp_samples;
 
   CommandQueue(WMT::Device device);
 
   ~CommandQueue();
+
+  void Shutdown();
+  void Drain();
+
+  void WaitSharedEvent(WMT::SharedEvent event, uint64_t value) {
+    while (event.signaledValue() < value) {
+      if (stopped.load(std::memory_order_acquire) || draining_.load(std::memory_order_acquire)) {
+        encoding_cancelled_ = true;
+        return;
+      }
+      event.waitUntilSignaledValue(value, 100);
+    }
+  }
+
+  void OnCompletion(uint64_t seq, std::function<void()> &&action) {
+    auto &completed = chunks[seq % kCommandChunkCount].completed;
+    completed = [previous = std::move(completed), action = std::move(action)] {
+      if (previous)
+        previous();
+      action();
+    };
+  }
+
 
   CommandChunk *
   CurrentChunk() {
@@ -249,6 +291,8 @@ public:
   */
   void CommitCurrentChunk();
 
+  WMTSampleBufferAttachmentInfo ProfilePass(EncoderData *pass, diag::ProfileBuffer *&buffer);
+
   uint64_t CurrentFrameSeq() {
     return frame_count + 1;
   }
@@ -265,7 +309,10 @@ public:
     // After present N-th frame (N starts from 1), wait for (N - max_latency)-th frame to finish rendering 
     if (likely(frame_count > max_latency_)) {
       auto t0 = clock::now();
+      auto began = diag::profile && frame_latency_fence_.signaledValue() < frame_count - max_latency_ ? diag::Now() : 0;
       frame_latency_fence_.wait(frame_count - max_latency_);
+      if (began)
+        diag::Waited("latency", began);
       auto t1 = clock::now();
       statistics.at(frame_count).present_latency_interval += (t1 - t0);
     }
@@ -274,11 +321,15 @@ public:
 
   uint32_t GetMaxLatency() { return max_latency_; }
 
-  void SetMaxLatency(uint32_t value) { max_latency_ = value; };
+  // 0 is the default again
+  void SetMaxLatency(uint32_t value) { max_latency_ = value ? value : kDefaultLatency; };
 
   void
   WaitCPUFence(uint64_t seq) {
+    auto began = diag::profile && cpu_coherent.signaledValue() < seq ? diag::Now() : 0;
     cpu_coherent.wait(seq);
+    if (began)
+      diag::Waited("cpu", began);
   };
 
   std::tuple<WMT::Buffer, uint64_t>
@@ -303,6 +354,13 @@ public:
   AllocateArgumentBuffer(uint64_t seq, size_t size) {
     auto [block, offset] = argbuf_allocator.allocate(seq, cpu_coherent.signaledValue(), size, 64);
     return {ptr_add(block.mapped_address, offset), block.buffer, offset};
+  }
+
+  // an argument buffer the GPU reaches by address too: its mapping, buffer, offset and GPU address
+  std::tuple<void *, WMT::Buffer, uint64_t, uint64_t>
+  AllocateAddressedArgumentBuffer(uint64_t seq, size_t size) {
+    auto [block, offset] = argbuf_allocator.allocate(seq, cpu_coherent.signaledValue(), size, 64);
+    return {ptr_add(block.mapped_address, offset), block.buffer, offset, block.gpu_address + offset};
   }
 
   void *

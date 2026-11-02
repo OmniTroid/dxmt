@@ -22,6 +22,7 @@
 #include "d3d9_surface.hpp"
 #include "com/com_pointer.hpp"
 #include "dxmt_presenter.hpp"
+#include "dxmt_window.hpp"
 #include "wsi_window.hpp"
 #include <unordered_map>
 #include <vector>
@@ -97,6 +98,7 @@ private:
   HWND window_;
   HMONITOR monitor_;
   WMT::Object native_view_;
+  WindowFollower follower_;
   WMT::MetalLayer layer_weak_;
   Rc<Presenter> presenter_;
   std::vector<Com<MTLD3D9Surface, false>> backbuffers_;

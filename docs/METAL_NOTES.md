@@ -43,3 +43,7 @@ What DXMT's D3D9 work has learned about Metal, from Apple's headers and from exp
 ## Building against a newer SDK
 
 - APIs newer than the running macOS are weakly linked and NULL at runtime (`pipe2` crashed Wine this way). Check `nm -m` for unexpected `weak external` symbols after building.
+
+## Residency of a writable sparse texture follows tile coordinates
+
+On an M3 Max (macOS 26.6), with a placement sparse `R32Uint` texture and 16 KB pages, `sparse_read(p).resident()` was right with `ShaderRead` usage alone. With `ShaderWrite` added it was wrong for all 12288 mapped texels of an irregular mapping, and `sparse_read(p / tile_size).resident()` was right for all 65536. The data read is right either way. Apple's sparse texture docs and headers don't describe this, and no public report of it turned up. This breaks `CheckAccessFullyMapped` (`d3d12_tiled`, `d3d12_tiled3d`). Other GPUs and formats are untested here, though those tests were recorded passing on an M5 Pro.

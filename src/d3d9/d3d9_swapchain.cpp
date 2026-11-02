@@ -32,10 +32,15 @@ namespace dxmt {
 // CrossOver's macdrv get_win_data creates a client surface first, and for windows without macdrv data (the
 // desktop window, no window) its cleanup left a win32u lock held and the next device creation deadlocked.
 static WMT::Object
-CreateViewForWindow(HWND Window, WMT::Device Device, WMT::MetalLayer &Layer) {
+CreateViewForWindow(HWND Window, const WMTWindowPlacement &Placement, WMT::Device Device, WMT::MetalLayer &Layer) {
   if (!Window || Window == GetDesktopWindow())
     return {};
-  return WMT::CreateMetalViewFromHWND((intptr_t)Window, Device, Layer);
+  return WMT::CreateMetalViewFromHWND((intptr_t)Window, Placement, Device, Layer);
+}
+
+static DXGI_FORMAT
+LayerFormat(D3DFORMAT Format) {
+  return Format == D3DFMT_A2R10G10B10 ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
 }
 
 static bool
@@ -49,10 +54,11 @@ MTLD3D9SwapChain::MTLD3D9SwapChain(MTLD3D9Device *pDevice, const D3DPRESENT_PARA
     params_(Params),
     window_(Params.hDeviceWindow),
     monitor_(wsi::getWindowMonitor(Params.hDeviceWindow)) {
-  native_view_ = CreateViewForWindow(window_, parent_->GetMTLDevice(), layer_weak_);
+  native_view_ = CreateViewForWindow(window_, follower_.placement(window_), parent_->GetMTLDevice(), layer_weak_);
+  follower_.follow(window_, native_view_, true);
   if (native_view_) {
     uint8_t samples = params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1;
-    presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, samples);
+    presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, samples, window_);
   } else {
     WARN("D3D9: no Metal view for window ", (void *)window_, " (desktop or foreign window); presents are dropped");
   }
@@ -91,7 +97,7 @@ MTLD3D9SwapChain::AttachWindow(HWND Window) {
   if (!wsi::isWindow(Window))
     return D3DERR_INVALIDCALL;
   WMT::MetalLayer layer;
-  WMT::Object view = CreateViewForWindow(Window, parent_->GetMTLDevice(), layer);
+  WMT::Object view = CreateViewForWindow(Window, follower_.placement(Window), parent_->GetMTLDevice(), layer);
   if (!view)
     return D3DERR_NOTAVAILABLE;
   // the previous window keeps its fullscreen size and style (Wine's test_device_window_reset)
@@ -101,10 +107,11 @@ MTLD3D9SwapChain::AttachWindow(HWND Window) {
   if (native_view_)
     WMT::ReleaseMetalView(native_view_);
   native_view_ = view;
+  follower_.follow(Window, native_view_, true);
   layer_weak_ = layer;
   window_ = Window;
   monitor_ = wsi::getWindowMonitor(Window);
-  presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, 1);
+  presenter_ = new Presenter(parent_->GetMTLDevice(), layer_weak_, parent_->queue().cmd_library, 1.0f, 1, Window);
   return D3D_OK;
 }
 
@@ -268,11 +275,16 @@ MTLD3D9SwapChain::SetFullscreen(const D3DPRESENT_PARAMETERS &Params) {
     };
     if (!wsi::setWindowMode(monitor_, window_, mode))
       return D3DERR_NOTAVAILABLE;
-    if (!fullscreen_ && !wsi::enterFullscreenMode(monitor_, window_, &window_state_, true))
-      return D3DERR_NOTAVAILABLE;
+    if (!fullscreen_) {
+      GetWindowRect(window_, &window_state_.rect);
+      if (!wsi::enterFullscreenMode(monitor_, window_, &window_state_, true))
+        return D3DERR_NOTAVAILABLE;
+      // unlike DXGI, a D3D9 fullscreen device shows its window
+      ShowWindow(window_, SW_SHOWNOACTIVATE);
+    }
     // a Reset covers the monitor again however the app moved the window (Wine's test_window_position)
     if (fullscreen_ && !(parent_->BehaviorFlags() & D3DCREATE_NOWINDOWCHANGES))
-      wsi::updateFullscreenWindow(monitor_, window_, true);
+      wsi::updateFullscreenWindow(monitor_, window_, &window_state_, true);
     fullscreen_ = true;
     mode_changed_ = false;
   }
@@ -321,17 +333,16 @@ MTLD3D9SwapChain::OverridePresenter(HWND Window) {
     return nullptr;
   auto &target = overrides_[Window];
   if (!target.presenter) {
-    target.view = CreateViewForWindow(Window, parent_->GetMTLDevice(), target.layer);
+    target.view = CreateViewForWindow(Window, windowPlacement(Window), parent_->GetMTLDevice(), target.layer);
     if (!target.view) {
       overrides_.erase(Window);
       return nullptr;
     }
     target.presenter =
-        new Presenter(parent_->GetMTLDevice(), target.layer, parent_->queue().cmd_library, 1.0f, 1);
+        new Presenter(parent_->GetMTLDevice(), target.layer, parent_->queue().cmd_library, 1.0f, 1, Window);
   }
-  WMTPixelFormat format = D3D9GetPixelFormat(parent_->GetMTLDevice(), params_.BackBufferFormat);
   if (target.presenter->changeLayerProperties(
-          (WMTPixelFormat)ORIGINAL_FORMAT(format), WMTColorSpaceSRGB, params_.BackBufferWidth,
+          LayerFormat(params_.BackBufferFormat), WMTColorSpaceSRGB, params_.BackBufferWidth,
           params_.BackBufferHeight, params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1
       ))
     parent_->WaitUntilGPUIdle();
@@ -340,10 +351,9 @@ MTLD3D9SwapChain::OverridePresenter(HWND Window) {
 
 void
 MTLD3D9SwapChain::ApplyLayerProps() {
-  WMTPixelFormat format = D3D9GetPixelFormat(parent_->GetMTLDevice(), params_.BackBufferFormat);
   uint8_t samples = params_.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? params_.MultiSampleType : 1;
   if (presenter_ && presenter_->changeLayerProperties(
-          (WMTPixelFormat)ORIGINAL_FORMAT(format), WMTColorSpaceSRGB, params_.BackBufferWidth,
+          LayerFormat(params_.BackBufferFormat), WMTColorSpaceSRGB, params_.BackBufferWidth,
           params_.BackBufferHeight, samples
       ))
     parent_->WaitUntilGPUIdle();
@@ -406,10 +416,12 @@ MTLD3D9SwapChain::Present(
   chunk->signal_frame_latency_fence_ = queue.CurrentFrameSeq();
   presenter->changeGammaRamp(gamma_enabled_ ? &gamma_lut_ : nullptr);
 
+  if (presenter == presenter_)
+    follower_.follow(window_, native_view_);
   auto state = presenter->synchronizeLayerProperties();
   chunk->emitcc([backbuffer = std::move(presented), presenter = std::move(presenter), vsync_duration,
                  state = std::move(state)](ArgumentEncodingContext &ctx) mutable {
-    ctx.present(backbuffer, presenter, vsync_duration, state.metadata);
+    ctx.present(backbuffer, backbuffer->fullView, presenter, vsync_duration, std::move(state));
   });
   parent_->FlushCommands();
   queue.PresentBoundary();

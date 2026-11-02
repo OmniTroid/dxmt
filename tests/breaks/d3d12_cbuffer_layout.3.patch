@@ -1,0 +1,12 @@
+# an out-of-bounds scalar returns all ones instead of zero
+--- a/src/airconv/dxil_converter.cpp
++++ b/src/airconv/dxil_converter.cpp
+@@ -2560,7 +2560,7 @@
+           std::min(Align(constant(a(3))), getKnownAlignment(buffer.Pointer, ctx.module.getDataLayout()))
+       );
+       if (inside)
+-        ret = ir.CreateSelect(inside, ret, Constant::getNullValue(ty));
++        ret = ir.CreateSelect(inside, ret, Constant::getAllOnesValue(ty));
+       break;
+     }
+     case CBufferLoadLegacy: {
