@@ -572,7 +572,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9SwapChain::GetRasterStatus(D3DRASTER_STATUS *pRasterStatus) {
   if (!pRasterStatus)
     return D3DERR_INVALIDCALL;
-  // Games poll this to wait for the vertical blank, so it has to come. Nothing tells us where the display's beam is:
+  // Polling this to wait for the vertical blank has to end. Nothing tells us where the display's beam is:
   // this is where the time and the refresh rate put it, with a blank of 5% of the lines, as is usual
   LARGE_INTEGER now, frequency;
   QueryPerformanceCounter(&now);

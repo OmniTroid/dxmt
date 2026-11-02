@@ -450,9 +450,8 @@ static const std::map<std::string, Work> scenes = {
      }},
 };
 
-// pipelines the driver has not seen: their making is the hitch of a first run. about what a game's take to make (39 ms a
-// render pipeline and 55 ms a compute pipeline in the Wukong benchmark, on an M3 Max); DXMT_BENCH_SALT makes the same
-// ones again, to see what the caches kept
+// pipelines the driver has not seen: their making is the hitch of a first run. DXMT_BENCH_SALT makes the same ones
+// again, to see what the caches kept
 static UINT pipeline_salt() {
   auto given = getenv("DXMT_BENCH_SALT");
   return given ? atoi(given) : GetTickCount();
@@ -505,7 +504,7 @@ main(int argc, char **argv) {
   const UINT frames = atoi(argv[3]), warmup = atoi(argv[4]);
   if (name == "pipelines")
     return pipelines(b, frames);
-  // the frame scene with a new pipeline made every tenth frame, on the thread that records, as a game's are
+  // the frame scene with a new pipeline made every tenth frame, on the thread that records
   auto scene = scenes.find(name == "streaming" ? "frame" : name);
   if (scene == scenes.end()) {
     printf("no scene %s\n", name.c_str());
