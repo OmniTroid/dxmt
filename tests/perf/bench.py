@@ -4,6 +4,7 @@
   tests/perf/bench.py run --build BUILD --wine WINE [--label NAME] [--scenes a,b] [--front-end dxbc|dxil]
                           [--frames N] [--warmup N] [--repeat N] [--no-profile] [--no-install]
   tests/perf/bench.py compare BEFORE.json AFTER.json
+  tests/perf/bench.py corpus --build BUILD --wine WINE DIRECTORY
 
 run: each scene --repeat times in a process of its own, timed with no profile on, then once with DXMT_DIAG=profile,
 whose overhead stays out of the timings, for which bridge calls took its CPU time. a report
@@ -153,6 +154,24 @@ def cmd_run(args):
     print("wrote", out)
 
 
+def cmd_corpus(args):
+    """how long a game's dumped shaders (neutron start --dump-shaders) take to become pipelines, cold and then with
+    the caches a first pass left, in two processes. the shaders are the game's: keep the directory out of any repo"""
+    tests.guard(args)
+    builds, wine, env = tests.environment(args)
+    exe = builds[0] / "tests" / "d3d12" / "d3d12_corpus.exe"
+    directory = Path(args.directory).resolve()
+    with tempfile.TemporaryDirectory() as cache:
+        run_env = dict(env, DXMT_CORPUS="Z:" + str(directory).replace("/", "\\"), DXMT_SHADER_CACHE_PATH=cache)
+        run_env.pop("DXMT_SHADER_CACHE", None)
+        for name in ("cold", "warm"):
+            started = time.monotonic()
+            done = subprocess.run([str(wine), str(exe), "dxil"], env=run_env, capture_output=True, text=True, errors="replace",
+                                  timeout=args.timeout)
+            said = next((line for line in done.stdout.splitlines() if "pipelines made" in line), done.stdout[-300:].strip())
+            print(f"{name}  {time.monotonic() - started:8.1f} s  {said}", flush=True)
+
+
 def cmd_compare(args):
     before, after = json.loads(Path(args.before).read_text()), json.loads(Path(args.after).read_text())
     print(f"{before['label']} ({before.get('commit')}) -> {after['label']} ({after.get('commit')})")
@@ -192,6 +211,13 @@ def main():
     run.add_argument("--no-profile", action="store_true")
     run.add_argument("--out")
     run.set_defaults(handler=cmd_run)
+    corpus = commands.add_parser("corpus")
+    tests.arguments(corpus)
+    corpus.add_argument("--beside-vms", action="store_true")
+    corpus.add_argument("--jobs", type=int, default=1)
+    corpus.add_argument("--timeout", type=int, default=3600)
+    corpus.add_argument("directory")
+    corpus.set_defaults(handler=cmd_corpus)
     compare = commands.add_parser("compare")
     compare.add_argument("before")
     compare.add_argument("after")
