@@ -49,7 +49,7 @@ G ps_gbuffer(V v) {
   G g;
   float4 a = textures[0].Sample(linear_wrap, v.uv), b = textures[1].Sample(linear_wrap, v.uv * 2.3);
   float4 c = textures[2].Sample(linear_wrap, v.uv * 5.1), d = textures[3].Sample(linear_wrap, v.uv * 11.7);
-  g.albedo = a * b * tint + SALT * 1e-6;
+  g.albedo = a * b * tint + (SALT % 65521) * 1e-3;
   g.normal = float4(normalize(v.normal + (c.xyz - 0.5)), d.x);
   g.material = float4(c.w, d.yz, a.w);
   g.extra = float4(v.uv, b.xy);
@@ -73,6 +73,23 @@ float4 ps_light(float4 pos : SV_Position) : SV_Target {
   return float4(sum / LIGHTS, 1);
 }
 float4 ps_flat(V v) : SV_Target { return tint * v.uv.x; }
+float4 shade(float4 seed, float2 uv) {
+  float4 sum = seed;
+  [unroll] for (int i = 0; i < HEAVY; i++) {
+    float4 t = textures[i % 4].SampleLevel(linear_wrap, uv * (i + 1.3) + sum.xy * 0.01, 0);
+    sum = sum * 0.9 + pow(saturate(t), 1 + i * 0.1) * sin(sum.wzyx + i) + (SALT % 65521) * 1e-3;
+  }
+  return sum;
+}
+G ps_heavy(V v) {
+  G g;
+  g.albedo = shade(tint, v.uv);
+  g.normal = shade(g.albedo, v.uv * 2);
+  g.material = float4(v.normal, 1);
+  g.extra = float4(v.uv, 0, 1);
+  return g;
+}
+[numthreads(8, 8, 1)] void cs_heavy(uint3 id : SV_DispatchThreadID) { image[id.xy] = shade(tint, id.xy * 0.01); }
 [numthreads(8, 8, 1)] void cs_filter(uint3 id : SV_DispatchThreadID) {
   int3 at = int3(id.xy, 0);
   float4 sum = 0;
@@ -134,7 +151,7 @@ texture(Bench &b, UINT w, UINT h, DXGI_FORMAT format, D3D12_RESOURCE_FLAGS flags
 }
 
 static std::vector<std::string> defines(UINT salt = 0) {
-  return {"GRID=" + std::to_string(GRID), "LIGHTS=32", "SALT=" + std::to_string(salt)};
+  return {"GRID=" + std::to_string(GRID), "LIGHTS=32", "HEAVY=12", "SALT=" + std::to_string(salt)};
 }
 
 static ComPtr<ID3D12PipelineState>
@@ -433,18 +450,31 @@ static const std::map<std::string, Work> scenes = {
      }},
 };
 
-// pipelines the driver has not seen: their making is the hitch of a first run
+// pipelines the driver has not seen: their making is the hitch of a first run. about what a game's take to make (39 ms a
+// render pipeline and 55 ms a compute pipeline in the Wukong benchmark, on an M3 Max); DXMT_BENCH_SALT makes the same
+// ones again, to see what the caches kept
+static UINT pipeline_salt() {
+  auto given = getenv("DXMT_BENCH_SALT");
+  return given ? atoi(given) : GetTickCount();
+}
+
 static int pipelines(Bench &b, UINT frames) {
-  const UINT salt = GetTickCount();
+  const UINT salt = pipeline_salt();
   double total = 0;
   auto vs = b.compiler.compile(hlsl, "vs_grid", "vs", defines());
   for (UINT i = 0; i < frames; i++) {
-    auto ps = b.compiler.compile(hlsl, "ps_gbuffer", "ps", defines(salt + i));
+    auto ps = b.compiler.compile(hlsl, "ps_heavy", "ps", defines(salt + i));
+    auto cs = b.compiler.compile(hlsl, "cs_heavy", "cs", defines(salt + i));
     double t = now_ms();
     auto pso = graphics(b, vs, ps, 4, DXGI_FORMAT_R16G16B16A16_FLOAT, true, D3D12_CULL_MODE_BACK);
+    double render = now_ms() - t;
+    t = now_ms();
+    ComPtr<ID3D12PipelineState> compute;
+    D3D12_COMPUTE_PIPELINE_STATE_DESC cd{b.rs.Get(), bytecode(cs)};
+    CHECK(b.device->CreateComputePipelineState(&cd, IID_PPV_ARGS(&compute)));
     double spent = now_ms() - t;
-    total += spent;
-    printf("frame %u %.4f 0 0 0\n", i, spent);
+    total += render + spent;
+    printf("frame %u %.4f %.4f 0 0\n", i, render, spent);
   }
   printf("result pipelines 0 %.3f\n", total);
   return 0;
@@ -455,7 +485,7 @@ main(int argc, char **argv) {
   if (argc > 2 && !strcmp(argv[2], "list")) {
     for (auto &[name, work] : scenes)
       printf("%s\n", name.c_str());
-    printf("pipelines\n");
+    printf("pipelines\nstreaming\n");
     return 0;
   }
   if (argc < 5) {
@@ -475,14 +505,26 @@ main(int argc, char **argv) {
   const UINT frames = atoi(argv[3]), warmup = atoi(argv[4]);
   if (name == "pipelines")
     return pipelines(b, frames);
-  auto scene = scenes.find(name);
+  // the frame scene with a new pipeline made every tenth frame, on the thread that records, as a game's are
+  auto scene = scenes.find(name == "streaming" ? "frame" : name);
   if (scene == scenes.end()) {
     printf("no scene %s\n", name.c_str());
     return 2;
   }
   std::uniform_int_distribution<UINT> pick(0, kAllocators - 1);
+  std::vector<std::string> streamed;
+  std::string streamed_vs;
+  if (name == "streaming") {
+    const UINT salt = pipeline_salt();
+    streamed_vs = b.compiler.compile(hlsl, "vs_grid", "vs", defines());
+    for (UINT f = 0; f < warmup + frames; f += 10)
+      streamed.push_back(b.compiler.compile(hlsl, "ps_heavy", "ps", defines(salt + f)));
+  }
+  std::vector<ComPtr<ID3D12PipelineState>> streamed_psos;
   for (UINT f = 0; f < warmup + frames; f++) {
     double t0 = now_ms();
+    if (!streamed.empty() && f >= warmup && f % 10 == 0)
+      streamed_psos.push_back(graphics(b, streamed_vs, streamed[f / 10], 4, DXGI_FORMAT_R16G16B16A16_FLOAT, true, D3D12_CULL_MODE_BACK));
     b.stamp = 0;
     std::vector<ID3D12CommandList *> submitted;
     std::vector<UINT> used;
