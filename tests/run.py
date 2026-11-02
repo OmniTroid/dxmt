@@ -656,11 +656,14 @@ def main():
     if not args.beside_vms and subprocess.run(["pgrep", "-f", "com.apple.gpusw.Paravirtualized"],
                                               capture_output=True).returncode == 0:
         sys.exit("macOS virtual machines are using the GPU: stop them, or pass --beside-vms")
-    only_run = open(Path(tempfile.gettempdir()) / f"dxmt-test-run-{os.getuid()}.lock", "w")
-    try:
-        fcntl.flock(only_run, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        sys.exit("another run of the tests is going: it has to end first")
+    # tests/host/mutate.py runs this runner from a test: what the outer run started is part of that run
+    if "DXMT_TEST_RUN" not in os.environ:
+        only_run = open(Path(tempfile.gettempdir()) / f"dxmt-test-run-{os.getuid()}.lock", "w")
+        try:
+            fcntl.flock(only_run, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            sys.exit("another run of the tests is going: it has to end first")
+        os.environ["DXMT_TEST_RUN"] = "1"
     tests = chosen(args)
     with session(args) as runtime:
         sys.exit(own(args, tests, *runtime) != 0)
