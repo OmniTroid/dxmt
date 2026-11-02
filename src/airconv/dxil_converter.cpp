@@ -1806,6 +1806,13 @@ convert_dxil(
     );
     return ir.CreateGEP(ty, file.ptr_int4, index);
   };
+  auto join64 = [&](Value *low, Value *high, Type *ty) {
+    auto wide = ir.CreateOr(
+        ir.CreateZExt(ir.CreateBitCast(low, ir.getInt32Ty()), ir.getInt64Ty()),
+        ir.CreateShl(ir.CreateZExt(ir.CreateBitCast(high, ir.getInt32Ty()), ir.getInt64Ty()), 32)
+    );
+    return ir.CreateBitCast(wide, ty);
+  };
   auto sample = [&](CallInst *call, Handle &tex, Handle &smp, unsigned coord_first) {
     auto &info = llvm::air::AIRBuilder::getTextureInfo(tex.texture->Logical);
     auto logical = count(air.getTextureSampleCoordType(Texture{.kind = tex.texture->Logical}));
@@ -1838,7 +1845,9 @@ convert_dxil(
     auto &t = *h.texture;
     auto lod = sample ? ir.getInt32(0) : ir.CreateExtractElement(coord, 3);
     auto [address, array] = dxbc.TexelAddress(t, coord, offset, sample ? nullptr : lod);
-    return dxbc.ReadTexel(t, address, array, sample, lod, used(call) & kMaskAll);
+    // a 64-bit value takes both of the texel's words, whichever components it reads as
+    bool wide = cast<StructType>(call->getType())->getElementType(0)->getPrimitiveSizeInBits() > 32;
+    return dxbc.ReadTexel(t, address, array, sample, lod, wide ? kMaskAll : used(call) & kMaskAll);
   };
   auto texel_write = [&](Handle &h, Value *coord, CallInst *call, unsigned first) {
     auto &t = *h.texture;
@@ -1846,6 +1855,14 @@ convert_dxil(
     auto [address, array] = dxbc.TexelAddress(t, coord, no_offset, nullptr);
     auto texel = air.getTexelType(t.Texture);
     Value *value = UndefValue::get(texel);
+    if (arg(call, first)->getType()->getPrimitiveSizeInBits() > 32) {
+      // 64-bit values live in R32G32_UINT or R32G32_SINT texels, low word first
+      auto wide = ir.CreateBitCast(arg(call, first), ir.getInt64Ty());
+      value = ir.CreateInsertElement(Constant::getNullValue(texel), ir.CreateTrunc(wide, texel->getScalarType()), (uint64_t)0);
+      value = ir.CreateInsertElement(value, ir.CreateTrunc(ir.CreateLShr(wide, 32), texel->getScalarType()), 1);
+      air.CreateWrite(t.Texture, t.Handle, address, array, nullptr, ir.getInt32(0), value, t.GlobalCoherent);
+      return;
+    }
     for (unsigned i = 0; i < 4; i++) {
       auto x = widen(arg(call, first + i), t.Texture.sample_type == Texture::sample_int);
       value = ir.CreateInsertElement(value, ir.CreateBitCast(x, texel->getScalarType()), i);
@@ -1854,6 +1871,14 @@ convert_dxil(
   };
   auto element_bits = [](Type *ty) {
     return (ty->isStructTy() ? ty->getStructElementType(0) : ty)->getPrimitiveSizeInBits();
+  };
+  // a texel read as the 64-bit value its first two words hold, D3D's defaults in the other components
+  auto texel64 = [&](Value *texel, Type *ty) {
+    auto element = cast<StructType>(ty)->getElementType(0);
+    auto low = ir.CreateExtractElement(texel, (uint64_t)0), high = ir.CreateExtractElement(texel, 1);
+    return ir.CreateInsertElement(
+        Constant::getNullValue(FixedVectorType::get(element, 4)), join64(low, high, element), (uint64_t)0
+    );
   };
   // byte address of a raw (byte offset) or structured (element, byte offset) buffer address, in 64 bits: an element
   // index scaled by the stride can wrap 32 and pass the bounds check
@@ -2918,20 +2943,16 @@ convert_dxil(
     }
     case TextureLoad: {
       auto &h = handles[a(1)];
-      if (element_bits(ty) > 32)
-        return make_error<UnsupportedFeature>("DXIL 64-bit texture loads are not lowered yet");
       int32_t offset[3];
       offsets(call, 6, 3, offset);
       bool ms = llvm::air::AIRBuilder::getTextureInfo(h.texture->Logical).is_ms;
       auto [value, residency] = texel_read(
           h, texel_coord(call, 3, !ms && defined(a(2)) ? a(2) : ir.getInt32(0)), offset, ms ? a(2) : nullptr, call
       );
-      ret = to_struct(ty, value, residency);
+      ret = to_struct(ty, element_bits(ty) > 32 ? texel64(value, ty) : value, residency);
       break;
     }
     case TextureStore:
-      if (element_bits(a(5)->getType()) > 32)
-        return make_error<UnsupportedFeature>("DXIL 64-bit texture stores are not lowered yet");
       texel_write(handles[a(1)], texel_coord(call, 2, ir.getInt32(0)), call, 5);
       break;
     case BufferLoad:
@@ -2949,7 +2970,7 @@ convert_dxil(
         } else {
           auto [value, residency] =
               texel_read(h, ir.CreateInsertElement(coord, ir.getInt32(0), 3), no_offset, nullptr, call);
-          ret = to_struct(ty, value, residency);
+          ret = to_struct(ty, element_bits(ty) > 32 ? texel64(value, ty) : value, residency);
         }
         break;
       }
