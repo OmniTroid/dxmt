@@ -17,6 +17,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "dxmt_frame_request.hpp"
 #include "dxmt_command_queue.hpp"
 #include "Metal.hpp"
 #include "dxmt_statistics.hpp"
@@ -300,6 +301,7 @@ CommandQueue::WaitForFinishThread() {
     auto completed = profile_ ? diag::Now() : 0;
     FLIGHT_HEAVY(Gpu, "context queue %p: chunk %llu completes, status %llu", this, internal_seq,
            uint64_t(chunk.attached_cmdbuf.status()));
+    frames::Completed(internal_seq);
     if (chunk.attached_cmdbuf.status() == WMTCommandBufferStatusError) {
       ERR("Device error at frame ", chunk.frame_, ": ", chunk.attached_cmdbuf.error().description().getUTF8String());
       // the first: Metal fails the command buffers after a fault too
