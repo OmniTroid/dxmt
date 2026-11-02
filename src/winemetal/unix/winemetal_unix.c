@@ -4763,46 +4763,29 @@ _MTLCommandBuffer_sampledCommandEncoder(void *obj) {
   return STATUS_SUCCESS;
 }
 
-static FILE *diag_file;
-static dispatch_queue_t diag_queue;
-
-static void
-diag_flush_at_exit(void) {
-  dispatch_sync(diag_queue, ^{
-    fflush(diag_file);
-  });
-}
-
-// the record goes to a queue of its own, so that writing it costs the thread that profiles only the copy
 static NTSTATUS
 _WMTDiagWrite(void *obj) {
   struct unixcall_wmtdiag_write *params = obj;
-  static dispatch_once_t once;
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+  static FILE *file;
+  static bool opened;
   params->ret = getpid();
   if (!params->lines.ptr)
     return STATUS_SUCCESS;
-  const char *directory = params->directory.ptr;
-  dispatch_once(&once, ^{
-    diag_queue = dispatch_queue_create("dxmt-diag", DISPATCH_QUEUE_SERIAL);
-    NSString *path = [NSString stringWithFormat:@"%s/dxmt-%u.diag", directory, getpid()];
-    diag_file = fopen(path.fileSystemRepresentation, "w");
-    if (diag_file)
-      atexit(diag_flush_at_exit);
-    else
+  pthread_mutex_lock(&lock);
+  if (!opened) {
+    opened = true;
+    NSString *path =
+        [NSString stringWithFormat:@"%s/dxmt-%u.diag", (const char *)params->directory.ptr, params->ret];
+    file = fopen(path.fileSystemRepresentation, "w");
+    if (!file)
       perror("dxmt-diag: open record");
-  });
-  if (!diag_file) {
-    params->ret = 0;
-    return STATUS_SUCCESS;
   }
-  size_t length = params->length;
-  char *lines = malloc(length);
-  memcpy(lines, params->lines.ptr, length);
-  dispatch_async(diag_queue, ^{
-    if (fwrite(lines, 1, length, diag_file) != length)
-      perror("dxmt-diag: write record");
-    free(lines);
-  });
+  if (!file || fwrite(params->lines.ptr, 1, params->length, file) != params->length || fflush(file)) {
+    params->ret = 0;
+    perror("dxmt-diag: write record");
+  }
+  pthread_mutex_unlock(&lock);
   return STATUS_SUCCESS;
 }
 
