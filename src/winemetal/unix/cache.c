@@ -105,7 +105,7 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
     _lock_fd = -1;
     NSString *dbPath = resolve_cache_dir(path, true);
     if (!dbPath) {
-      NSLog(@"[CacheReader] Failed to resolve cache path");
+      NSLog(@"[CacheWriter] Failed to resolve cache path");
       [self release];
       return nil;
     }
