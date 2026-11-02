@@ -43,3 +43,7 @@ What DXMT's D3D9 work has learned about Metal, from Apple's headers and from exp
 ## Building against a newer SDK
 
 - APIs newer than the running macOS are weakly linked and NULL at runtime (`pipe2` crashed Wine this way). Check `nm -m` for unexpected `weak external` symbols after building.
+
+## `sparse_read` residency is wrong on Apple9
+
+On an M3 Max (macOS 26.6), `texture2d::sparse_read(...).resident()` on a placement sparse `R32Uint` texture with its first row of 64x64 tiles mapped returns true for only the first 4 of 16384 mapped texels, with no Wine or DXMT involved. Unmapped texels correctly report false, and mapped texels read the right data. So `CheckAccessFullyMapped` needs another source on such GPUs, which breaks `d3d12_tiled`, `d3d12_tiled3d` and `d3d12_sample_residency`. Apple10 isn't affected, going by the same tests passing on an M5 Pro.
