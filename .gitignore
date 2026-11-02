@@ -19,3 +19,5 @@ releases
 prefixes
 .crashdata
 settings.ini
+__pycache__
+.venv

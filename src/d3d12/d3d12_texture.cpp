@@ -268,19 +268,32 @@ EncodeComponentMapping(UINT Shader4ComponentMapping, WMTPixelFormat Format) {
   return WMTPixelFormat(ENCODE_FORMAT_SWIZZLE(Format, Map[MappingR], Map[MappingG], Map[MappingB], Map[MappingA]));
 }
 
-// what a shared texture's D3DKMT allocation carries (ID3D12Device::CreateSharedHandle)
+// what a shared texture's handle, a file mapping, carries (ID3D12Device::CreateSharedHandle)
 struct D3D12SharedTextureData {
+  char tag[16];
   char mach_port_name[54];
   D3D12_RESOURCE_DESC desc;
   D3D12_HEAP_PROPERTIES heap;
   D3D12_HEAP_FLAGS flags;
 };
 
+static constexpr char kSharedTextureTag[16] = "DXMT_texture12";
+
+// whether `count` slices from slice `first` lie in the `length` a resource has: a render target or depth stencil view
+// that runs past the end is refused, as Metal makes no view and no render pass of slices that are not there
+static bool
+WithinSlices(UINT first, UINT count, UINT length) {
+  return first < length && count <= length - first;
+}
+
 class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_RESOURCE_DESC desc_;
   D3D12_HEAP_PROPERTIES heap_props_;
   D3D12_HEAP_FLAGS heap_flags_;
   bool reserved_ = false; // its tiles are mapped to heaps (UpdateTileMappings)
+  // the heap a placed texture is on, which it keeps: the heap's residency is the texture's
+  // ("A placed resource object holds a reference on the heap it is created on", ID3D12Device::CreateHeap)
+  Com<MTLD3D12Heap, false> heap_;
 
 public:
   MTLD3D12Texture(MTLD3D12Device *pDevice) : MTLD3D12Pageable<MTLD3D12Resource>(pDevice) {}
@@ -296,6 +309,7 @@ public:
     reserved_ = Reserved;
     heap_props_ = *pHeapProps;
     heap_flags_ = HeapFlags;
+    heap_ = pHeap;
 
     switch (InitialState) {
     case D3D12_RESOURCE_STATE_RENDER_TARGET: {
@@ -400,49 +414,23 @@ public:
 
   HRESULT
   Share() {
-    D3D12SharedTextureData data{};
-    data.desc = desc_, data.heap = heap_props_, data.flags = heap_flags_;
+    auto data = std::make_shared<D3D12SharedTextureData>();
+    memcpy(data->tag, kSharedTextureTag, sizeof(kSharedTextureTag));
+    data->desc = desc_, data->heap = heap_props_, data->flags = heap_flags_;
     std::random_device device;
     std::mt19937_64 random(device());
-    snprintf(data.mach_port_name, sizeof(data.mach_port_name), "DXMT_shared_%016llx%016llx",
+    snprintf(data->mach_port_name, sizeof(data->mach_port_name), "DXMT_shared_%016llx%016llx",
              (unsigned long long)random(), (unsigned long long)random());
     auto port = texture->current()->machPort;
-    if (!port || !WMTBootstrapRegister(data.mach_port_name, port)) {
+    if (!port || !WMTBootstrapRegister(data->mach_port_name, texture->current()->texture().handle, port)) {
       ERR("MTLD3D12Texture: Failed to register the shared texture's mach port");
       return E_FAIL;
     }
-    D3DKMT_CREATEALLOCATION create = {};
-    create.hDevice = device_->GetLocalD3DKMT();
-    create.pPrivateRuntimeData = &data;
-    create.PrivateRuntimeDataSize = sizeof(data);
-    create.Flags.StandardAllocation = 1;
-    create.NumAllocations = 1;
-    D3DDDI_ALLOCATIONINFO2 allocation = {};
-    create.pAllocationInfo2 = &allocation;
-    D3DKMT_CREATESTANDARDALLOCATION standard = {};
-    create.pStandardAllocation = &standard;
-    standard.Type = D3DKMT_STANDARDALLOCATIONTYPE_EXISTINGHEAP;
-    create.Flags.ExistingSysMem = 1;
-    D3DDDI_ALLOCATIONINFO memory;
-    allocation.pSystemMem = &memory;
-    create.Flags.CreateResource = 1;
-    create.Flags.CreateShared = 1;
-    create.Flags.NtSecuritySharing = 1;
-    if (D3DKMTCreateAllocation2(&create)) {
-      ERR("MTLD3D12Texture: Failed to create the shared texture's D3DKMT allocation");
-      return E_FAIL;
-    }
-    shared_allocation = create.hResource;
+    shared_texture = std::move(data);
     return S_OK;
   }
 
   ~MTLD3D12Texture() {
-    if (shared_allocation) {
-      D3DKMT_DESTROYALLOCATION destroy = {};
-      destroy.hDevice = device_->GetLocalD3DKMT();
-      destroy.hResource = shared_allocation;
-      D3DKMTDestroyAllocation(&destroy);
-    }
     for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
       if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
         device_->UnregisterResidency(storage->current()->texture());
@@ -956,8 +944,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture1DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture1DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture1DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture1DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture1DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture1DArray.FirstArraySlice
+                                      : ViewDesc.Texture1DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -980,8 +971,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture2DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DArray.FirstArraySlice
+                                      : ViewDesc.Texture2DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -1000,8 +994,11 @@ public:
       view_descriptor.firstMiplevel = 0;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DMSArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DMSArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DMSArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DMSArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DMSArray.FirstArraySlice
+                                      : ViewDesc.Texture2DMSArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -1012,9 +1009,13 @@ public:
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = 0;
       view_descriptor.arraySize = 1;
+      // -1 is the W slices from FirstWSlice to the end of the mip (D3D12_TEX3D_RTV)
       auto ArraySize = std::max<UINT16>(desc_.DepthOrArraySize >> ViewDesc.Texture3D.MipSlice, 1);
       RenderTargetDesc.DepthPlane = ViewDesc.Texture3D.FirstWSlice;
-      RenderTargetDesc.RenderTargetArrayLength = ViewDesc.Texture3D.WSize == ~0u ? ArraySize : ViewDesc.Texture3D.WSize;
+      RenderTargetDesc.RenderTargetArrayLength =
+          ViewDesc.Texture3D.WSize == ~0u ? ArraySize - ViewDesc.Texture3D.FirstWSlice : ViewDesc.Texture3D.WSize;
+      if (!WithinSlices(ViewDesc.Texture3D.FirstWSlice, RenderTargetDesc.RenderTargetArrayLength, ArraySize))
+        return FAIL(E_INVALIDARG);
       View = texture->createView(view_descriptor);
       break;
     }
@@ -1079,8 +1080,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture1DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture1DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture1DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture1DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture1DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture1DArray.FirstArraySlice
+                                      : ViewDesc.Texture1DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -1099,8 +1103,11 @@ public:
       view_descriptor.firstMiplevel = ViewDesc.Texture2DArray.MipSlice;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DArray.FirstArraySlice
+                                      : ViewDesc.Texture2DArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -1119,8 +1126,11 @@ public:
       view_descriptor.firstMiplevel = 0;
       view_descriptor.miplevelCount = 1;
       view_descriptor.firstArraySlice = ViewDesc.Texture2DMSArray.FirstArraySlice;
-      view_descriptor.arraySize =
-          ViewDesc.Texture2DMSArray.ArraySize == ~0u ? texture->arrayLength() : ViewDesc.Texture2DMSArray.ArraySize;
+      view_descriptor.arraySize = ViewDesc.Texture2DMSArray.ArraySize == ~0u
+                                      ? texture->arrayLength() - ViewDesc.Texture2DMSArray.FirstArraySlice
+                                      : ViewDesc.Texture2DMSArray.ArraySize;
+      if (!WithinSlices(view_descriptor.firstArraySlice, view_descriptor.arraySize, texture->arrayLength()))
+        return FAIL(E_INVALIDARG);
       RenderTargetDesc.RenderTargetArrayLength = view_descriptor.arraySize;
       View = texture->createView(view_descriptor);
       break;
@@ -1143,6 +1153,8 @@ public:
       UINT *TotalTileCount, D3D12_PACKED_MIP_INFO *PackedMipInfo, D3D12_TILE_SHAPE *StandardTileShape,
       UINT *SubresourceTilingCount, UINT FirstSubresourceTiling, D3D12_SUBRESOURCE_TILING *SubresourceTilings
   ) {
+    if (!reserved_)
+      return NoTiling(TotalTileCount, PackedMipInfo, StandardTileShape, SubresourceTilingCount);
     UINT mips = desc_.MipLevels, slices = desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc_.DepthOrArraySize;
     D3D12_TILE_SHAPE shape{};
     D3D12_PACKED_MIP_INFO packed{UINT8(mips)};
@@ -1154,24 +1166,22 @@ public:
           UINT16(desc_.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? extent(desc_.DepthOrArraySize, shape.DepthInTexels) : 1)
       };
     };
-    if (reserved_) {
-      auto size = device_->GetMTLDevice().sparseTileSize(
-          texture->textureType(), texture->pixelFormat(), texture->sampleCount(), device_->GetSparsePageSize()
-      );
-      shape = {UINT(size.width), UINT(size.height), UINT(size.depth)};
-      auto [first, bytes] = texture->current()->texture().sparseTail();
-      packed.NumStandardMips = UINT8(std::min<uint64_t>(first, mips));
-      packed.NumPackedMips = UINT8(mips - packed.NumStandardMips);
-      packed.NumTilesForPackedMips =
-          packed.NumPackedMips ? UINT((bytes + D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES - 1) / D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES) : 0;
-      for (UINT mip = 0; mip < packed.NumStandardMips; mip++) {
-        auto t = tiles(mip);
-        per_slice += t.WidthInTiles * t.HeightInTiles * t.DepthInTiles;
-      }
-      // without packed mips the start is 0 (D3D12_PACKED_MIP_INFO)
-      packed.StartTileIndexInOverallResource = packed.NumPackedMips ? per_slice : 0;
-      per_slice += packed.NumTilesForPackedMips;
+    auto size = device_->GetMTLDevice().sparseTileSize(
+        texture->textureType(), texture->pixelFormat(), texture->sampleCount(), device_->GetSparsePageSize()
+    );
+    shape = {UINT(size.width), UINT(size.height), UINT(size.depth)};
+    auto [first, bytes] = texture->current()->texture().sparseTail();
+    packed.NumStandardMips = UINT8(std::min<uint64_t>(first, mips));
+    packed.NumPackedMips = UINT8(mips - packed.NumStandardMips);
+    packed.NumTilesForPackedMips =
+        packed.NumPackedMips ? UINT((bytes + D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES - 1) / D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES) : 0;
+    for (UINT mip = 0; mip < packed.NumStandardMips; mip++) {
+      auto t = tiles(mip);
+      per_slice += t.WidthInTiles * t.HeightInTiles * t.DepthInTiles;
     }
+    // without packed mips the start is 0 (D3D12_PACKED_MIP_INFO)
+    packed.StartTileIndexInOverallResource = packed.NumPackedMips ? per_slice : 0;
+    per_slice += packed.NumTilesForPackedMips;
     if (TotalTileCount)
       *TotalTileCount = per_slice * slices;
     if (PackedMipInfo)
@@ -1246,46 +1256,61 @@ CreateCommittedTexture(
   return texture->QueryInterface(riid, ppResource);
 }
 
+HRESULT
+ShareTexture(const D3D12SharedTextureData &data, const SECURITY_ATTRIBUTES *attributes, const WCHAR *name, HANDLE *handle) {
+  if (name && wcslen(name) > MAX_PATH)
+    return DXGI_ERROR_INVALID_CALL;
+  HANDLE mapping = CreateFileMappingW(
+      INVALID_HANDLE_VALUE, const_cast<SECURITY_ATTRIBUTES *>(attributes), PAGE_READWRITE, 0, sizeof(data), name
+  );
+  if (!mapping)
+    return E_FAIL;
+  if (name && GetLastError() == ERROR_ALREADY_EXISTS) {
+    CloseHandle(mapping);
+    return DXGI_ERROR_NAME_ALREADY_EXISTS;
+  }
+  auto view = MapViewOfFile(mapping, FILE_MAP_WRITE, 0, 0, sizeof(data));
+  if (!view) {
+    CloseHandle(mapping);
+    return E_FAIL;
+  }
+  memcpy(view, &data, sizeof(data));
+  UnmapViewOfFile(view);
+  *handle = mapping;
+  return S_OK;
+}
+
 bool
 OpenSharedTexture(MTLD3D12Device *pDevice, HANDLE Handle, REFIID riid, void **ppResource, HRESULT &Result) {
-  D3D12SharedTextureData data = {};
-  D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query = {};
-  query.hDevice = pDevice->GetLocalD3DKMT();
-  query.hNtHandle = Handle;
-  query.pPrivateRuntimeData = &data;
-  query.PrivateRuntimeDataSize = sizeof(data);
-  if (D3DKMTQueryResourceInfoFromNtHandle(&query) || query.PrivateRuntimeDataSize != sizeof(data))
+  auto view = MapViewOfFile(Handle, FILE_MAP_READ, 0, 0, sizeof(D3D12SharedTextureData));
+  if (!view)
+    return false;
+  auto data = std::make_shared<D3D12SharedTextureData>();
+  memcpy(data.get(), view, sizeof(*data));
+  UnmapViewOfFile(view);
+  if (memcmp(data->tag, kSharedTextureTag, sizeof(kSharedTextureTag)))
     return false;
   Result = E_INVALIDARG;
-  D3DKMT_OPENRESOURCEFROMNTHANDLE open = {};
-  D3DDDI_OPENALLOCATIONINFO2 info = {};
-  char driver_data;
-  open.hDevice = pDevice->GetLocalD3DKMT();
-  open.hNtHandle = Handle;
-  open.NumAllocations = 1;
-  open.pOpenAllocationInfo2 = &info;
-  open.pPrivateRuntimeData = &data;
-  open.PrivateRuntimeDataSize = sizeof(data);
-  open.pTotalPrivateDriverDataBuffer = &driver_data;
-  if (D3DKMTOpenResourceFromNtHandle(&open))
-    return true;
   mach_port_t port;
-  if (!WMTBootstrapLookUp(data.mach_port_name, &port))
+  if (!WMTBootstrapLookUp(data->mach_port_name, &port))
     return true;
   DXMTMetalResource resource = {};
   resource.texture_info.mach_port = port;
   auto metal = pDevice->GetMTLDevice().newSharedTexture(resource.texture_info);
-  if (!metal)
+  if (!metal) {
+    WMTBootstrapKeep(data->mach_port_name, 0);
     return true;
+  }
+  WMTBootstrapKeep(data->mach_port_name, metal.handle);
   resource.texture = metal.handle;
   Flags<TextureAllocationFlag> flags;
   flags.set(TextureAllocationFlag::Shared);
   resource.flags = flags.raw();
   auto texture = Com(new MTLD3D12Texture(pDevice));
-  Result = texture->Initialize(&data.heap, data.flags, &data.desc, D3D12_RESOURCE_STATE_COMMON, nullptr, 0, false, &resource);
+  Result = texture->Initialize(&data->heap, data->flags, &data->desc, D3D12_RESOURCE_STATE_COMMON, nullptr, 0, false, &resource);
   if (FAILED(Result))
     return true;
-  texture->shared_allocation = open.hResource;
+  texture->shared_texture = std::move(data);
   Result = texture->QueryInterface(riid, ppResource);
   return true;
 }

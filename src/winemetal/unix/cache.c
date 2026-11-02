@@ -105,7 +105,7 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
     _lock_fd = -1;
     NSString *dbPath = resolve_cache_dir(path, true);
     if (!dbPath) {
-      NSLog(@"[CacheReader] Failed to resolve cache path");
+      NSLog(@"[CacheWriter] Failed to resolve cache path");
       [self release];
       return nil;
     }
@@ -221,6 +221,9 @@ _CacheReader_get(void *obj) {
   const char *skip = getenv("DXMT_AIRCONV_SKIP");
   if (skip)
     [key appendBytes:skip length:strlen(skip)];
+  const char *hoist = getenv("DXMT_AIRCONV_HOIST_LOADS");
+  if (hoist)
+    [key appendBytes:hoist length:strlen(hoist)];
   CacheReader *reader = (CacheReader *)params->cache;
   params->ret_data = (obj_handle_t)[reader get:key];
   [key release];
@@ -245,6 +248,9 @@ _CacheWriter_set(void *obj) {
   const char *skip = getenv("DXMT_AIRCONV_SKIP");
   if (skip)
     [key appendBytes:skip length:strlen(skip)];
+  const char *hoist = getenv("DXMT_AIRCONV_HOIST_LOADS");
+  if (hoist)
+    [key appendBytes:hoist length:strlen(hoist)];
   CacheWriter *writer = (CacheWriter *)params->cache;
   [writer set:key value:(dispatch_data_t)params->value_data];
   [key release];

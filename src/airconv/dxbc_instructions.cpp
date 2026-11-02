@@ -56,6 +56,12 @@ auto readOperandRelativeIndex(
     };
   }
 
+  case D3D11_SB_OPERAND_TYPE_OUTPUT_CONTROL_POINT_ID: {
+    return IndexByControlPointId{
+      .offset = offset,
+    };
+  }
+
   case D3D10_SB_OPERAND_TYPE_INDEXABLE_TEMP: {
     return IndexByIndexableTempComponent{
       .regfile = OpIndex.m_RelIndex,
