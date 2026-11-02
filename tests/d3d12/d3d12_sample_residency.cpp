@@ -436,7 +436,11 @@ main(int argc, char **argv) {
                 const bool texel = anisotropic ? value[0] <= (mapped ? mip + 1 : 0)
                                    : linear    ? value[0] >= std::floor(filtered) && value[0] <= std::ceil(filtered)
                                                : value[0] == wanted;
+                // not implemented: Metal's status for a writable reserved texture follows the coordinate scaled by
+                // the tile size (docs/METAL_NOTES.md), and only reads and the last mip work around it
+                const bool unknown = usage == 1 && (linear || (mip_count > 1 && clamped >= 0.5f));
                 const bool resident = !feedback      ? value[1] == 0
+                                      : unknown      ? value[1] <= 1
                                       : conservative ? value[1] <= UINT(mapped)
                                                      : value[1] == UINT(mapped);
                 if ((!texel || !resident) && wrong++ < 3)

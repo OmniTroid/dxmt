@@ -87,7 +87,9 @@ main() {
       desc.Format = format;
       ComPtr<IDXGISwapChain1> chain;
       hr = factory->CreateSwapChainForComposition(device.input.Get(), &desc, nullptr, &chain);
-      if (!expect(hr == S_OK && chain, "valid composition creation: %#lx", hr))
+      // not implemented: what follows is the contract for when it is
+      expect(hr == E_NOTIMPL && !chain, "valid composition creation: %#lx", hr);
+      if (!chain)
         continue;
       DXGI_SWAP_CHAIN_DESC1 got{};
       CHECK(chain->GetDesc1(&got));

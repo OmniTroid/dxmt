@@ -289,6 +289,13 @@ public:
       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
     InitReturnPtr(ppSwapChain);
 
+    // "must specify a flip model, DXGI_SCALING_STRETCH and no multisampling, with a size": no window gives one
+    // (Microsoft Learn, CreateSwapChainForComposition)
+    if (!ppSwapChain || !pDesc || !pDevice || !pDesc->Width || !pDesc->Height || pDesc->BufferCount < 2 ||
+        pDesc->Scaling != DXGI_SCALING_STRETCH || pDesc->SampleDesc.Count != 1 || pDesc->SampleDesc.Quality ||
+        (pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL && pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
+      return FAIL(DXGI_ERROR_INVALID_CALL);
+
     ERR("Not implemented");
     return E_NOTIMPL;
   }
@@ -298,6 +305,13 @@ public:
       IUnknown *pDevice, const DXGI_SWAP_CHAIN_DESC1 *pDesc,
       IDXGIOutput *pRestrictToOutput, IDXGISwapChain1 **ppSwapChain) final {
     InitReturnPtr(ppSwapChain);
+
+    // "must specify a flip model, DXGI_SCALING_STRETCH and no multisampling, with a size": no window gives one
+    // (Microsoft Learn, CreateSwapChainForComposition)
+    if (!ppSwapChain || !pDesc || !pDevice || !pDesc->Width || !pDesc->Height || pDesc->BufferCount < 2 ||
+        pDesc->Scaling != DXGI_SCALING_STRETCH || pDesc->SampleDesc.Count != 1 || pDesc->SampleDesc.Quality ||
+        (pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL && pDesc->SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD))
+      return FAIL(DXGI_ERROR_INVALID_CALL);
 
     ERR("Not implemented");
     return E_NOTIMPL;
