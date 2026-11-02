@@ -1455,9 +1455,16 @@ public:
     Com<ID3D12Fence> fence;
     if (!object || !handle)
       return E_INVALIDARG;
-    // only fences are shared so far, not resources and heaps
-    if (FAILED(object->QueryInterface(IID_PPV_ARGS(&fence))))
-      return E_NOTIMPL;
+    if (FAILED(object->QueryInterface(IID_PPV_ARGS(&fence)))) {
+      // textures are shared by their mach ports; Metal has no way to share a buffer or a heap
+      Com<ID3D12Resource> resource;
+      if (FAILED(object->QueryInterface(IID_PPV_ARGS(&resource))))
+        return E_NOTIMPL;
+      auto shared = static_cast<MTLD3D12Resource *>(resource.ptr())->shared_allocation;
+      if (!shared)
+        return E_NOTIMPL;
+      return access == GENERIC_ALL ? shareHandle(shared, attributes, access, name, handle) : E_INVALIDARG;
+    }
     // a fence made with D3D12_FENCE_FLAG_SHARED, whose Access "is GENERIC_ALL" (ID3D12Device::CreateSharedHandle)
     auto allocation = static_cast<MTLD3D12Fence *>(fence.ptr())->SharedAllocation();
     if (!allocation || access != GENERIC_ALL)
@@ -1468,6 +1475,9 @@ public:
   HRESULT STDMETHODCALLTYPE
   OpenSharedHandle(HANDLE handle, REFIID riid, void **object) {
     InitReturnPtr(object);
+    HRESULT opened;
+    if (OpenSharedTexture(this, handle, riid, object, opened))
+      return opened;
     D3DKMT_HANDLE allocation;
     auto event = openSharedEvent(GetMTLDevice(), GetLocalD3DKMT(), handle, allocation);
     return OpenFence(this, std::move(event), allocation, riid, object);

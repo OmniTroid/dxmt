@@ -19,6 +19,8 @@
 #include "d3d12_device.hpp"
 #include "d3d12_pageable.hpp"
 #include <bit>
+#include <cstdio>
+#include <random>
 #include "dxmt_format.hpp"
 #include "com/com_pointer.hpp"
 
@@ -266,6 +268,14 @@ EncodeComponentMapping(UINT Shader4ComponentMapping, WMTPixelFormat Format) {
   return WMTPixelFormat(ENCODE_FORMAT_SWIZZLE(Format, Map[MappingR], Map[MappingG], Map[MappingB], Map[MappingA]));
 }
 
+// what a shared texture's D3DKMT allocation carries (ID3D12Device::CreateSharedHandle)
+struct D3D12SharedTextureData {
+  char mach_port_name[54];
+  D3D12_RESOURCE_DESC desc;
+  D3D12_HEAP_PROPERTIES heap;
+  D3D12_HEAP_FLAGS flags;
+};
+
 class MTLD3D12Texture : public MTLD3D12Pageable<MTLD3D12Resource> {
   D3D12_RESOURCE_DESC desc_;
   D3D12_HEAP_PROPERTIES heap_props_;
@@ -338,6 +348,8 @@ public:
       // a shared texture is so only once the GPU writes it (a placed texture has its heap's storage mode)
       if ((!pHeap && !pTexture && !IsCpuVisibleHeap(pHeapProps)) || (pHeap && pHeap->private_storage))
         flags.set(TextureAllocationFlag::CpuInvisible);
+      if ((HeapFlags & D3D12_HEAP_FLAG_SHARED) && !pHeap && !pTexture && !Reserved && planes == 1)
+        flags.set(TextureAllocationFlag::Shared);
       if (Reserved) {
         if (planes > 1)
           return FAIL(E_INVALIDARG);
@@ -381,10 +393,56 @@ public:
       offset += size_and_align.size;
     }
 
+    if ((HeapFlags & D3D12_HEAP_FLAG_SHARED) && !pHeap && !pTexture && !Reserved && planes == 1)
+      return Share();
     return S_OK;
   };
 
+  HRESULT
+  Share() {
+    D3D12SharedTextureData data{};
+    data.desc = desc_, data.heap = heap_props_, data.flags = heap_flags_;
+    std::random_device device;
+    std::mt19937_64 random(device());
+    snprintf(data.mach_port_name, sizeof(data.mach_port_name), "DXMT_shared_%016llx%016llx",
+             (unsigned long long)random(), (unsigned long long)random());
+    auto port = texture->current()->machPort;
+    if (!port || !WMTBootstrapRegister(data.mach_port_name, port)) {
+      ERR("MTLD3D12Texture: Failed to register the shared texture's mach port");
+      return E_FAIL;
+    }
+    D3DKMT_CREATEALLOCATION create = {};
+    create.hDevice = device_->GetLocalD3DKMT();
+    create.pPrivateRuntimeData = &data;
+    create.PrivateRuntimeDataSize = sizeof(data);
+    create.Flags.StandardAllocation = 1;
+    create.NumAllocations = 1;
+    D3DDDI_ALLOCATIONINFO2 allocation = {};
+    create.pAllocationInfo2 = &allocation;
+    D3DKMT_CREATESTANDARDALLOCATION standard = {};
+    create.pStandardAllocation = &standard;
+    standard.Type = D3DKMT_STANDARDALLOCATIONTYPE_EXISTINGHEAP;
+    create.Flags.ExistingSysMem = 1;
+    D3DDDI_ALLOCATIONINFO memory;
+    allocation.pSystemMem = &memory;
+    create.Flags.CreateResource = 1;
+    create.Flags.CreateShared = 1;
+    create.Flags.NtSecuritySharing = 1;
+    if (D3DKMTCreateAllocation2(&create)) {
+      ERR("MTLD3D12Texture: Failed to create the shared texture's D3DKMT allocation");
+      return E_FAIL;
+    }
+    shared_allocation = create.hResource;
+    return S_OK;
+  }
+
   ~MTLD3D12Texture() {
+    if (shared_allocation) {
+      D3DKMT_DESTROYALLOCATION destroy = {};
+      destroy.hDevice = device_->GetLocalD3DKMT();
+      destroy.hResource = shared_allocation;
+      D3DKMTDestroyAllocation(&destroy);
+    }
     for (auto storage = texture.ptr(); storage; storage = storage->chroma.ptr())
       if (storage->current() && !storage->current()->flags().test(TextureAllocationFlag::AllocatedOnHeap))
         device_->UnregisterResidency(storage->current()->texture());
@@ -1186,6 +1244,50 @@ CreateCommittedTexture(
   if (!ppResource)
     return S_FALSE;
   return texture->QueryInterface(riid, ppResource);
+}
+
+bool
+OpenSharedTexture(MTLD3D12Device *pDevice, HANDLE Handle, REFIID riid, void **ppResource, HRESULT &Result) {
+  D3D12SharedTextureData data = {};
+  D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query = {};
+  query.hDevice = pDevice->GetLocalD3DKMT();
+  query.hNtHandle = Handle;
+  query.pPrivateRuntimeData = &data;
+  query.PrivateRuntimeDataSize = sizeof(data);
+  if (D3DKMTQueryResourceInfoFromNtHandle(&query) || query.PrivateRuntimeDataSize != sizeof(data))
+    return false;
+  Result = E_INVALIDARG;
+  D3DKMT_OPENRESOURCEFROMNTHANDLE open = {};
+  D3DDDI_OPENALLOCATIONINFO2 info = {};
+  char driver_data;
+  open.hDevice = pDevice->GetLocalD3DKMT();
+  open.hNtHandle = Handle;
+  open.NumAllocations = 1;
+  open.pOpenAllocationInfo2 = &info;
+  open.pPrivateRuntimeData = &data;
+  open.PrivateRuntimeDataSize = sizeof(data);
+  open.pTotalPrivateDriverDataBuffer = &driver_data;
+  if (D3DKMTOpenResourceFromNtHandle(&open))
+    return true;
+  mach_port_t port;
+  if (!WMTBootstrapLookUp(data.mach_port_name, &port))
+    return true;
+  DXMTMetalResource resource = {};
+  resource.texture_info.mach_port = port;
+  auto metal = pDevice->GetMTLDevice().newSharedTexture(resource.texture_info);
+  if (!metal)
+    return true;
+  resource.texture = metal.handle;
+  Flags<TextureAllocationFlag> flags;
+  flags.set(TextureAllocationFlag::Shared);
+  resource.flags = flags.raw();
+  auto texture = Com(new MTLD3D12Texture(pDevice));
+  Result = texture->Initialize(&data.heap, data.flags, &data.desc, D3D12_RESOURCE_STATE_COMMON, nullptr, 0, false, &resource);
+  if (FAILED(Result))
+    return true;
+  texture->shared_allocation = open.hResource;
+  Result = texture->QueryInterface(riid, ppResource);
+  return true;
 }
 
 HRESULT

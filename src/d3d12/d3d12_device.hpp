@@ -191,6 +191,8 @@ public:
   // a sampler feedback map's description as its application gave it: `texture` has one R32_UINT texel per mip region
   // (TranscodeFeedback in dxmt_command_feedback.hpp)
   std::optional<D3D12_RESOURCE_DESC1> feedback;
+  // a texture on a D3D12_HEAP_FLAG_SHARED heap: its allocation, which CreateSharedHandle makes a handle of
+  D3DKMT_HANDLE shared_allocation = 0;
 
   HRESULT STDMETHODCALLTYPE
   GetProtectedResourceSession(REFIID riid, void **ppProtectedSession) override {
@@ -729,6 +731,9 @@ HRESULT CreateCommittedTexture(
     REFIID riid, void **ppResource, D3D12SwapChainBufferRefs *pBufferRefs = nullptr,
     const DXMTMetalResource *pTexture = nullptr
 );
+
+// false when the handle shares something other than a texture; `Result` says how opening one went
+bool OpenSharedTexture(MTLD3D12Device *pDevice, HANDLE Handle, REFIID riid, void **ppResource, HRESULT &Result);
 
 HRESULT
 CreatePlacedTexture(
