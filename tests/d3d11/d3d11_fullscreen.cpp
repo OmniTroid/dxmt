@@ -420,6 +420,8 @@ main(int argc, char **argv) {
                                           {desktop.dmDisplayFrequency, 1}, desc.BufferDesc.Format};
                       hr = swapchain->ResizeTarget(&mode);
                       expect(hr == S_OK, "fullscreen ResizeTarget after application changes");
+                      // a mode switch can rearrange the desktop, so where the output is now
+                      expect(output->GetDesc(&output_desc) == S_OK, "output description after ResizeTarget");
                       expect(GetWindowRect(window, &actual) && EqualRect(&actual, &output_desc.DesktopCoordinates),
                              "fullscreen ResizeTarget bounds");
                       expect(GetClientRect(window, &client) && client.right == width && client.bottom == height,
