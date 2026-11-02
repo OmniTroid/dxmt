@@ -3299,6 +3299,7 @@ _WMTQueryDisplaySettingForLayer(void *obj) {
   CAMetalLayer *layer = (CAMetalLayer *)params->layer;
   struct WMTHDRMetadata *hdr_metadata_out = params->hdr_metadata.ptr;
 
+  @autoreleasepool {
   params->version = 0;
   if (![layer.delegate isKindOfClass:NSView.class])
     return STATUS_SUCCESS;
@@ -3321,6 +3322,7 @@ _WMTQueryDisplaySettingForLayer(void *obj) {
       layer.wantsExtendedDynamicRangeContent ? screen.maximumExtendedDynamicRangeColorComponentValue : 1.0;
   params->edr_value.maximum_potential_edr_color_component_value =
       screen.maximumPotentialExtendedDynamicRangeColorComponentValue;
+  }
 
   return STATUS_SUCCESS;
 }
