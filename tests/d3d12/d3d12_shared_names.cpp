@@ -16,9 +16,9 @@
 // name the objects here registered must be gone once the objects are released. launchd's names are read with
 // launchctl, through a unix shell (ntdll's __wine_unix_spawnvp); a name another process registered meanwhile is not
 // counted. the objects open in this process and in a child, and each opened object shows its creator's value: an
-// initial fence value, or the texels a texture was created with. Windows keeps a shared object while any NT handle to it is open; DXMT keeps it openable
-// while an object of the creating process made from it lives, so an open with an NT handle but no such object fails:
-// the test checks that it fails at once, as the known difference a fuller lifetime would have to change on purpose.
+// initial fence value, or the texels a texture was created with. Windows keeps a shared object while any NT handle to it is open. DXMT does so for a
+// texture, whose name goes with the last handle; a fence stays openable only while an object of the creating process
+// made from it lives, so an open with an NT handle but no such object fails at once, the known difference.
 // a process that ends without releasing its objects leaves no names either.
 #include "d3d12_test.hpp"
 #include <d3d11_4.h>
@@ -360,10 +360,10 @@ main(int argc, char **argv) {
 
   step("every name the objects registered is gone, with their devices alive");
   auto left = remaining(registered);
-  expect(left.empty(), "%zu of the %zu names the objects registered remain after their release", left.size(),
+  expect(left.size() == 1, "%zu of the %zu names the objects registered remain, want the kept texture's", left.size(),
          registered.size());
 
-  step("an open after every object made from the handle was released fails at once: DXMT's known difference");
+  step("an open of a fence with no object left fails at once, DXMT's known difference; a kept texture's open works");
   for (size_t i : late) {
     DWORD start = GetTickCount();
     HRESULT hr;
@@ -378,13 +378,26 @@ main(int argc, char **argv) {
     } else {
       ComPtr<ID3D11Texture2D> texture;
       hr = d.device1->OpenSharedResource1(handles[i], IID_PPV_ARGS(&texture));
-      expect(!texture, "the late texture open returned an object");
+      expect(SUCCEEDED(hr) && holds(d.device11.Get(), d.context.Get(), texture.Get(), color(2)),
+             "the kept texture did not open with its texels, hr %#lx", hr);
+      CloseHandle(handles[i]);
+      continue;
     }
     DWORD took = GetTickCount() - start;
     expect(FAILED(hr), "the late open of handle %zu returned %#lx", i, hr);
     expect(took < 1000, "the late open of handle %zu took %lu ms", i, took);
     CloseHandle(handles[i]);
   }
+  d.context->ClearState();
+  d.context->Flush();
+
+  step("the kept texture's name goes with its last handle");
+  left = remaining(registered);
+  for (int attempt = 0; attempt < 50 && !left.empty(); attempt++) {
+    Sleep(100);
+    left = remaining(registered);
+  }
+  expect(left.empty(), "%zu of the %zu names remain with every handle closed", left.size(), registered.size());
 
   step("a process that ends without releasing its objects leaves no names");
   SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
