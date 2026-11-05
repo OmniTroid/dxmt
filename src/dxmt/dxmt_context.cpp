@@ -16,6 +16,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  */
 
+#include "dxmt_frame_request.hpp"
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
@@ -694,10 +695,50 @@ ArgumentEncodingContext::resolveTexture(
 };
 
 void
+ArgumentEncodingContext::captureFrame(const Rc<Texture> &texture) {
+  const auto format = ORIGINAL_FORMAT(texture->pixelFormat());
+  const bool rgba = format == WMTPixelFormatRGBA8Unorm || format == WMTPixelFormatRGBA8Unorm_sRGB;
+  if (texture->sampleCount() > 1 ||
+      !(rgba || format == WMTPixelFormatBGRA8Unorm || format == WMTPixelFormatBGRA8Unorm_sRGB)) {
+    ERR("Frame request: format ", uint32_t(format), " with ", texture->sampleCount(), " samples can't be saved");
+    return;
+  }
+  frames::Capture capture;
+  capture.width = texture->width();
+  capture.height = texture->height();
+  capture.rgba = rgba;
+  capture.frame = frame_id_;
+  capture.seq = seq_id_;
+  WMTBufferInfo info{
+      .length = align(capture.width * capture.height * 4ull, DXMT_PAGE_SIZE), .options = WMTResourceStorageModeShared
+  };
+  capture.pixels.reset(wsi::aligned_malloc(info.length, DXMT_PAGE_SIZE));
+  info.memory.set(capture.pixels.get());
+  capture.buffer = device_.newBuffer(info);
+
+  startBlitPass();
+  auto image = access(texture, 0, 0, ResourceAccess::Read);
+  auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+  cmd.type = WMTBlitCommandCopyFromTextureToBuffer;
+  cmd.src = image;
+  cmd.slice = cmd.level = 0;
+  cmd.origin = {};
+  cmd.size = {capture.width, capture.height, 1};
+  cmd.dst = capture.buffer.handle;
+  cmd.offset = 0;
+  cmd.bytes_per_row = capture.width * 4;
+  cmd.bytes_per_image = capture.width * capture.height * 4;
+  endPass();
+  frames::Add(std::move(capture));
+}
+
+void
 ArgumentEncodingContext::present(
     Rc<Texture> &texture, TextureViewKey view, Rc<Presenter> &presenter, double after, Presenter::PresentState state
 ) {
   assert(!encoder_current);
+  if (frames::Requested())
+    captureFrame(texture);
   auto encoder_info = allocate<PresentData>();
   encoder_info->type = EncoderType::Present;
   encoder_info->id = nextEncoderId();

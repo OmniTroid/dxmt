@@ -784,6 +784,7 @@ public:
   // pass carries a copy in the chunk's memory
   std::string events;
 
+  void captureFrame(const Rc<Texture> &texture);
   void present(
       Rc<Texture> &texture, TextureViewKey view, Rc<Presenter> &presenter, double after, Presenter::PresentState state
   );
