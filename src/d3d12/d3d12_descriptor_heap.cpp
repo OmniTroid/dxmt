@@ -37,7 +37,9 @@ static_assert(D3D12_REQ_MIP_LEVELS <= (1u << SM50_TEXTURE_VIEW_METADATA_FIRST_MI
 // the bits of a view's place that say how to read a writable sparse texture's residency (docs/METAL_NOTES.md)
 static uint64_t
 ResidencyTile(WMT::Device device, Texture *texture) {
-  if (device.supportsFamily(WMTGPUFamilyApple10))
+  uint64_t macos_major = 0;
+  WMTGetOSVersion(&macos_major, nullptr, nullptr);
+  if (device.supportsFamily(WMTGPUFamilyApple10) || macos_major >= 27)
     return 0;
   auto tile = device.sparseTileSize(texture->textureType(), texture->pixelFormat(), texture->sampleCount(), WMTSparsePageSize16);
   uint64_t depth = std::countr_zero(tile.depth);
