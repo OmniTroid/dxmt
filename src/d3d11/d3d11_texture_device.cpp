@@ -27,6 +27,8 @@
 #include "dxmt_texture.hpp"
 #include "d3d11_resource.hpp"
 #include "util_win32_compat.h"
+#include <algorithm>
+#include <vector>
 
 #include <limits>
 #include <mutex>
@@ -96,6 +98,9 @@ struct TextureShare;
 
 static std::mutex share_registry_mutex;
 static std::unordered_map<uint64_t, TextureShare *> share_registry;
+// released shares whose carrier still has a handle elsewhere, and whether a thread is watching them
+static std::vector<TextureShare *> lingering_shares;
+static bool lingering_thread_running = false;
 
 // the share's own mapping is named after its id, so a marshalled legacy handle resolves in any process of the
 // session: "You can also marshal this handle to another process to share a resource with a device in another
@@ -122,6 +127,19 @@ MakeShareId() {
   return dis(gen) & (share_id_range - 1);
 }
 
+static bool
+HasOtherHandles(HANDLE object) {
+  // winternl.h conflicts with util_d3dkmt.h
+  struct {
+    ULONG Attributes, GrantedAccess, HandleCount, PointerCount, Reserved[10];
+  } info = {};
+  using Query = LONG(WINAPI *)(HANDLE, int, void *, ULONG, ULONG *);
+  static const auto query = reinterpret_cast<Query>(
+      reinterpret_cast<void *>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryObject"))
+  );
+  return query && !query(object, 0 /* ObjectBasicInformation */, &info, sizeof(info), nullptr) && info.HandleCount > 1;
+}
+
 // the live shared textures of this process. a legacy handle is a plain identity value and not a kernel handle
 // (CloseHandle and DuplicateHandle must fail with ERROR_INVALID_HANDLE)
 struct TextureShare {
@@ -135,6 +153,17 @@ struct TextureShare {
     std::lock_guard<std::mutex> lock(share_registry_mutex);
     if (refcount.fetch_sub(1u, std::memory_order_acq_rel) != 1u)
       return;
+    if (!tryDestroy())
+      linger();
+  }
+
+  // Windows keeps a share while any handle to it is open, and the share's names are served by the process that made
+  // it, so that process keeps the share's objects until its own handle to the carrier is the last
+  bool tryDestroy() {
+    if (kept_texture && HasOtherHandles(named_mapping))
+      return false;
+    if (lingering)
+      lingering_shares.erase(std::find(lingering_shares.begin(), lingering_shares.end(), this));
     share_registry.erase(data.share_id);
     if (carrier)
       UnmapViewOfFile(carrier);
@@ -143,7 +172,10 @@ struct TextureShare {
     if (published_name)
       CloseHandle(published_name);
     delete this;
+    return true;
   }
+
+  void linger();
 
   HANDLE legacyHandle() const {
     return reinterpret_cast<HANDLE>(static_cast<uintptr_t>(data.share_id | legacy_handle_marker));
@@ -159,8 +191,62 @@ struct TextureShare {
   SharedTextureCarrier *carrier = nullptr;
   HANDLE named_mapping = nullptr;      // the carrier, opened by its name or taken from a handle of the share
   HANDLE published_name = nullptr;     // the name this share was published under, if a name was published
+  // only in the process that made the share
+  WMT::Reference<WMT::Texture> kept_texture, kept_chroma;
+  WMT::Reference<WMT::SharedEvent> kept_event;
+  bool lingering = false;
   std::atomic<uint32_t> refcount = {0u};
 };
+
+// under share_registry_mutex. a share taken up again is watched again when it is next released
+static void
+ReleaseUnheldShares() {
+  for (size_t i = lingering_shares.size(); i--;) {
+    TextureShare *share = lingering_shares[i];
+    if (share->refcount.load(std::memory_order_acquire)) {
+      share->lingering = false;
+      lingering_shares.erase(lingering_shares.begin() + i);
+    } else {
+      share->tryDestroy();
+    }
+  }
+}
+
+static DWORD WINAPI
+WatchLingeringShares(void *module) {
+  for (;;) {
+    Sleep(100);
+    std::lock_guard<std::mutex> lock(share_registry_mutex);
+    ReleaseUnheldShares();
+    if (lingering_shares.empty()) {
+      lingering_thread_running = false;
+      break;
+    }
+  }
+  FreeLibraryAndExitThread(static_cast<HMODULE>(module), 0);
+}
+
+void
+TextureShare::linger() {
+  if (!lingering) {
+    lingering = true;
+    lingering_shares.push_back(this);
+  }
+  if (lingering_thread_running)
+    return;
+  // the thread holds this module, which can be unloaded while a share lingers
+  HMODULE module = nullptr;
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&WatchLingeringShares),
+                          &module))
+    return;
+  HANDLE thread = CreateThread(nullptr, 0, WatchLingeringShares, module, 0, nullptr);
+  if (!thread) {
+    FreeLibrary(module);
+    return;
+  }
+  CloseHandle(thread);
+  lingering_thread_running = true;
+}
 
 static bool
 IsLegacySharedHandle(HANDLE hResource) {
@@ -530,6 +616,10 @@ public:
     // file, a mutex, or an event, and a name can be used by only one resource at a time" and "Creation fails if the
     // name is already used" with DXGI_ERROR_NAME_ALREADY_EXISTS (Microsoft Learn, IDXGIResource1::CreateSharedHandle)
     if (pName && !share_->published_name) {
+      {
+        std::lock_guard<std::mutex> lock(share_registry_mutex);
+        ReleaseUnheldShares();
+      }
       // the carrier is named after the share's id, and one object has one name, so the caller's name is published
       // as a mapping of the same identity: an open by that name finds the identity, whose `mapping_name` is the
       // carrier that holds the share's state. every resource of the share then holds this name open, its creator
@@ -742,6 +832,12 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
       share->data = share->carrier->data;
     }
 
+    share->kept_texture = texture->current()->texture();
+    if (texture->chroma)
+      share->kept_chroma = texture->chroma->current()->texture();
+    if (keyed_mutex)
+      share->kept_event = keyed_mutex->sharedEvent();
+
     {
       std::lock_guard<std::mutex> lock(share_registry_mutex);
       share_registry.emplace(share->data.share_id, share.ptr());
@@ -931,6 +1027,11 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   if (ppTexture == nullptr)
     return S_FALSE;
 
+  {
+    std::lock_guard<std::mutex> lock(share_registry_mutex);
+    ReleaseUnheldShares();
+  }
+
   // the marshalled handle names its share's mapping, so it resolves in this process as it did in the one that
   // made it, for as long as any device anywhere still holds a resource of the share
   char mapping_name[64];
@@ -1019,6 +1120,11 @@ HRESULT
 ImportSharedTextureByName(
     MTLD3D11Device *pDevice, LPCWSTR lpName, DWORD dwDesiredAccess, REFIID riid, void **ppTexture
 ) {
+  {
+    std::lock_guard<std::mutex> lock(share_registry_mutex);
+    ReleaseUnheldShares();
+  }
+
   // "opens a shared resource using a name of a shared resource that was created with the NT handle sharing flag"
   // (Microsoft Learn, IDXGIResource1::OpenSharedResourceByName): the name a CreateSharedHandle published resolves
   // to the share's identity, which names the carrier that holds the share's keyed mutex state
